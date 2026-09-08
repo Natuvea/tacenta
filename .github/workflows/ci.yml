@@ -1,0 +1,66 @@
+# CI for the Tacenta repository: format, lint, tests, the hygiene guards, and
+# the Lean specification build, all on GitHub-hosted runners. The Aeneas T1
+# verification, the Swift, Android and WebAssembly packaging, the conformance
+# run against hosted Tacenta, and deployment run in the release pipeline.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo clippy --locked --manifest-path crates/tacenta-core/Cargo.toml --features open-provider --all-targets -- -D warnings
+      - run: "cargo test --locked --manifest-path crates/tacenta-core/Cargo.toml --features open-provider crypto::"
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: bash tooling/check-workflows.sh
+      - run: bash tooling/check-versions.sh
+      - run: bash tooling/check-conformance-lines.sh
+      - run: bash tooling/check-surface.sh
+      - run: bash tooling/check-tree-clean.sh
+      # check-advisories skips itself when cargo-audit is absent, and the
+      # GitHub-hosted image does not ship it; install so the scan runs.
+      - run: cargo install cargo-audit --locked
+      - run: bash tooling/check-advisories.sh
+      # check-no-agpl resolves the compiled graph.
+      - run: bash tooling/check-no-agpl.sh
+
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSfL https://elan.lean-lang.org/elan-init.sh | sh -s -- -y
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      # Lean reports every incomplete declaration it elaborates as
+      # "declaration uses `sorry`"; the build log is the authoritative list,
+      # so the step fails on any such line rather than trusting a grep of the
+      # source. `shell: bash` gives `pipefail`, so a failed build fails too.
+      - name: The specification builds (no sorry)
+        shell: bash
+        run: |
+          (cd spec && lake build 2>&1) | tee /tmp/spec-build.log
+          if grep -q 'declaration uses' /tmp/spec-build.log; then
+            echo '::error::the specification contains an incomplete declaration'
+            exit 1
+          fi
+      - name: Committed vectors match the spec
+        run: |
+          for v in envelope session user stream; do
+            (cd spec && lake exe vectors "$v") > "/tmp/$v-v1.json"
+            diff -u "contracts/vectors/$v-v1.json" "/tmp/$v-v1.json"
+          done

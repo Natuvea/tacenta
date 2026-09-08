@@ -1,0 +1,20 @@
+Mozilla Public License 2.0 — source availability
+=================================================
+
+This artifact includes, in binary form, components licensed under the Mozilla
+Public License, version 2.0 (MPL-2.0) — notably the UniFFI bindings runtime and
+its associated crates. The components and their licences are listed in
+THIRD_PARTY_NOTICES, which travels inside this artifact.
+
+In accordance with MPL-2.0 section 3.2, the complete corresponding source for
+each MPL-2.0-covered component is available at no charge from its upstream
+project, including:
+
+  UniFFI (uniffi and related crates):  https://github.com/mozilla/uniffi-rs
+
+The exact version of each component is recorded in THIRD_PARTY_NOTICES and in the
+build's Cargo.lock. If you cannot locate the source for an MPL-2.0 component named
+in THIRD_PARTY_NOTICES, contact info@natuvea.com and it will be provided.
+
+This offer covers only the MPL-2.0-licensed components. Tacenta's own code is
+licensed under the Apache License 2.0 (see LICENSE).

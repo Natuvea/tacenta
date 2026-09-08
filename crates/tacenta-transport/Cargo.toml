@@ -1,0 +1,53 @@
+[package]
+name = "tacenta-transport"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Wraps the relay in a real socket server. Kept separate so the blind
+# relay stays minimal (wire + state only, decision 0012) — the async
+# runtime lives here, not in the relay.
+[dependencies]
+tacenta-relay = { workspace = true }
+tacenta-directory = { workspace = true }
+tacenta-accounts = { workspace = true }
+tacenta-discovery = { workspace = true }
+# What every target needs: framing, the connection types, the generic serve
+# and establish paths. Sockets, TLS, the runtime and the WebSocket client
+# are native-only below; on wasm the byte stream comes from JavaScript and
+# the browser does TLS (decision 0090).
+tokio = { version = "1", features = ["io-util", "sync", "macros"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["net", "rt", "time"] }
+# TCP keepalive on accepted sockets, so a dead peer on a long-lived relay
+# connection is reaped by the OS.
+socket2 = "0.6"
+# TLS for the transport. The `ring` provider keeps the build light (no
+# aws-lc-rs / cmake); decision record 0023.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2"
+# Mozilla's CA root store, for trusting public certificates (e.g. Let's Encrypt)
+# when a client connects to a hosted server.
+webpki-roots = "0.26"
+# The WebSocket carriage of the framed services (decision 0090),
+# behind the `ws` feature. The handshake only: TCP and TLS are this crate's
+# own, over the same trust as the framed services, so the crate's TLS
+# features (and the crypto backend they would choose) stay off.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
+bytes = { version = "1", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The one place a task is spawned on the browser's event loop.
+wasm-bindgen-futures = "0.4"
+
+[features]
+ws = ["dep:tokio-tungstenite", "dep:futures-util", "dep:bytes"]
+
+[dev-dependencies]
+tacenta-wire = { workspace = true }
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "sync", "macros"] }
+rcgen = "0.13"

@@ -1,0 +1,13 @@
+[package]
+name = "tacenta-directory"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# A directory of public key material (identity keys, prekey bundles).
+# Stores opaque blobs keyed by device — no cryptography of its own, like
+# the relay. Depends only on tacenta-relay for the DeviceAddr routing key.
+[dependencies]
+tacenta-relay = { workspace = true }
+tacenta-directory-core = { workspace = true }

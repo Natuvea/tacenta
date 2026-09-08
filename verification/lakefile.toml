@@ -1,0 +1,15 @@
+name = "tacenta-verification"
+defaultTargets = ["Verification"]
+
+[[require]]
+name = "aeneas"
+git = "https://github.com/AeneasVerif/aeneas"
+rev = "nightly-2026.07.22-b1214ca"
+subDir = "backends/lean"
+
+[[require]]
+name = "tacenta-spec"
+path = "../spec"
+
+[[lean_lib]]
+name = "Verification"

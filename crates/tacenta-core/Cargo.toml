@@ -1,0 +1,45 @@
+[package]
+name = "tacenta-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+tacenta-wire = { workspace = true }
+tacenta-state = { workspace = true }
+# The open-tacenta provider: the cryptographic implementation the product
+# ships, and the only one. It is not optional and cannot be switched off.
+open-tacenta = { workspace = true }
+rand_core_06 = { workspace = true }
+# For the durable-store wrapper's own persisted buffers (identity and prekey
+# bytes), matching how open-tacenta already wraps its own secret-bearing
+# exports.
+zeroize = "1"
+# For the persisted-state authenticator (decision 0078). Already in the graph
+# transitively; named directly because this crate now uses it in its own right.
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+rand = "0.9"
+# Only for the `conformance` feature, whose suite drives in-memory futures to
+# a value without an executor.
+futures-util = { version = "0.3", optional = true }
+
+[features]
+default = []
+# A no-op feature kept for compatibility with invocations that name it; the
+# provider is unconditional.
+open-provider = []
+# Exposes `crypto::conformance`, the behavioural suite for the provider seam,
+# to other crates. Off by default.
+conformance = ["dep:futures-util"]
+
+[dev-dependencies]
+rand_chacha = "0.9"
+serde_json = "1"
+futures-util = "0.3"
+tacenta-relay = { workspace = true }
+tacenta-directory = { workspace = true }
+tacenta-transport = { workspace = true }
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros"] }

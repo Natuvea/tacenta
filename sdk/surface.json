@@ -1,0 +1,371 @@
+{
+  "version": 1,
+  "about": "The SDK surface, one row per call, with the symbol each head exposes for it or null where the head does not have it yet (decision 0090). Each head's test suite checks itself against this file in both directions: every symbol named here must exist, and every public call on the facade must be named here or listed under `unlisted` with its reason, so a head can neither fall behind the manifest nor grow past it unrecorded. Checked by tacenta-client tests/surface.rs (the Rust facade's impl blocks), tacenta-ffi tests/surface.rs (the exports that become Swift and Kotlin, object by object), tooling/check-surface-bindings.sh (the generated Swift and Kotlin themselves), and sdk/typescript test/surface.test.mjs (the built package). sdk/SURFACE.md is rendered from this file by tooling/surface-grid.py, and tooling/check-surface.sh keeps the two in step. The `errors` section lists the error kinds the same way.",
+  "heads": {
+    "rust": "crates/tacenta-client",
+    "typescript": "sdk/typescript (crates/tacenta-wasm)",
+    "swift": "bindings/swift (crates/tacenta-ffi); the handle is `Tenant` there, since the Swift module is `Tacenta`",
+    "kotlin": "bindings/android (crates/tacenta-ffi); the handle is `Tenant`, for parity with Swift"
+  },
+  "objects": [
+    {
+      "name": "Tacenta",
+      "about": "One tenant's handle: built from the API key and the server's name, it fetches the service document once and hands out signed-in clients.",
+      "calls": [
+        {
+          "name": "connect",
+          "about": "Build the handle; discover the services from the server's document.",
+          "rust": "Tacenta::connect",
+          "typescript": "Tacenta.connect",
+          "swift": "Tenant.connect",
+          "kotlin": "Tenant.connect"
+        },
+        {
+          "name": "signUp",
+          "about": "Create a user in the tenant.",
+          "rust": "Tacenta::sign_up",
+          "typescript": "Tacenta.signUp",
+          "swift": "Tenant.signUp",
+          "kotlin": "Tenant.signUp"
+        },
+        {
+          "name": "signIn",
+          "about": "Sign a user in on a device with a fresh identity; a connected client.",
+          "rust": "Tacenta::sign_in",
+          "typescript": "Tacenta.signIn",
+          "swift": "Tenant.signIn",
+          "kotlin": "Tenant.signIn"
+        },
+        {
+          "name": "signInWithState",
+          "about": "Sign in resuming persisted identity and sessions.",
+          "rust": "Tacenta::sign_in_with_state",
+          "typescript": "Tacenta.signInWithState",
+          "swift": "Tenant.signInWithState",
+          "kotlin": "Tenant.signInWithState"
+        },
+        {
+          "name": "signInWithStateSealed",
+          "about": "Sign in resuming sealed, rollback-resistant state with a secure store attached (decision 0078).",
+          "rust": "Tacenta::sign_in_with_state_sealed",
+          "typescript": null,
+          "swift": "Tenant.signInWithStateSealed",
+          "kotlin": "Tenant.signInWithStateSealed",
+          "gap": "The TypeScript head has no sealed state yet."
+        },
+        {
+          "name": "websocket",
+          "about": "Reach the services over the WebSocket carriage instead of their ports.",
+          "rust": "Tacenta::websocket",
+          "typescript": null,
+          "swift": "Tenant.websocket",
+          "kotlin": "Tenant.websocket",
+          "gap": "TypeScript always takes the carriage, so there is no switch."
+        }
+      ]
+    },
+    {
+      "name": "Client",
+      "about": "One signed-in user on one device.",
+      "calls": [
+        {
+          "name": "address",
+          "about": "This client's address, user/device.",
+          "rust": "Client::address",
+          "typescript": "Client.address",
+          "swift": "Client.address",
+          "kotlin": "Client.address"
+        },
+        {
+          "name": "find",
+          "about": "Look a username up in the tenant.",
+          "rust": "Client::find",
+          "typescript": "Client.find",
+          "swift": "Client.find",
+          "kotlin": "Client.find"
+        },
+        {
+          "name": "send",
+          "about": "Send to an address; the session establishes itself on first contact.",
+          "rust": "Client::send",
+          "typescript": "Client.send",
+          "swift": "Client.send",
+          "kotlin": "Client.send"
+        },
+        {
+          "name": "receive",
+          "about": "Fetch and decrypt what is waiting.",
+          "rust": "Client::receive",
+          "typescript": "Client.receive",
+          "swift": "Client.receive",
+          "kotlin": "Client.receive",
+          "gap": "Awaits the next non-empty batch on every head; inbound is the same one message at a time. A pending receive waits for mail outside the client's turn, so a send on the same client goes through meanwhile."
+        },
+        {
+          "name": "inbound",
+          "about": "Inbound messages one at a time, as they arrive: receive flattened into the language's stream.",
+          "rust": "Client::inbound",
+          "typescript": "Client.inbound",
+          "swift": "Client.inbound",
+          "kotlin": "Client.inbound",
+          "gap": "Rust: a Stream that borrows the client; TypeScript: an async iterator for `for await`; Swift: an Inbound that is an AsyncSequence; Kotlin: an Inbound with `asFlow()`. A message goes to whichever loop is running, so run one per client."
+        },
+        {
+          "name": "restoreOutcome",
+          "about": "What the sign-in found: fresh (no sessions restored), resumed, or sessionsDiscarded (the state was older than one already seen, so its sessions were dropped and the identity kept).",
+          "rust": "Client::restore_outcome",
+          "typescript": "Client.restoreOutcome",
+          "swift": "Client.restoreOutcome",
+          "kotlin": "Client.restoreOutcome",
+          "gap": "Only the sealed restore and a checkpoint can discard sessions, so on TypeScript, which has neither, it is fresh or resumed."
+        },
+        {
+          "name": "exportState",
+          "about": "The identity and live sessions, to persist and resume.",
+          "rust": "Client::export_state",
+          "typescript": "Client.exportState",
+          "swift": "Client.exportState",
+          "kotlin": "Client.exportState",
+          "gap": "The bytes carry private keys: app-private, encrypted at rest, only the latest copy kept, and exported again after every send and receive (a restore of an older copy rewinds sessions and, on the sealed path, is refused)."
+        },
+        {
+          "name": "exportStateSealed",
+          "about": "The state, sealed and authenticated (decision 0078).",
+          "rust": "Client::export_state_sealed",
+          "typescript": null,
+          "swift": "Client.exportStateSealed",
+          "kotlin": "Client.exportStateSealed",
+          "gap": "No sealed state on the TypeScript head yet."
+        },
+        {
+          "name": "attachSecureStore",
+          "about": "Attach the store that makes sealed state rollback-resistant.",
+          "rust": "Client::attach_secure_store",
+          "typescript": null,
+          "swift": "Client.attachSecureStore",
+          "kotlin": "Client.attachSecureStore",
+          "gap": "No secure-store hook on the TypeScript head yet."
+        },
+        {
+          "name": "reconnect",
+          "about": "Re-dial the directory and relay after a drop.",
+          "rust": "Client::reconnect",
+          "typescript": null,
+          "swift": null,
+          "kotlin": null,
+          "gap": "Every head reconnects on its own with backoff; only Rust exposes the call."
+        }
+      ]
+    },
+    {
+      "name": "Inbound",
+      "about": "A client's inbound messages one at a time, on the FFI heads; Rust's Stream and TypeScript's async iterator carry their own next.",
+      "calls": [
+        {
+          "name": "next",
+          "about": "The next message, awaiting mail if none is buffered.",
+          "rust": null,
+          "typescript": null,
+          "swift": "Inbound.next",
+          "kotlin": "Inbound.next",
+          "gap": "Rust and TypeScript iterate the stream itself; the Swift and Kotlin sugar is built on this call."
+        }
+      ]
+    }
+  ],
+  "unlisted": {
+    "about": "Public calls on the facade types that are deliberately not rows of the surface: the layer under the handle, helpers, and operations no head is asked to match. Naming them here is what makes the checks two-directional; a new public call must land as a row or here.",
+    "rust": {
+      "Tacenta": {
+        "connect_to": "connect with a server name: a parameter of connect, not a second call (the FFI heads expose it as Tacenta.connectTo)",
+        "connect_via": "connect with a document URL and trust: the development and private-certificate path",
+        "fetch_document": "the discovery fetch, exposed for callers that cache documents",
+        "from_discovered": "build from a fetched document under the origin rule",
+        "from_document": "build from a document the caller vouches for",
+        "from_endpoints": "build from known addresses; no discovery",
+        "with_connector": "reach the services through caller-opened streams (the WebAssembly head's path)",
+        "is_websocket": "accessor",
+        "websocket_url": "accessor",
+        "api_key": "accessor",
+        "server_name": "accessor",
+        "endpoints": "accessor",
+        "is_tls": "accessor",
+        "sign_in_device": "sign_in with a device number: a parameter, not a second call"
+      },
+      "Client": {
+        "connect": "the address layer under the handle (Config), kept for tests and deployments that know their addresses",
+        "connect_tls": "address layer",
+        "connect_with_identity": "address layer",
+        "connect_with_state": "address layer",
+        "connect_with_state_tls": "address layer",
+        "connect_with_state_sealed": "address layer",
+        "connect_with_state_sealed_tls": "address layer",
+        "sign_up": "address layer; the handle's sign_up is the row",
+        "sign_up_tls": "address layer",
+        "sign_in": "address layer; the handle's sign_in is the row",
+        "sign_in_tls": "address layer",
+        "sign_in_with_identity": "address layer",
+        "sign_in_with_state": "address layer; the handle's sign_in_with_state is the row",
+        "sign_in_with_state_tls": "address layer",
+        "sign_in_with_state_sealed_tls": "address layer",
+        "export_identity": "the identity alone; export_state carries it",
+        "checkpoint": "rollback detection on the unsealed path (decision 0078, anchor A), opt-in",
+        "rotate": "signed-prekey rotation, driven by the client itself",
+        "drain": "internal to receive",
+        "delivered_watermark": "diagnostic",
+        "has_open_session": "diagnostic",
+        "sign_in_with_state_sealed": "address layer; the handle's sign_in_with_state_sealed is the row",
+        "mail": "the signal a head that shares the client behind a lock waits on outside the lock, then drains; receive is that loop"
+      }
+    },
+    "ffi": {
+      "about": "Keyed by export: `Object.method` for a method or constructor, a bare name for a free function.",
+      "sign_up": "address layer, plaintext; the handle's signUp is the row",
+      "sign_up_tls": "address layer, TLS; the handle's signUp is the row",
+      "Client.connect": "the address layer under the handle (Config)",
+      "Client.sign_in": "address layer, plaintext; the handle's signIn is the row",
+      "Client.sign_in_tls": "address layer, TLS; the handle's signIn is the row",
+      "Client.sign_in_with_identity": "address layer",
+      "Client.sign_in_with_state": "address layer; the handle's signInWithState is the row",
+      "Client.sign_in_with_state_sealed": "address layer; the handle's signInWithStateSealed is the row",
+      "Client.connect_with_state": "address layer",
+      "Client.connect_with_state_sealed": "address layer",
+      "Client.export_identity": "the identity alone; export_state carries it",
+      "Tenant.connect_via": "connect with a document URL: the local development path",
+      "Tenant.is_websocket": "accessor"
+    }
+  },
+  "errors": {
+    "about": "Every head raises one error type whose kind an app branches on: Rust `Error::kind()` gives an `ErrorKind` (and `as_str()` its name as the other heads spell it); TypeScript throws `TacentaError` with a `kind` and the detail in `message`; Swift throws `ClientError` with one case per kind and the detail in `reason`; Kotlin throws `ClientException` with one subclass per kind and the detail in `reason`. The kind is the contract and may gain members, so handle the ones you branch on and let the rest fall through; the detail is a string for a log line, not for matching on. Checked by the same tests as the calls.",
+    "kinds": [
+      {
+        "name": "Network",
+        "about": "The network or the transport failed; retry later.",
+        "rust": "ErrorKind::Network",
+        "typescript": "\"network\"",
+        "swift": "ClientError.Network",
+        "kotlin": "ClientException.Network"
+      },
+      {
+        "name": "Discovery",
+        "about": "The service document could not be fetched or read.",
+        "rust": "ErrorKind::Discovery",
+        "typescript": "\"discovery\"",
+        "swift": "ClientError.Discovery",
+        "kotlin": "ClientException.Discovery"
+      },
+      {
+        "name": "UnknownTenant",
+        "about": "The API key selects no tenant.",
+        "rust": "ErrorKind::UnknownTenant",
+        "typescript": "\"unknownTenant\"",
+        "swift": "ClientError.UnknownTenant",
+        "kotlin": "ClientException.UnknownTenant"
+      },
+      {
+        "name": "UsernameTaken",
+        "about": "The username is already taken in this tenant.",
+        "rust": "ErrorKind::UsernameTaken",
+        "typescript": "\"usernameTaken\"",
+        "swift": "ClientError.UsernameTaken",
+        "kotlin": "ClientException.UsernameTaken"
+      },
+      {
+        "name": "InvalidUsername",
+        "about": "The username is not one the server accepts.",
+        "rust": "ErrorKind::InvalidUsername",
+        "typescript": "\"invalidUsername\"",
+        "swift": "ClientError.InvalidUsername",
+        "kotlin": "ClientException.InvalidUsername"
+      },
+      {
+        "name": "WeakPassword",
+        "about": "The password is too weak.",
+        "rust": "ErrorKind::WeakPassword",
+        "typescript": "\"weakPassword\"",
+        "swift": "ClientError.WeakPassword",
+        "kotlin": "ClientException.WeakPassword"
+      },
+      {
+        "name": "SignUpRefused",
+        "about": "A sign-up was refused for another reason: registration is closed, or the handle is reserved.",
+        "rust": "ErrorKind::SignUpRefused",
+        "typescript": "\"signUpRefused\"",
+        "swift": "ClientError.SignUpRefused",
+        "kotlin": "ClientException.SignUpRefused"
+      },
+      {
+        "name": "SignInRefused",
+        "about": "The credentials were refused, or the session expired; coarse by design.",
+        "rust": "ErrorKind::SignInRefused",
+        "typescript": "\"signInRefused\"",
+        "swift": "ClientError.SignInRefused",
+        "kotlin": "ClientException.SignInRefused"
+      },
+      {
+        "name": "IdentityMismatch",
+        "about": "The address is bound to a different device identity (trust on first use); also a sealed state offered to a user or device it was not sealed for.",
+        "rust": "ErrorKind::IdentityMismatch",
+        "typescript": "\"identityMismatch\"",
+        "swift": "ClientError.IdentityMismatch",
+        "kotlin": "ClientException.IdentityMismatch"
+      },
+      {
+        "name": "NotFound",
+        "about": "The address is not registered.",
+        "rust": "ErrorKind::NotFound",
+        "typescript": "\"notFound\"",
+        "swift": "ClientError.NotFound",
+        "kotlin": "ClientException.NotFound"
+      },
+      {
+        "name": "RateLimited",
+        "about": "The server asked for a slower pace: too many failed sign-ins, or the recipient's queue is full. Back off and retry.",
+        "rust": "ErrorKind::RateLimited",
+        "typescript": "\"rateLimited\"",
+        "swift": "ClientError.RateLimited",
+        "kotlin": "ClientException.RateLimited"
+      },
+      {
+        "name": "ServerFailure",
+        "about": "The server could not process the request; nothing was applied. Retry.",
+        "rust": "ErrorKind::ServerFailure",
+        "typescript": "\"serverFailure\"",
+        "swift": "ClientError.ServerFailure",
+        "kotlin": "ClientException.ServerFailure"
+      },
+      {
+        "name": "State",
+        "about": "The persisted state was refused: altered, older than the last send, or its secure-storage key is wrong; whatever else a SecureStore raises surfaces here. Do not delete the blob.",
+        "rust": "ErrorKind::State",
+        "typescript": "\"state\"",
+        "swift": "ClientError.State",
+        "kotlin": "ClientException.State"
+      },
+      {
+        "name": "StoreUnavailable",
+        "about": "The platform's secure store could not be reached (a Keychain before first unlock, a Keystore that needs the user). Nothing was refused: retry after unlock and keep the blob.",
+        "rust": "ErrorKind::StoreUnavailable",
+        "typescript": "\"storeUnavailable\"",
+        "swift": "ClientError.StoreUnavailable",
+        "kotlin": "ClientException.StoreUnavailable"
+      },
+      {
+        "name": "InvalidArgument",
+        "about": "The caller's own input was wrong: a malformed address or config, a message over the size limit.",
+        "rust": "ErrorKind::InvalidArgument",
+        "typescript": "\"invalidArgument\"",
+        "swift": "ClientError.InvalidArgument",
+        "kotlin": "ClientException.InvalidArgument"
+      },
+      {
+        "name": "Internal",
+        "about": "A protocol or cryptographic failure, or a bug: worth reporting.",
+        "rust": "ErrorKind::Internal",
+        "typescript": "\"internal\"",
+        "swift": "ClientError.Internal",
+        "kotlin": "ClientException.Internal"
+      }
+    ]
+  }
+}

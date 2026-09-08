@@ -1,0 +1,52 @@
+# cargo-about configuration for generating THIRD_PARTY_NOTICES.
+# The accepted list is every licence the shipped dependency graph carries;
+# it is permissive throughout, with MPL-2.0 (UniFFI and friends) the only
+# weak-copyleft entry and no strong-copyleft (GPL/AGPL) present. Where a
+# crate is dual-licensed, cargo-about picks the first accepted match, so the
+# order here prefers Apache-2.0 then MIT to match the product's own licence.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MPL-2.0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "Unlicense",
+    "CC0-1.0",
+    "0BSD",
+]
+
+# The union of every triple a shipped artifact is built for: the CLI (macOS,
+# Linux musl, Windows), the Swift xcframework (macOS + iOS + iOS sim), the
+# Android .aar (four ABIs), and the WebAssembly module the npm package carries.
+# The generated notices are therefore a superset — every crate any artifact
+# ships is attributed; a crate listed but absent from one artifact is
+# over-attribution, which is safe, never under-attribution, which is not.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "i686-linux-android",
+    "wasm32-unknown-unknown",
+]
+
+# Notices describe what ships, so build- and dev-only dependencies are out.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# A workspace crate with no third-party licence of its own is ours (Apache-2.0)
+# and is covered by the repo LICENSE, not this file.
+workarounds = ["ring"]

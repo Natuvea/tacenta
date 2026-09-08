@@ -1,0 +1,27 @@
+
+================================================================================
+Additional components not covered by the Rust dependency graph above
+================================================================================
+
+tacenta-core (Apache-2.0)
+-------------------------
+This product embeds tacenta-core, Natuvea's independent, clean-room
+implementation of the cryptographic protocol, licensed under Apache-2.0. Its
+source and full licence are at https://github.com/Natuvea/tacenta-core.
+
+Mozilla UniFFI runtime (MPL-2.0): native Android and Swift artifacts
+--------------------------------------------------------------------
+The Android (.aar) and Swift (xcframework) artifacts include runtime code
+generated with and linked against Mozilla's UniFFI, which is licensed under
+the Mozilla Public License 2.0. The full MPL-2.0 text appears in the licence
+list above. As MPL-2.0 §3.2 requires, the corresponding source for the
+MPL-covered files is available at https://github.com/mozilla/uniffi-rs at the
+version pinned in this project's Cargo.lock; you may obtain it there at no
+charge.
+
+JNA, Java Native Access (Apache-2.0): Android artifact only
+------------------------------------------------------------
+The Android (.aar) artifact declares a dependency on JNA (net.java.dev.jna),
+used under its Apache-2.0 licence. (JNA is dual-licensed Apache-2.0 or
+LGPL-2.1; the Apache-2.0 terms are selected here.) The full Apache-2.0 text
+appears in the licence list above.

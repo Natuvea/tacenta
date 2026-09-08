@@ -1,0 +1,39 @@
+[package]
+name = "tacenta-accounts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The account and tenant model — Tacenta's control-plane identity layer.
+# Tenants (customer orgs, each with an API key) sign up with a unique username,
+# email, and password; their users with a unique username and password
+# (argon2id-hashed). A user's username is
+# their messaging handle. Uniqueness is global for tenants, per-tenant for
+# users. 2FA and passkeys are later, additive layers. The verified protocol
+# core (wire/state/directory/relay) stays tenant-agnostic; this crate is where
+# tenancy lives. In-memory now — the natural first consumer of the durable
+# store (decision record 0030).
+
+[dependencies]
+argon2 = "0.5"
+sha2 = "0.11"
+rand = "0.9"
+# The plaintext API key and session token are the only copies that ever exist
+# (the store keeps hashes), so they erase on drop.
+zeroize = { version = "1", features = ["derive"] }
+# The Postgres-backed store (decision record 0039), behind the `postgres`
+# feature so the heavy sqlx dependency is off by default — the in-memory store
+# and everything that depends on it (transport, client) pull none of it.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "postgres",
+    "migrate",
+    "macros",
+], optional = true }
+
+[features]
+postgres = ["dep:sqlx"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

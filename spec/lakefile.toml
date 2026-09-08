@@ -1,0 +1,9 @@
+name = "tacenta-spec"
+defaultTargets = ["Tacenta"]
+
+[[lean_lib]]
+name = "Tacenta"
+
+[[lean_exe]]
+name = "vectors"
+root = "Vectors"

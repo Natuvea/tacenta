@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# Built from crates/tacenta-wasm by `npm run build:wasm`; not source.
+wasm/

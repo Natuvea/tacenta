@@ -1,0 +1,42 @@
+[package]
+name = "tacenta-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The server binary: binds the directory service and the relay server over
+# one shared directory, so a client can point at a running Tacenta. The
+# crypto verifiers (connection auth, registration proof-of-possession) live
+# in the library so they are reusable and testable; the binary is a thin
+# env-configured entrypoint.
+
+[features]
+# Run accounts on PostgreSQL (via a `database_url`) instead of the in-memory
+# snapshot store. Off by default; enables the account crate's Postgres store.
+postgres = ["tacenta-accounts/postgres"]
+
+[lib]
+name = "tacenta_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tacenta-server"
+path = "src/main.rs"
+
+[dependencies]
+tacenta-core = { workspace = true }
+tacenta-relay = { workspace = true }
+tacenta-directory = { workspace = true }
+tacenta-accounts = { workspace = true }
+tacenta-discovery = { workspace = true }
+tacenta-transport = { workspace = true }
+rand = "0.9"
+# "signal" for graceful shutdown (Ctrl-C → persist → exit); "time" for the
+# periodic snapshot interval.
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "sync", "macros", "signal", "time"] }
+
+[dev-dependencies]
+tacenta-wire = { workspace = true }
+futures-util = "0.3"
+rcgen = "0.13"

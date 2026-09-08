@@ -1,0 +1,38 @@
+[package]
+name = "tacenta-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The `tacenta` command-line tool. Its first job is the quickstart: `tacenta
+# try <api-key>` signs up two throwaway users in your tenant, sends an
+# end-to-end encrypted message from one to the other, and echoes it back — the
+# fastest path from signing up to a first message, with the crypto on your
+# machine.
+
+[[bin]]
+name = "tacenta"
+path = "src/main.rs"
+
+[dependencies]
+tacenta-client = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net"] }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "0.5"
+rpassword = "7"
+# The gateway's key-management API is plain HTTPS/JSON, unlike the four TCP
+# services `try` talks to. This is the workspace's first real HTTP client;
+# rustls-tls matches tacenta-transport's own TLS stack rather than pulling in
+# native-tls/OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+# For `gateway`'s own tests: a real gateway on a loopback port, so the tests
+# exercise an actual HTTP round trip through `reqwest` rather than an
+# in-process oneshot call.
+tacenta-gateway = { workspace = true }
+tacenta-accounts = { workspace = true }
+axum = "0.8"
+serde_json = "1"

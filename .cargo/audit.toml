@@ -1,0 +1,39 @@
+# Advisory exceptions, each with the reason it is one.
+#
+# `tooling/check-advisories.sh` runs `cargo audit` against this file, and for
+# the first entry it also proves the premise rather than trusting this comment.
+# An exception whose justification nothing checks is a suppression.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 -- Marvin attack on `rsa 0.9.10`, a key-recovery timing
+    # side channel. Medium severity and *no fixed upgrade is available*, so
+    # this cannot be resolved by bumping.
+    #
+    # Not reachable here. `rsa` arrives only through `sqlx-mysql`, and this
+    # workspace takes `sqlx` with `default-features = false` and the `postgres`
+    # driver alone (crates/tacenta-accounts/Cargo.toml), so `sqlx-mysql` is
+    # never compiled. `cargo audit` reads Cargo.lock, which lists every crate
+    # that *could* be selected, and cannot see that nothing selects this one.
+    #
+    # The premise is enforced: check-advisories.sh fails if `sqlx-mysql` ever
+    # appears in `cargo tree -e normal`. Revisit if MySQL support is ever
+    # wanted -- at which point this ignore must go, not the check.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0173 -- `proc-macro-error2` is unmaintained. A warning, not a
+    # vulnerability, and there is nothing to fix. It is a compile-time
+    # proc-macro helper, required only by `hax-lib-macros`; proc-macros run
+    # during the build and are never part of the shipped artifact, so an
+    # unmaintained one carries no runtime exposure. Revisit if it ever gains a
+    # runtime path, or when `hax-lib-macros` drops it.
+    "RUSTSEC-2026-0173",
+
+    # RUSTSEC-2025-0134 -- `rustls-pemfile` is unmaintained (its function has
+    # moved into `rustls-pki-types`). A warning, not a vulnerability, and no
+    # fixed version exists because it is deprecated rather than broken. It
+    # parses the TLS certificate and key files this operator configures at
+    # startup (`tacenta-transport`), not attacker-controlled network input.
+    # Revisit when the TLS stack drops it.
+    "RUSTSEC-2025-0134",
+]

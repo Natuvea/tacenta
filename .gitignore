@@ -1,0 +1,26 @@
+# Cargo build output, at any depth.
+target/
+/spec/.lake
+/verification/.lake
+.DS_Store
+/tacenta_wire.llbc
+/tacenta_state.llbc
+/tacenta_directory_core.llbc
+/bindings/swift/dist
+/bindings/swift/.staging
+/bindings/swift/.build
+/bindings/android/dist
+/bindings/android/.staging
+/bindings/android/lib/build
+/bindings/android/lib/src/main/java
+/bindings/android/lib/src/main/jniLibs
+/bindings/android/.gradle
+/bindings/android/conformance/build
+/bindings/android/conformance/.gradle
+/bindings/android/conformance/.kotlin
+/bindings/android/reference/build
+/bindings/android/reference/.gradle
+/bindings/android/reference/.kotlin
+/sdk/typescript/reference
+/sdk/typescript/LICENSE
+/sdk/typescript/THIRD_PARTY_NOTICES

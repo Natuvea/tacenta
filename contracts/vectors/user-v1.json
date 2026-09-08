@@ -1,0 +1,26 @@
+{
+  "format": "user-v1",
+  "traces": [
+    {"ops": [
+      {"op": "link"},
+      {"op": "append", "kind": "dm", "payload": "aa"},
+      {"op": "append", "kind": "group", "payload": "bb"},
+      {"op": "ack", "device": 0, "n": 1, "accepted": true},
+      {"op": "link"},
+      {"op": "append", "kind": "receipt", "payload": "cc"},
+      {"op": "ack", "device": 1, "n": 3, "accepted": true}
+    ], "final": {"cursors": [1, 3], "delivered": 1, "pending_per_device": [[{"kind": "group", "payload": "bb"}, {"kind": "receipt", "payload": "cc"}], []]}},
+    {"ops": [
+      {"op": "append", "kind": "dm", "payload": "aa"}
+    ], "final": {"cursors": [], "delivered": 1, "pending_per_device": []}},
+    {"ops": [
+      {"op": "link"},
+      {"op": "append", "kind": "dm", "payload": "aa"},
+      {"op": "ack", "device": 1, "n": 1, "accepted": false},
+      {"op": "ack", "device": 0, "n": 0, "accepted": false},
+      {"op": "ack", "device": 0, "n": 2, "accepted": false},
+      {"op": "ack", "device": 0, "n": 1, "accepted": true}
+    ], "final": {"cursors": [1], "delivered": 1, "pending_per_device": [[]]}},
+    {"ops": [], "final": {"cursors": [], "delivered": 0, "pending_per_device": []}}
+  ]
+}

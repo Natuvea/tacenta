@@ -1,0 +1,16 @@
+[package]
+name = "tacenta-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The service document: the one JSON object a server publishes at
+# `/.well-known/tacenta` and a tenant handle reads to learn where the four
+# services are and how to trust them (decision 0090). One definition,
+# shared by the gateway that writes it and the client that reads it, so the
+# wire contract is a type rather than two structs kept in step by a test.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

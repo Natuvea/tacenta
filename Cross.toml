@@ -1,0 +1,9 @@
+# Cross-compilation config (github.com/cross-rs/cross), used to build the
+# Linux arm64 CLI binary on an x86_64 box. The stock cross image carries a
+# protoc too old for the protobuf code generation, so a modern one is installed
+# into the build image.
+[target.aarch64-unknown-linux-musl]
+pre-build = [
+  "apt-get update && apt-get install --assume-yes curl unzip",
+  "curl -sSfL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v23.4/protoc-23.4-linux-x86_64.zip && unzip -oq /tmp/protoc.zip -d /usr/local && chmod 755 /usr/local/bin/protoc"
+]

@@ -1,0 +1,37 @@
+[package]
+name = "tacenta-ffi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The foreign-language binding layer: exports the `tacenta-client` facade
+# through UniFFI, so the same Rust client drives Swift and Kotlin SDKs. The
+# exported API is async (Swift `async throws`, Kotlin `suspend`); each call
+# spawns its work on the crate's own runtime and awaits the task.
+
+[lib]
+name = "tacenta_ffi"
+# cdylib for the desktop bindings' dynamic load, staticlib for the Apple
+# xcframework (an iOS app links the SDK statically), lib for the tests.
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+tacenta-client = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# `Shared`, for the one in-flight receive every caller awaits.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Without `cli`: the bindgen entrypoint is crates/uniffi-bindgen, so the
+# generator's own dependencies stay out of the library an app links.
+uniffi = "0.29"
+
+[dev-dependencies]
+# The surface test reads sdk/surface.json.
+serde_json = "1"
+tacenta-server = { workspace = true }
+tacenta-transport = { workspace = true }
+tacenta-accounts = { workspace = true }
+tacenta-discovery = { workspace = true }
+tacenta-gateway = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

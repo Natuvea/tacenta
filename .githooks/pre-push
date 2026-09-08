@@ -1,0 +1,87 @@
+#!/bin/sh
+# Reject unformatted Rust before it reaches the remote — the gate CI enforces
+# with `cargo fmt --check`, run here so it fails on your machine first.
+#
+# Activate once per clone:  git config core.hooksPath .githooks
+#
+# Missing toolchain skips rather than blocks, so a docs-only contributor without
+# Rust installed is not stuck.
+set -e
+
+if ! command -v cargo >/dev/null 2>&1; then
+	echo "pre-push: cargo not found, skipping the rustfmt check" >&2
+	exit 0
+fi
+
+echo "pre-push: cargo fmt --check"
+if ! cargo fmt --check; then
+	echo "" >&2
+	echo "pre-push: rustfmt found unformatted code (see the diff above)." >&2
+	echo "          run 'cargo fmt', commit, and push again." >&2
+	exit 1
+fi
+
+# A workflow file that does not parse takes CI down silently: no job starts, the
+# run fails in zero seconds, and nothing distinguishes it from a real break.
+# This cannot be checked from inside the workflow it protects, so it runs here.
+echo "pre-push: workflow syntax"
+if ! bash tooling/check-workflows.sh; then
+	echo "" >&2
+	echo "pre-push: a workflow file will not parse, so CI would not run at all." >&2
+	exit 1
+fi
+
+# Advisories are cheap to check and expensive to discover late. This runs here
+# as well as in CI because a new dependency arrives on someone's machine first.
+echo "pre-push: dependency advisories"
+if ! bash tooling/check-advisories.sh; then
+	echo "" >&2
+	echo "pre-push: a dependency carries a known advisory." >&2
+	echo "          see .cargo/audit.toml for the exceptions and their reasons." >&2
+	exit 1
+fi
+
+# The licensing position is enforced by asking the build graph, not by
+# convention.
+echo "pre-push: no AGPL in the product"
+if ! bash tooling/check-no-agpl.sh; then
+	echo "" >&2
+	echo "pre-push: the product build graph carries strong-copyleft code." >&2
+	exit 1
+fi
+
+# The graph check above asks what the product *builds*; this asks what the
+# repository *carries*. They are not the same question.
+echo "pre-push: no build output tracked"
+if ! bash tooling/check-tree-clean.sh; then
+	echo "" >&2
+	echo "pre-push: build output is tracked. Widen .gitignore and un-add it." >&2
+	exit 1
+fi
+
+# Documentation against the tree. Cheap, and the failure it prevents is the one
+# an auditor reads first.
+echo "pre-push: documentation matches the system"
+if ! bash tooling/check-docs-match.sh; then
+	echo "" >&2
+	echo "pre-push: a document contradicts the tree." >&2
+	exit 1
+fi
+
+# The SDK surface manifest and its rendered grid stay in step; the heads'
+# own tests check the manifest against the code (decision 0090, choice 6).
+echo "pre-push: surface manifest and grid"
+if ! bash tooling/check-surface.sh; then
+	echo "" >&2
+	echo "pre-push: sdk/SURFACE.md is stale; run python3 tooling/surface-grid.py and commit it." >&2
+	exit 1
+fi
+
+# One version everywhere it is declared, the one the next tag carries
+# (decision 0090, the list before the packages, item 3).
+echo "pre-push: one version"
+if ! bash tooling/check-versions.sh; then
+	echo "" >&2
+	echo "pre-push: the packages disagree on their version; see tooling/check-versions.sh." >&2
+	exit 1
+fi

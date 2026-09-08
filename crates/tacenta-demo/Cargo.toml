@@ -1,0 +1,22 @@
+[package]
+name = "tacenta-demo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tacenta-demo"
+path = "src/main.rs"
+
+# An application wiring the whole stack together into a runnable demo.
+[dependencies]
+tacenta-core = { workspace = true }
+tacenta-relay = { workspace = true }
+tacenta-directory = { workspace = true }
+tacenta-transport = { workspace = true }
+tacenta-server = { workspace = true }
+tacenta-wire = { workspace = true }
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros"] }
+rand = "0.9"
+futures-util = "0.3"

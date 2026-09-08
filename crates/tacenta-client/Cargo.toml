@@ -1,0 +1,45 @@
+[package]
+name = "tacenta-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The high-level client SDK facade: one `Client` type that wraps identity,
+# the directory, the relay, and sessions into connect / send / receive.
+# This is what the platform bindings (UniFFI/wasm) will export.
+[dependencies]
+tacenta-core = { workspace = true }
+tacenta-relay = { workspace = true }
+tacenta-directory = { workspace = true }
+tacenta-accounts = { workspace = true }
+tacenta-transport = { workspace = true, features = ["ws"] }
+tacenta-wire = { workspace = true }
+rand = "0.9"
+zeroize = "1"
+tokio = { version = "1", features = ["io-util", "sync", "macros"] }
+# `Client::inbound` is a `Stream`; nothing else of the crate is used.
+futures-util = { version = "0.3", default-features = false }
+# The service document a tenant handle fetches (decision 0090).
+tacenta-discovery = { workspace = true }
+serde_json = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["net", "rt", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The reconnect backoff sleeps on the browser's timer (decision 0090).
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+[features]
+# A no-op feature kept for compatibility with invocations that name it; the
+# provider is unconditional.
+open-provider = ["tacenta-core/open-provider"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "sync", "macros"] }
+tacenta-server = { workspace = true }
+tacenta-gateway = { workspace = true }
+tacenta-accounts = { workspace = true }
+axum = "0.8"
+tacenta-core = { workspace = true }

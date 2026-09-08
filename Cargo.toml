@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+# tooling/check-no-agpl.sh enforces that the product graph carries no AGPL or
+# GPL code.
+members = ["crates/tacenta-wire", "crates/tacenta-state", "crates/tacenta-relay", "crates/tacenta-directory-core", "crates/tacenta-directory", "crates/tacenta-transport", "crates/tacenta-core", "crates/tacenta-accounts", "crates/tacenta-discovery", "crates/tacenta-client", "crates/tacenta-ffi", "crates/uniffi-bindgen", "crates/tacenta-server", "crates/tacenta-gateway", "crates/tacenta-cli", "crates/tacenta-echo", "crates/tacenta-demo", "crates/tacenta-wasm"]
+
+[workspace.package]
+# The Rust crates are not published to crates.io: the SDK ships as the npm,
+# Maven/AAR, Swift, and CLI artifacts built from them. `publish = false` keeps
+# any crate from reaching a registry by accident. Every crate takes this.
+publish = false
+# The version the next release tag carries; tooling/check-versions.sh keeps
+# every package at it and refuses a tag that disagrees (decision 0090).
+version = "1.11.5"
+edition = "2024"
+# The SDK is Apache-2.0, matching open-tacenta. Every crate inherits it via
+# license.workspace = true.
+license = "Apache-2.0"
+
+# Single pin point for the protocol library. Bump the tag here and nowhere
+# else.
+[workspace.dependencies]
+tacenta-wire = { path = "crates/tacenta-wire", version = "1" }
+tacenta-state = { path = "crates/tacenta-state", version = "1" }
+tacenta-relay = { path = "crates/tacenta-relay", version = "1" }
+tacenta-directory-core = { path = "crates/tacenta-directory-core", version = "1" }
+tacenta-directory = { path = "crates/tacenta-directory", version = "1" }
+tacenta-transport = { path = "crates/tacenta-transport", version = "1" }
+tacenta-core = { path = "crates/tacenta-core", version = "1" }
+tacenta-accounts = { path = "crates/tacenta-accounts", version = "1" }
+tacenta-discovery = { path = "crates/tacenta-discovery", version = "1" }
+tacenta-client = { path = "crates/tacenta-client", version = "1" }
+tacenta-server = { path = "crates/tacenta-server", version = "1" }
+tacenta-gateway = { path = "crates/tacenta-gateway", version = "1" }
+# The open-tacenta protocol implementation, pinned by revision
+# above. Renamed because both crates are called `tacenta-core`.
+open-tacenta = { git = "https://github.com/Natuvea/tacenta-core", rev = "30ccf73a621189f36a0116ad91ebd2113b4fcc04", package = "tacenta-core" }
+# The `rand_core` generation open-tacenta's curve dependencies still require.
+# See `crypto::open::RngBridge` for why both are present.
+rand_core_06 = { package = "rand_core", version = "0.6" }
+
+# The release profile the packages and the CLI ship with (decision 0090). Whole-program LTO and one codegen unit
+# are what shrink a static library that carries every crate of the product;
+# symbols are stripped from the linked binaries (the CLI, the Android .so),
+# and the static slices the xcframework carries are stripped by the build
+# script. Panics stay `unwind`: UniFFI catches a panic at the boundary and
+# reports it as an error, and `abort` would end the host app instead.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# open-tacenta sets overflow checks on its own release profile,
+# but a dependency takes the root workspace's profile, so the setting is
+# restated here for its crates: the product ships the protocol code with the
+# checks its authors intended.
+[profile.release.package."tacenta-core@0.0.0"]
+overflow-checks = true
+[profile.release.package.tacenta-ratchet]
+overflow-checks = true
+[profile.release.package.tacenta-session]
+overflow-checks = true
+[profile.release.package.tacenta-kdf]
+overflow-checks = true
+[profile.release.package.tacenta-protobuf]
+overflow-checks = true
+[profile.release.package.tacenta-kem]
+overflow-checks = true
+[profile.release.package.tacenta-erasure]
+overflow-checks = true
+[profile.release.package.tacenta-braid]
+overflow-checks = true
+[profile.release.package.tacenta-spqr]
+overflow-checks = true
+[profile.release.package.tacenta-triple]
+overflow-checks = true

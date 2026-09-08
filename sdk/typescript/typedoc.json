@@ -1,0 +1,13 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/index.ts"],
+  "out": "reference",
+  "name": "@tacenta/sdk",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "githubPages": false,
+  "hideGenerator": true,
+  "navigation": { "includeCategories": false },
+  "sort": ["source-order"]
+}

@@ -1,0 +1,28 @@
+[package]
+name = "tacenta-echo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The echo bot: a first-class reference agent. It connects as an ordinary
+# client, keeps its identity across restarts (so peers who verified it stay
+# verified), and echoes every message back to its sender — the canonical
+# agent-to-agent test peer and a live end-to-end proof of the client stack.
+
+[lib]
+name = "tacenta_echo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tacenta-echo"
+path = "src/main.rs"
+
+[dependencies]
+tacenta-client = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tacenta-server = { workspace = true }
+tacenta-transport = { workspace = true }
+tacenta-accounts = { workspace = true }

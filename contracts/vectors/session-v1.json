@@ -1,0 +1,24 @@
+{
+  "format": "session-v1",
+  "traces": [
+    {"ops": [
+      {"op": "append", "kind": "dm", "payload": ""},
+      {"op": "append", "kind": "group", "payload": "0001"},
+      {"op": "ack", "n": 1, "accepted": true},
+      {"op": "append", "kind": "receipt", "payload": "ff"}
+    ], "final": {"cursor": 1, "pending": [{"kind": "group", "payload": "0001"}, {"kind": "receipt", "payload": "ff"}]}},
+    {"ops": [
+      {"op": "append", "kind": "dm", "payload": "aa"},
+      {"op": "ack", "n": 1, "accepted": true},
+      {"op": "append", "kind": "dm", "payload": "bb"},
+      {"op": "ack", "n": 2, "accepted": true}
+    ], "final": {"cursor": 2, "pending": []}},
+    {"ops": [
+      {"op": "append", "kind": "dm", "payload": "aa"},
+      {"op": "ack", "n": 0, "accepted": false},
+      {"op": "ack", "n": 2, "accepted": false},
+      {"op": "ack", "n": 1, "accepted": true}
+    ], "final": {"cursor": 1, "pending": []}},
+    {"ops": [], "final": {"cursor": 0, "pending": []}}
+  ]
+}

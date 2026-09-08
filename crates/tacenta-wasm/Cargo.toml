@@ -1,0 +1,49 @@
+[package]
+name = "tacenta-wasm"
+version.workspace = true
+edition.workspace = true
+
+# The TypeScript head (decision 0090): the client crate
+# compiled to WebAssembly, with the byte transport supplied from JavaScript
+# (a WebSocket per service) and TLS left to the browser. Nothing of the
+# protocol or the sessions is reimplemented; this crate is the seam between
+# the Rust facade and `@tacenta/sdk`.
+# Not published to a registry (decision 0090), like every crate.
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# `cdylib` is what wasm-bindgen links into the module the package ships;
+# `rlib` lets the workspace's native builds (clippy, tests) compile the crate
+# as an ordinary library.
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+# Size over speed for a module every page downloads.
+# Under the release profile's LTO the module carries `memory.copy`, which
+# the wasm-opt wasm-pack bundles refuses unless told the feature is on.
+wasm-opt = ["-Os", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[dependencies]
+tacenta-client = { workspace = true }
+tacenta-discovery = { workspace = true }
+tacenta-transport = { workspace = true }
+tacenta-accounts = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+# `Shared`, for the one in-flight receive every caller awaits.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+js-sys = "0.3"
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "io-util"] }
+# The random backends behind the crypto need telling they are in a browser:
+# the `js` feature for the 0.2 line open-tacenta's curves use, and the
+# `wasm_js` feature for the 0.3 line `rand` uses (enough on its own since
+# getrandom 0.3.4; no `--cfg` is needed).
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[features]
+# Tenant creation through the carriage, for the head's own end-to-end test
+# against a local server; not part of the published package.
+harness = []

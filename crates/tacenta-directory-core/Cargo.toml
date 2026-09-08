@@ -1,0 +1,15 @@
+[package]
+name = "tacenta-directory-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The pure trust core of the directory: the trust-on-first-use registration
+# decision and the rotation decision, as functions of one device's current
+# identity binding. No HashMap, no I/O, no dependencies — deliberately a leaf
+# crate in the pure subset a Charon/Aeneas refinement can translate, so the
+# trust logic (unlike the HashMap-backed `Directory` that wraps it) is
+# mechanically refined to the Lean spec. See docs/decisions/0041 and
+# spec/Tacenta/Directory.lean.
+[dependencies]

@@ -1,0 +1,47 @@
+[package]
+name = "tacenta-gateway"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The HTTP control-plane gateway: a small JSON API in front of the account
+# store so browsers (and any HTTP client) can create a tenant and get an API
+# key. The account service itself speaks a TCP framed binary protocol a browser
+# cannot; this bridges to it by reusing `AccountStore` directly. See decision
+# record 0046. v1 is tenant signup only (POST /v1/tenants), with per-IP rate
+# limiting and CORS scoped to the website origin.
+
+[features]
+# Run accounts on PostgreSQL (the shared durable store) instead of in-memory.
+postgres = ["tacenta-accounts/postgres"]
+
+[lib]
+name = "tacenta_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tacenta-gateway"
+path = "src/main.rs"
+
+[dependencies]
+tacenta-accounts = { workspace = true }
+tacenta-discovery = { workspace = true }
+# For the WebSocket carriage: the gateway dials the four services itself,
+# over the same trust the service document tells clients to use.
+tacenta-transport = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+bytes = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tacenta-server = { workspace = true }
+tacenta-transport = { workspace = true, features = ["ws"] }
+tacenta-relay = { workspace = true }

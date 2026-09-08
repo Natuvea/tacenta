@@ -1,0 +1,42 @@
+{
+  "name": "@tacenta/sdk",
+  "version": "1.11.5",
+  "description": "End-to-end encrypted messaging for your app: the Tacenta client for browsers and Node.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/socket.js",
+    "dist/socket.d.ts",
+    "wasm",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/tacenta-wasm --target web --out-dir ../../sdk/typescript/wasm --out-name tacenta --release && : > wasm/.npmignore",
+    "build:wasm:harness": "wasm-pack build ../../crates/tacenta-wasm --target web --out-dir ../../sdk/typescript/wasm --out-name tacenta --release -- --features harness && : > wasm/.npmignore",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test",
+    "prepack": "cp ../../LICENSE ../../THIRD_PARTY_NOTICES . && npm run build:wasm && npm run build",
+    "reference": "typedoc",
+    "test:shipped": "TACENTA_SHIPPED=1 node --test test/shipped.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typedoc": "^0.28.20",
+    "typescript": "^5.6.0"
+  }
+}

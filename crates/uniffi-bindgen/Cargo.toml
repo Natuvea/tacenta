@@ -1,0 +1,20 @@
+[package]
+name = "tacenta-uniffi-bindgen"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The bindgen entrypoint, as its own crate rather than a binary of
+# tacenta-ffi: a Cargo feature is per package, so the `cli` feature the
+# entrypoint needs would pull the whole of uniffi_bindgen (clap, goblin,
+# the UDL parser, the templates) into the library an app links, about a
+# fifth of the static slice. The library depends on uniffi without it.
+# `cargo run -p tacenta-uniffi-bindgen -- generate ...` is the only use.
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+uniffi = { version = "0.29", features = ["cli"] }

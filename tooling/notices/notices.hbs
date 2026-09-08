@@ -1,0 +1,16 @@
+Third-party notices
+===================
+
+This artifact includes third-party software under the licences below. Each
+entry is a licence, the crates that use it, and its full text. Tacenta's own
+code is licensed separately; see the LICENSE file in the package.
+
+{{#each licenses}}
+================================================================================
+{{{name}}} ({{{id}}})
+
+Used by:
+{{#each used_by}}  - {{crate.name}} {{crate.version}}
+{{/each}}
+{{{text}}}
+{{/each}}
