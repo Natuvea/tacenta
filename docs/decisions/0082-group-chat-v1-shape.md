@@ -83,7 +83,7 @@ Each lists the options considered, the pick, why, and what it costs.
   proving the *removal invariant* first** (a removed member cannot derive
   post-removal keys), since that is the security-load-bearing property.
 - *Residual:* a temporary "group layer is tested, not yet proved" caveat, which
-  **is stated in `docs/claims.md` / the assurance page from the start**.
+  **is stated in `docs/claims.md` from the day the layer lands**.
 
 ### 7. Developer try-it experience
 - **Pick: build both** `tacenta-group-demo` (scripted; doubles as the integration

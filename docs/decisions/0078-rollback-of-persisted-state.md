@@ -136,7 +136,7 @@ that comes second.
 - **Restore costs the user their undelivered messages, and nothing else.**
   Anything queued under a session that is discarded cannot be decrypted by the
   fresh session that replaces it. Peers see a new session rather than a changed
-  identity, so there is no safety-number event and nothing alarming on the other
+  identity, so there is no key-fingerprint event and nothing alarming on the other
   side. This is a documented consequence, not a redesign.
 
 ## Prerequisite

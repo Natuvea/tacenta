@@ -19,8 +19,8 @@ reasoning is sound:
 
 > Deliberately not a `CryptoProvider` itself: that trait's `generate`/
 > `from_identity` have no room for a directory argument, and a durable store is
-> a concrete deployment choice about one provider, not another interchangeable
-> provider the conformance oracle should compare `Party` against. **A real
+> a concrete deployment choice, not a provider for the conformance suite to
+> check. **A real
 > caller uses this type directly.**
 
 The last sentence describes a caller that does not exist. A caller can only
@@ -42,8 +42,7 @@ which most will not.
 **B. Change `CryptoProvider` so a durable provider can be constructed.** Add a
 configuration parameter to `generate`/`from_identity`. Rejected for now: that
 trait is the provider seam kept deliberately narrow, and widening a seam
-to carry a deployment concern is how seams stop being seams. It also makes the
-conformance oracle compare providers that are no longer interchangeable.
+to carry a deployment concern is how seams stop being seams.
 
 **C. Keep both, and make the durable type reachable.** Re-export it, document
 it, add `connect_with_dir`. Rejected as the primary answer: it leaves two
@@ -93,8 +92,7 @@ provider on no shipping path.
 
 - **A caller who genuinely cannot hold the bytes.** If an embedded or
   constrained client needs the library to own its own file, option B becomes the
-  question again, and it should be reopened as a change to the seam rather than
-  smuggled in as a second provider.
+  question again, and it should be reopened as a change to the seam.
 - **Anti-rollback proving impossible at the utility layer.** If the anchor turns
   out to need provider state to be meaningful, the layering above is wrong and
   this record is what gets revisited first.
@@ -113,7 +111,7 @@ reachable.
 Marking it provisional would imply a choice is open that the API already closed.
 What remains genuinely open is whether to *also* offer a library-owned-file mode
 later, and that is recorded above under what would reopen this, as a change to
-the seam rather than a second provider.
+the seam.
 
 ## Status
 

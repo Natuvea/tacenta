@@ -47,6 +47,6 @@ targets = [
 # Notices describe what ships, so build- and dev-only dependencies are out.
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
-# A workspace crate with no third-party licence of its own is ours (Apache-2.0)
-# and is covered by the repo LICENSE, not this file.
+# Crates whose licence files cargo-about cannot read directly and carries a
+# built-in workaround for.
 workarounds = ["ring"]

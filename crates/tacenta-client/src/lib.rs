@@ -316,25 +316,24 @@ mod tests {
     /// is private, so this lives in the crate rather than the fuzz integration
     /// test.
     #[test]
-    fn a_blob_without_a_provider_restores_as_legacy() {
-        // What every blob written before the provider was recorded is, because
-        // nothing else could have written one.
+    fn a_blob_without_a_provider_tag_restores_as_untagged() {
+        // The shape of every blob written before the envelope carried a tag.
         let identity = [0xaa_u8; 36];
         let sessions = [0xbb_u8; 8];
         let mut blob = (identity.len() as u32).to_be_bytes().to_vec();
         blob.extend_from_slice(&identity);
         blob.extend_from_slice(&sessions);
 
-        let split = split_state(&blob).expect("legacy blob parses");
-        assert_eq!(split.provider, SessionProvider::Legacy);
+        let split = split_state(&blob).expect("untagged blob parses");
+        assert_eq!(split.provider, SessionProvider::Untagged);
         assert_eq!(split.identity, identity);
         assert_eq!(split.sessions, sessions);
-        assert_eq!(split.prekeys, None, "a legacy blob carries no prekeys");
+        assert_eq!(split.prekeys, None, "an untagged blob carries no prekeys");
     }
 
     #[test]
-    fn a_tagged_blob_round_trips_either_provider() {
-        for provider in [SessionProvider::Legacy, SessionProvider::OpenTacenta] {
+    fn a_tagged_blob_round_trips_its_tag() {
+        for provider in [SessionProvider::Untagged, SessionProvider::OpenTacenta] {
             let identity = [0xcc_u8; 36];
             let sessions = [0xdd_u8; 4];
             let mut blob = vec![STATE_TAGGED, STATE_VERSION_2, provider.to_byte()];
@@ -401,7 +400,7 @@ mod tests {
             b.extend_from_slice(&identity);
             b
         };
-        let mut bad_version = vec![STATE_TAGGED, 0x09, SessionProvider::Legacy.to_byte()];
+        let mut bad_version = vec![STATE_TAGGED, 0x09, SessionProvider::Untagged.to_byte()];
         bad_version.extend_from_slice(&body);
         assert!(split_state(&bad_version).is_err());
 
@@ -474,7 +473,7 @@ mod tests {
             let mut b = vec![
                 STATE_TAGGED,
                 STATE_VERSION_3,
-                SessionProvider::Legacy.to_byte(),
+                SessionProvider::Untagged.to_byte(),
             ];
             put_lp(&mut b, &[0x11; 36]); // identity
             put_lp(&mut b, &[]); // sessions
@@ -551,7 +550,7 @@ mod tests {
         let body = vec![
             STATE_TAGGED,
             STATE_VERSION_3,
-            SessionProvider::Legacy.to_byte(),
+            SessionProvider::Untagged.to_byte(),
         ];
         let mut sealed = vec![STATE_TAGGED, STATE_VERSION_5];
         sealed.extend_from_slice(&seal(&key, 1, &body));
@@ -595,7 +594,7 @@ pub enum Error {
     /// The persisted-state authenticator was refused, or the secure-storage key
     /// behind it was unavailable (decision 0078, anchor B). A refused
     /// authenticator on a restore means the state file was altered — including
-    /// the deliberate forgery the rollback finding is about, which is now caught rather than
+    /// the deliberate forgery a file-rewriting attacker exploits, which is now caught rather than
     /// resumed.
     SecureStore(String),
     /// The platform's secure store could not be reached: a Keychain before
@@ -839,28 +838,24 @@ fn device_addr(peer: &Address) -> DeviceAddr {
     DeviceAddr::new(peer.user.clone(), u32::from(peer.device))
 }
 
-// The provider a session was established under is a property of `P`, so the
-// tag is `SessionProvider::of::<P>()` rather than a constant: a constant
-// would write the wrong tag into a blob held by a client running anything
-// else, in the field whose only job is to say which provider's session a
-// blob holds.
+// The tag is derived from `P` through `SessionProvider::of::<P>()` rather
+// than written as a constant, so the envelope always records the provider the
+// client is actually built with.
 
-/// Which implementation established the sessions in a state blob.
+/// The provider tag in a state blob's envelope.
 ///
 /// A session is bound to the provider that established it: keys are derived
-/// under provider-specific labels, so a session tagged with a different
-/// provider is unreadable. A client restoring state has to know which it is
-/// holding before it can decide whether to continue the session or drop it
-/// and establish again. That is what this records.
+/// under provider-specific labels. A client restoring state reads the tag
+/// before deciding whether to continue a session or drop it and establish
+/// again.
 ///
-/// It lives in the state envelope rather than inside a provider's own session
-/// blob, because the question it answers is which blob to hand to which
-/// provider.
+/// It lives in the state envelope rather than inside the session blob,
+/// because the question it answers is which blob to hand to the provider.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SessionProvider {
-    /// The tag written by state blobs before the provider tag existed; the
-    /// default a pre-tag blob restores as.
-    Legacy,
+    /// A blob written before the envelope carried a provider tag; restores
+    /// with no provider recorded.
+    Untagged,
     /// tacenta-core, consumed as `open-tacenta`.
     OpenTacenta,
 }
@@ -869,7 +864,7 @@ impl SessionProvider {
     /// The byte this provider is written as in the state envelope.
     pub fn to_byte(self) -> u8 {
         match self {
-            SessionProvider::Legacy => 0x01,
+            SessionProvider::Untagged => 0x01,
             SessionProvider::OpenTacenta => 0x02,
         }
     }
@@ -877,9 +872,9 @@ impl SessionProvider {
     /// Which provider `P` is.
     ///
     /// Keyed off `CryptoProvider::NAME`, which is the only thing the seam
-    /// exposes about a provider's identity. An unrecognised name is a provider
-    /// this envelope has no byte for, and saying so is better than picking one:
-    /// a wrong tag here makes a client continue a session it cannot read.
+    /// exposes about a provider's identity. A name this envelope has no byte
+    /// for is refused rather than guessed: a wrong tag would make a client
+    /// continue a session it cannot read.
     fn of<P: CryptoProvider>() -> SessionProvider {
         match P::NAME {
             "open-tacenta" => SessionProvider::OpenTacenta,
@@ -889,7 +884,7 @@ impl SessionProvider {
 
     fn from_byte(b: u8) -> Option<SessionProvider> {
         match b {
-            0x01 => Some(SessionProvider::Legacy),
+            0x01 => Some(SessionProvider::Untagged),
             0x02 => Some(SessionProvider::OpenTacenta),
             _ => None,
         }
@@ -972,9 +967,8 @@ fn take_lp(b: &[u8]) -> Option<(&[u8], &[u8])> {
 /// Split an [`export_state`](Client::export_state) blob into its parts.
 ///
 /// Three shapes are accepted, and accepting the older two is the point — a new
-/// client must restore a state an older one wrote. A legacy blob (no tag)
-/// restores as [`SessionProvider::Legacy`], which is what it is: nothing else
-/// could have written one. A v3 blob written by a newer client cannot be read
+/// client must restore a state an older one wrote. An untagged blob restores
+/// as [`SessionProvider::Untagged`]. A v3 blob written by a newer client cannot be read
 /// here only if this *is* the newer client; an *older* client meeting a v3 blob
 /// fails closed with "unknown state blob version" rather than restoring it
 /// wrong.
@@ -1034,12 +1028,12 @@ fn split_state(state: &[u8]) -> Result<SplitState<'_>> {
                 _ => Err(Error::Protocol("unknown state blob version")),
             }
         }
-        // No tag: a pre-provider blob. Identity length-prefixed, sessions the
+        // No tag: an untagged blob. Identity length-prefixed, sessions the
         // tail, no prekeys.
         _ => {
             let (identity, sessions) = take_lp(state).ok_or_else(trunc)?;
             Ok(SplitState {
-                provider: SessionProvider::Legacy,
+                provider: SessionProvider::Untagged,
                 identity,
                 sessions,
                 prekeys: None,
@@ -1062,9 +1056,9 @@ fn split_state(state: &[u8]) -> Result<SplitState<'_>> {
 /// the party holding old prekeys while the directory advertised new ones —
 /// fixing the queued message by breaking the next one.
 ///
-/// A no-op unless the blob carried a non-empty prekeys section written by this
-/// same provider; a cross-provider or v2 blob simply re-establishes on first
-/// send, as it did before.
+/// A no-op unless the blob carried a non-empty prekeys section written under
+/// this provider's tag; a blob with another tag, or a v2 blob, simply
+/// re-establishes on first send.
 fn restore_prekeys_into<P: CryptoProvider>(party: &mut P, split: &SplitState<'_>) -> Result<()> {
     if split.provider != SessionProvider::of::<P>() {
         return Ok(());
@@ -1079,7 +1073,7 @@ fn restore_prekeys_into<P: CryptoProvider>(party: &mut P, split: &SplitState<'_>
 /// unsealed v3-shaped body and its **authenticated** generation.
 ///
 /// **A refused authenticator is the rollback forgery being caught, not a soft
-/// error.** The attacker the rollback finding is about rewrites the state file to present old
+/// error.** The attacker a file-rewriting attacker exploits rewrites the state file to present old
 /// sessions under a high generation; without the secure-storage key they cannot
 /// produce a matching authenticator, so `unseal` refuses and the restore fails
 /// closed rather than resuming the rolled-back state. That is the whole point of
@@ -1297,7 +1291,7 @@ impl<P: CryptoProvider> Client<P> {
     /// [`export_identity`](Client::export_identity)): the client presents the
     /// same identity key, so the directory refreshes the existing binding
     /// rather than rejecting a new key for the address, and peers see no
-    /// safety-number change. The session and prekey store starts empty —
+    /// key-fingerprint change. The session and prekey store starts empty —
     /// prekeys are re-published and peer sessions re-establish on next use.
     pub async fn connect_with_identity(config: &Config, identity: &[u8]) -> Result<Self> {
         let party = P::from_identity(&config.user, config.device, identity).map_err(crypto)?;
@@ -1646,7 +1640,7 @@ impl<P: CryptoProvider> Client<P> {
     ///
     /// The seal authenticates but does **not** encrypt: the bytes carry secrets
     /// and must be stored encrypted at rest. What the seal adds is freshness — the
-    /// property the rollback finding is about — not confidentiality.
+    /// property a file-rewriting attacker exploits — not confidentiality.
     pub async fn export_state_sealed(&self) -> Result<Vec<u8>> {
         let store = self.secure_store.as_ref().ok_or_else(|| {
             Error::SecureStore(
@@ -2070,7 +2064,7 @@ impl<P: CryptoProvider> Client<P> {
     /// Rotation invalidates existing peer sessions: the new identity has an
     /// empty store, so the next [`send`](Client::send) to each peer opens a
     /// fresh session, and a peer who verified the old key sees a
-    /// safety-number change. The live relay connection, authenticated under
+    /// key-fingerprint change. The live relay connection, authenticated under
     /// the old key when the client connected, stays valid for its lifetime.
     pub async fn rotate(&mut self) -> Result<()> {
         let mut rng = rand::rngs::OsRng.unwrap_err();

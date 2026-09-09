@@ -8,8 +8,8 @@ license.workspace = true
 [dependencies]
 tacenta-wire = { workspace = true }
 tacenta-state = { workspace = true }
-# The open-tacenta provider: the cryptographic implementation the product
-# ships, and the only one. It is not optional and cannot be switched off.
+# The tacenta-core provider: the cryptographic implementation the product
+# ships.
 open-tacenta = { workspace = true }
 rand_core_06 = { workspace = true }
 # For the durable-store wrapper's own persisted buffers (identity and prekey
@@ -28,9 +28,6 @@ futures-util = { version = "0.3", optional = true }
 
 [features]
 default = []
-# A no-op feature kept for compatibility with invocations that name it; the
-# provider is unconditional.
-open-provider = []
 # Exposes `crypto::conformance`, the behavioural suite for the provider seam,
 # to other crates. Off by default.
 conformance = ["dep:futures-util"]

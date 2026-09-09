@@ -72,10 +72,9 @@ and assembles `dist/TacentaFFI.xcframework`; `Package.swift` wraps that
 framework plus the generated Swift as the `Tacenta` library, and
 `examples/quickstart` is a runnable app that reaches **hosted Tacenta**
 through the `Tenant` handle (`connect` / `signUp` / `signIn`, decision
-record 0090: no host or port in the app). The
-`swift-package` job in the release pipeline builds the xcframework and
-compiles the package and
-example on every push, so the packaging cannot rot. The built xcframework
+record 0090: no host or port in the app). The release pipeline builds the
+xcframework and compiles the package and example on every push, so the
+packaging cannot rot. The built xcframework
 is a large binary artifact (~140 MB) — it is git-ignored and, for a
 release, zipped and hosted like the CLI binaries, with `Package.swift`'s
 `binaryTarget` switched from `path:` to `url:` + `checksum:`.

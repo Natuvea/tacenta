@@ -87,9 +87,8 @@ fn sigterm_writes_the_shutdown_snapshot() {
     assert!(
         wrote,
         "SIGTERM must run the graceful shutdown and write a snapshot. \
-         An empty data directory here is the production defect: Docker stops \
-         containers with SIGTERM, so a server that only handles SIGINT loses \
-         everything on every restart."
+         A service manager stops the process with SIGTERM, so a server that \
+         handled only SIGINT would lose its state on every restart."
     );
 
     std::fs::remove_dir_all(&data_dir).ok();

@@ -13,7 +13,7 @@ Read alongside [claims.md](claims.md) (proven vs tested vs assumed) and the
 
 Machine-checked against the specification, no `sorry` anywhere. These
 refinement proofs rebuild in the verification workflow, not in the `ci.yml`
-in this snapshot; the specification proofs rebuild in the public `spec` job.
+in this repository; the specification proofs rebuild in the public `spec` job.
 Both reproduce locally (see `reproduce.md`):
 
 - **The v1 wire codec** (`tacenta-wire`): encode/decode round-trip both
@@ -78,7 +78,7 @@ could make the proof believe something false.
      `#print axioms` names. That baseline is
      **machine-enforced**: `verification/Verification/Assurance.lean` pins each
      headline refinement theorem's exact axiom set with `#guard_msgs`, built by
-     the `verification` workflow (not the `ci.yml` in this snapshot), so a
+     the `verification` workflow (not this repository's `ci.yml`), so a
      `sorry` (which would add `sorryAx`) or an unexpected axiom fails the
      build -- mirroring the spec-level audit in `spec/Tacenta/Assurance.lean`.
      It is also recorded in `docs/claims.md`.
@@ -126,8 +126,7 @@ Stating the scope is half the honesty. The proofs say **nothing** about:
   library (`Cargo.toml`) and CI builds and tests against it, which is easy to
   mistake for coverage. It is not. `tacenta-core` carries its own proofs, its
   own axiom baseline, and its own limitations document, none of which is checked
-  here and none of which this page's TCB describes. Nothing in `verification/`
-  or `spec/` mentions `OpenParty` or any `tacenta-core` crate. And
+  here and none of which this page's TCB describes. And
   `tacenta-core` is the provider that actually ships (`DefaultProvider =
   open::OpenParty`, decision record 0075), so its separate, unchecked-here
   verification story is the one carrying the live cryptography -- this page's

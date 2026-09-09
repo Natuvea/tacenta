@@ -64,8 +64,8 @@ and SwiftPM refuses a download whose checksum differs.
 (stripped by the profile), generates the Kotlin (which carries the one
 hand-written source, the inbound Flow, from `bindings/android/sugar`), and
 assembles `dist/tacenta.aar`, then writes
-`SHA256SUMS` and, with the key, `tacenta.aar.asc`. The CI `android-package`
-job keeps `dist/` as a workflow artifact.
+`SHA256SUMS` and, with the key, `tacenta.aar.asc`. The release pipeline
+keeps `dist/` as a workflow artifact.
 
 ## Signing
 
@@ -89,10 +89,9 @@ Creating the key, once, by a person, is a manual release step.
 
 Publishing the `.aar` there needs, beyond the signature, a Central Portal
 account, a verified namespace, a user token, and a POM carrying the licence
-Central requires — none of which is engineering. The step-by-step is the
+Central requires. The step-by-step is the
 release procedure in `docs/releasing.md`; the Gradle side (the `maven-publish`
-and signing plugins on `lib`) is a small change made only once those exist, so
-that nothing here suggests a package that cannot yet be published.
+and signing plugins on `lib`) is a small change made once those exist.
 
 ## What stays gated
 

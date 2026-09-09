@@ -23,7 +23,7 @@ uses `Session`, not `User`.
 
 ## Why
 
-In the Signal model a message fans out to N device sessions and
+In the per-device model a message fans out to N device sessions and
 produces N distinct ciphertexts; the server stores N per-device queues.
 The `Session` machine — proven for exactly the properties a queue needs
 (no loss, no replay, cursor never rewinds; `docs/claims.md`) — is the

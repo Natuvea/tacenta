@@ -627,9 +627,8 @@ async fn shutdown_signal() {
                     _ = term.recv() => {}
                 }
             }
-            // Registration can only fail on a broken platform. Falling back to
-            // SIGINT alone is worse than nothing here, but it is what the
-            // process could do before, so it is not a regression.
+            // Registration can only fail on a broken platform; fall back to
+            // SIGINT alone rather than refuse to start.
             Err(_) => {
                 let _ = tokio::signal::ctrl_c().await;
             }

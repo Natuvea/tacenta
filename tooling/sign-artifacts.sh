@@ -10,7 +10,7 @@
 # from the environment, imports the key into a throwaway keyring, and writes
 # <file>.asc beside each file. Without the key it says so and exits 0, so a
 # build that has no signing material still produces its artifacts, unsigned,
-# and a release job that requires signatures checks for the .asc files.
+# and a release step that requires signatures checks for the .asc files.
 set -euo pipefail
 
 if [ -z "${TACENTA_SIGNING_KEY:-}" ]; then

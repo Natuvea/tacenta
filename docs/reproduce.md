@@ -86,12 +86,6 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
-# The open-provider feature is retained as a no-op.
-# Run its conformance suite and the client seam with it on:
-cargo clippy -p tacenta-core@0.1.0 --features open-provider --all-targets -- -D warnings
-cargo test  -p tacenta-core@0.1.0 --features open-provider crypto::
-cargo test  -p tacenta-client --features open-provider --test provider_seam
-
 # The Postgres store is behind a feature; compile-check it (its integration
 # tests need a database -- see the note below).
 cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/postgres" --all-targets -- -D warnings
@@ -104,7 +98,7 @@ cd tacenta
 for s in tooling/check-*.sh; do echo "== $s =="; bash "$s"; done
 # check-docs-match.sh resolves citations across both trees, so point it at a
 # checkout of tacenta-core at the pinned revision:
-OPEN_TACENTA_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
+TACENTA_CORE_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
 ```
 
 ## The axiom baselines (what a green proof rests on)
@@ -128,8 +122,7 @@ OPEN_TACENTA_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
   and return early without `TACENTA_TEST_DATABASE_URL`. To run them locally, set
   that to a reachable database and run `cargo test -p tacenta-accounts
   -p tacenta-server --features "tacenta-server/postgres"`. The public
-  `.github/workflows/ci.yml` in this snapshot does **not** run them; a
-  `postgres-integration` job in the release pipeline stands up a
+  `.github/workflows/ci.yml` in this repository does **not** run them; the release pipeline stands up a
   `postgres:16` service container and runs them there.
 - Timing-sensitive tests and the sustained-flood tests are `#[ignore]`d /
   skipped from the broad run; run them by name when profiling.

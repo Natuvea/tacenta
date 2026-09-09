@@ -115,8 +115,7 @@ duplication this decision exists to prevent, wearing a server hat.
 - The directory protocol grows a deposit request carrying a batch of bundles.
   The bundle-fetch response does not change shape at all, which is a further
   dividend of pooling whole bundles. This is *our* directory protocol, not the
-  message layer, so bundle-layer compatibility does not apply and no interoperability claim
-  is at stake.
+  message layer.
 - `PrekeyStore::publish` splits: the client still needs a bundle-without-pool
   for the fallback path, and a way to emit a batch for upload.
 - Tests must include the concurrent case. A dispenser that is correct

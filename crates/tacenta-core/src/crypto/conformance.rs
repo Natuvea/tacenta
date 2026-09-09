@@ -1,4 +1,4 @@
-//! What any provider at this seam must do, written once and run against each.
+//! What the provider at this seam must do, written once against the trait.
 //!
 //! This is the behavioural conformance suite for the provider seam, in the only
 //! form that can honestly be written: **behaviour, not bytes.**
@@ -10,13 +10,12 @@
 //! plaintexts at the far end and fails in the same cases, which is what a caller
 //! of this seam actually depends on.
 //!
-//! Written generically over the trait rather than duplicated per provider. A
-//! suite written twice is two suites that drift; written once it is a
-//! definition, and a provider either meets it or does not.
+//! Written generically over the trait, so it is a definition of the seam's
+//! contract that the provider either meets or does not.
 //!
 //! These functions panic on failure rather than returning a result, because
 //! they are run from `#[test]` and a panic is what a test wants. Each carries
-//! enough context in the message to say which provider failed and where.
+//! enough context in the message to say what failed and where.
 
 use super::provider::{Address, CryptoProvider, Failure};
 use rand::{CryptoRng, Rng};

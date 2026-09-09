@@ -396,10 +396,10 @@ fn throttled(state: &GatewayState, headers: &HeaderMap) -> bool {
     limiter.check_and_record(&ip)
 }
 
-/// The client IP for rate-limiting: the left-most `X-Forwarded-For` entry a
-/// trusted front proxy set, or a single shared bucket if absent. (Absent means
-/// no proxy in front — a single bucket is the safe, if blunt, default.)
-/// The address to throttle on.
+/// The address to throttle on: the rightmost `X-Forwarded-For` entry, the
+/// one the nearest proxy appended, or a single shared bucket if the header
+/// is absent (no proxy in front; a single bucket is the safe, if blunt,
+/// default).
 ///
 /// **`x-forwarded-for` is written by the client, and only its rightmost
 /// element is trusted.** A front proxy *appends* the peer it saw rather than
@@ -430,11 +430,10 @@ fn client_ip(headers: &HeaderMap) -> String {
 
 /// Emit one signup event to stderr. **Aggregate signal only** — never an
 /// email, IP, username, key, or any other field from the request. The whole
-/// line is `event` + `outcome`, so counting conversions and drop-offs is a
-/// grep over the log without the instrumentation ever touching a user's data.
-/// This is the first-party, no-third-party, no-cookie visibility the site's
-/// privacy posture requires (the browser sends nothing to anyone; the server
-/// counts its own outcomes). Counts are the process's stderr history, not a
+/// line is `event` + `outcome`, so counting signup outcomes is a grep over
+/// the log without the instrumentation ever touching a user's data. The
+/// browser sends nothing to anyone; the server counts its own outcomes.
+/// Counts are the process's stderr history, not a
 /// persisted metric — durable only as far as the log is.
 fn funnel(event: &str, outcome: &str) {
     eprintln!("funnel event={event} outcome={outcome}");
@@ -816,7 +815,7 @@ mod tests {
         let st = state();
         // The default ceiling is small; exhaust it from one IP with invalid
         // bodies (cheap — they never reach argon2) and confirm the next is 429.
-        let ip = "9.9.9.9";
+        let ip = "198.51.100.9";
         let mut last = StatusCode::OK;
         for _ in 0..10 {
             let app = app(st.clone(), &[]);
@@ -833,7 +832,7 @@ mod tests {
         let app = app(st, &[]);
         let (status, _) = post_tenants(
             app,
-            "8.8.8.8",
+            "198.51.100.8",
             r#"{"username":"ab","email":"x","password":"short"}"#,
         )
         .await;

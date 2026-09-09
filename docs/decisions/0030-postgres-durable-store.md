@@ -31,7 +31,7 @@ what the incremental store is when that work begins.
 - **Aerospike.** A flash-optimized distributed KV for millions of ops/sec
   over very large key spaces. Every axis it wins (raw KV throughput, flash
   economics, horizontal KV scale) is one we do not compete on; its strong
-  consistency is Enterprise-licensed; its heritage single-record eventual
+  consistency is a paid feature; its heritage single-record eventual
   consistency is weakest exactly where the directory is strictest (atomic
   prekey consumption, first-claim-wins). The clearest case of the right tool
   for a question we are not asking.

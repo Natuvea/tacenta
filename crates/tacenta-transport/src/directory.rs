@@ -675,7 +675,7 @@ mod ra1_tests {
         // A different source has its own budget; the same handle it refused
         // above registers fine here.
         assert_eq!(
-            s.handle(&ch, "2.2.2.2", register("c")),
+            s.handle(&ch, "192.0.2.2", register("c")),
             DirResponse::Registered
         );
     }

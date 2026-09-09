@@ -26,7 +26,7 @@ this, for a bounded-tenant model — never as a substitute.)
 
 **Bound the rate of new handle registrations per source, at the directory.** The
 first, lowest-friction, privacy-compatible layer is a per-IP sliding-window
-throttle on the directory `Register` path — the same shape as the gateway's proven
+throttle on the directory `Register` path — the same shape as the gateway's tested
 signup limiter (`tacenta-gateway::ratelimit`), including its map-growth defence
 (evict callers who can no longer be blocked, then cap the map). It is chosen over
 the alternatives deliberately:

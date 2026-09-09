@@ -82,8 +82,8 @@ crates/      Rust workspace
   tacenta-transport/ Framed TCP/TLS server + client for the four services,
                      and the WebSocket carriage of the same framing
   tacenta-core/   Protocol engine + crypto integration (client)
-  tacenta-accounts/ Control-plane identity: tenants + users, username /
-                    email / password (argon2id), API keys
+  tacenta-accounts/ Control-plane identity: tenants (username / email /
+                    password, argon2id) and users (username / password), API keys
   tacenta-discovery/ The service document a server publishes and a client
                     reads to find the four services (decision 0090)
   tacenta-client/ High-level client SDK: the tenant handle, connect / send /
@@ -99,7 +99,9 @@ crates/      Rust workspace
 sdk/typescript/ @tacenta/sdk: the TypeScript head on the client (browsers, Node)
 sdk/surface.json The SDK surface manifest every head is tested against; SURFACE.md
                  is its rendered parity grid
-tooling/     Repo gates, starting with the brand hygiene guard
+tooling/     Repo gates
+bindings/    The Swift and Kotlin heads over the FFI crate
+verification/ The Rust-to-Lean refinement proofs
 docs/        Decision records, claims ledger, threat model, reproduction recipe
 assets/      Brand assets
 ```

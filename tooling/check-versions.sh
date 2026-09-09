@@ -4,7 +4,7 @@
 # The tree carries the version the next release tag will have: the
 # workspace's Cargo.toml (every crate takes it), sdk/typescript/package.json
 # and its lockfile, and bindings/android/lib/build.gradle.kts. This refuses a
-# tree where they disagree, and with --tag vX.Y.Z (the release workflows on a
+# tree where they disagree, and with --tag vX.Y.Z (the release step on a
 # tag push) refuses a tag whose name is not that version or whose section is
 # missing from CHANGELOG.md, so a release cannot ship packages that call
 # themselves something else (decision 0090). The Swift package has no version of its own: SwiftPM takes the

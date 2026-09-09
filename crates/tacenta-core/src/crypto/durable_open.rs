@@ -404,7 +404,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Gate 3's own named sequence, run for real rather than
+    /// The named write sequence, run for real rather than
     /// assumed from the atomic-write primitive being sound in isolation:
     /// establishing a session as a responder both consumes a one-time
     /// prekey and creates a session, in one call. If the process dies after

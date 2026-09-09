@@ -11,7 +11,7 @@ the proofs assume) and [claims.md](claims.md) (proven vs tested vs assumed).
 Clients encrypt end to end with an owned, clean-room implementation of the
 Signal protocol designs (X3DH/PQXDH key agreement, Double Ratchet, ML-KEM-1024
 post-quantum), provided by the pinned tacenta-core dependency (decision 0075).
-The server never holds a decryption key. The server is five cryptographically-blind services: a **directory**
+The server never holds a decryption key. The server is five services that never hold a decryption key: a **directory**
 (public identity keys + prekey bundles), a **relay** (routes opaque ciphertext,
 store-and-forward), an **account** service (tenant/user signup and sign-in),
 **provisioning** (binds a signed-in user's device identity into the directory
@@ -76,11 +76,11 @@ server; the server's honesty matters only for *metadata*, *availability*, and
   identity keys and prekey bundles. A malicious directory could serve an
   attacker's key on a peer's *first* contact (a classic trust-on-first-use MITM).
   Tacenta mitigates but does not eliminate this: the binding is trust-on-first-
-  use, later key changes are detectable via a safety-number comparison, and an
+  use, later key changes are detectable via a key-fingerprint comparison, and an
   authorized key change goes through key-continuity rotation (0024). Closing the
-  first-contact gap entirely requires **out-of-band safety-number verification**
-  between peers — the standard Signal-family answer, and the user's
-  responsibility, not the server's.
+  first-contact gap entirely requires **out-of-band key-fingerprint verification**
+  between peers — the standard answer in end-to-end encrypted messengers, and
+  the user's responsibility, not the server's.
 
 - **Replay is bounded, not eliminated.** The relay can re-deliver a captured
   ciphertext. An established session rejects it: the ratchet consumes a message
@@ -150,8 +150,8 @@ server; the server's honesty matters only for *metadata*, *availability*, and
 - **Tenant signup is rate-limited too, one layer up.** `tacenta-accounts` has no
   source address to key on, so the throttle sits where the address exists: the
   gateway checks a per-IP sliding window before every `/v1/tenants` signup and
-  every key-management call, keyed by the left-most `X-Forwarded-For` entry a
-  trusted proxy set (`tacenta-gateway`, `throttled`). With no proxy in front,
+  every key-management call, keyed by the rightmost `X-Forwarded-For` entry,
+  the one the nearest proxy appended (`tacenta-gateway`, `throttled`). With no proxy in front,
   every request shares one bucket — blunt, and deliberately the safe direction.
   **Remaining gap:** *user* signup inside a tenant is not separately throttled;
   it already requires a valid tenant API key, so the ceiling on it is the
@@ -163,7 +163,7 @@ server; the server's honesty matters only for *metadata*, *availability*, and
   of *past* messages.
 - **Device loss** is recoverable via a pre-provisioned **offline recovery key**
   (0025); proactive **re-keying** is available via rotation (0024). A peer who
-  verified the old key sees a safety-number change and should re-verify.
+  verified the old key sees a key-fingerprint change and should re-verify.
 
 ### 6. The page, for the browser head
 

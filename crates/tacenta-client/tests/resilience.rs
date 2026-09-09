@@ -419,7 +419,7 @@ async fn a_current_state_restores_fresh_and_keeps_its_sessions() {
 
 /// A test [`SecureStore`]: a fixed in-memory key. A real deployment holds this
 /// key in platform secure storage (Keychain / Android Keystore), where the
-/// file-rewriter the rollback finding is about cannot reach it (decision 0078, anchor B). A
+/// file-rewriter a file-rewriting attacker exploits cannot reach it (decision 0078, anchor B). A
 /// test supplies its own so the sealed paths can be exercised without a real
 /// Keychain — which is also how these paths are tested in CI, since no Keychain
 /// exists there. The same store (same key) must be used for export and restore.
@@ -794,15 +794,16 @@ async fn identity_only_restart_cannot_decrypt_the_old_session() {
     let _ = std::fs::remove_dir_all(&data_dir);
 }
 
-/// A saved state whose sessions are tagged with a *different* provider is
-/// restored as identity only: the sessions are dropped rather than carried.
+/// A saved state whose sessions carry a provider tag this client does not
+/// run under is restored as identity only: the sessions are dropped rather
+/// than carried.
 ///
 /// A session is bound to the provider that established it, so such a session
 /// cannot be continued, and a client that tried would decrypt garbage. This is
 /// the behaviour the drained-session path relies on — a drained session
 /// re-establishes on the next send.
 #[tokio::test]
-async fn a_state_from_the_other_provider_does_not_carry_its_sessions() {
+async fn a_state_with_an_unrecognised_provider_tag_does_not_carry_its_sessions() {
     let data_dir = scratch_dir();
     let config = server_config(&data_dir);
     let running = Running::start(&config).await;
@@ -821,10 +822,10 @@ async fn a_state_from_the_other_provider_does_not_carry_its_sessions() {
     let mut bob_state = bob.export_state().await.unwrap();
     drop(bob);
 
-    // Re-tag the blob as established by a different provider. The identity
-    // and the session bytes are untouched.
+    // Re-tag the blob with a tag this client does not run under. The
+    // identity and the session bytes are untouched.
     assert_eq!(bob_state[2], SessionProvider::OpenTacenta.to_byte());
-    bob_state[2] = SessionProvider::Legacy.to_byte();
+    bob_state[2] = SessionProvider::Untagged.to_byte();
 
     alice.send(&bob_addr, b"orphaned").await.unwrap();
 
@@ -837,7 +838,7 @@ async fn a_state_from_the_other_provider_does_not_carry_its_sessions() {
     let timed = tokio::time::timeout(std::time::Duration::from_millis(300), bob.receive()).await;
     assert!(
         timed.is_err(),
-        "a session from the other provider should not be carried across"
+        "a session under an unrecognised provider tag should not be carried across"
     );
 
     running.shutdown().await;

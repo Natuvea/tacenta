@@ -52,7 +52,7 @@ not to sign with the bound key — failing to take an address over.
 Trust on first use is the honest floor, but a floor with no door: a lost or
 compromised device key would strand the address permanently. Key continuity
 is the minimal, standard way to add rotation without a trusted third party —
-the same shape as SSH host-key changes or a Signal safety-number change:
+the same shape as SSH host-key changes or a messenger's key-change warning:
 authority flows along a chain of keys, each vouched for by the last. Keeping
 the binding replacement in the crypto-free directory and the two-signature
 check with the server preserves the property that makes the directory simple
@@ -79,6 +79,6 @@ unregistered address is refused.
   authorizing the rotation with the recovery key instead. Recover reuses
   this record's `rotate`; only the authorizing key differs.
 - **Peer notification of a change.** A peer that cached the old key is not
-  told the binding changed; safety-number-change UX (warn the peer, let them
+  told the binding changed; key-fingerprint-change UX (warn the peer, let them
   re-verify) is a client concern layered on top, not addressed in the
   directory.

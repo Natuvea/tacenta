@@ -2,8 +2,7 @@
 
 Tacenta is an independent product of Natuvea. It is **not affiliated with,
 endorsed by, or sponsored by** Signal Messenger LLC or the Signal Foundation,
-nor by any other company or individual named in this repository's
-documentation.
+nor by any other company named in this repository's documentation.
 
 Tacenta implements selected **Signal Protocol** specifications (for example
 X3DH, the Double Ratchet, and PQXDH), which Signal publishes publicly. The

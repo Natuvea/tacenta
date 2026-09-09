@@ -5,7 +5,7 @@ purpose. Most claims here are enforced by the public CI on every push: the
 specification Lean proofs are rebuilt (no `sorry` in them), the conformance
 vectors are regenerated from the specification and diffed, and the Rust test
 suite replays them. The refinement proofs over the shipped Rust rebuild in the
-verification workflow, not in the `ci.yml` in this snapshot.
+verification workflow, not in this repository's `ci.yml`.
 
 **Two classes run outside the public `ci.yml`.** First, the axiom audit:
 `spec/Tacenta/Assurance.lean` pins the specification-level theorems with
@@ -13,12 +13,11 @@ verification workflow, not in the `ci.yml` in this snapshot.
 `verification/Verification/Assurance.lean` pins the refinement theorems the
 same way, running `#print axioms` on all nineteen headline refinement theorems
 so a `sorry` or a widened axiom set is caught. That audit and the refinement
-build run in the verification workflow, not in the `ci.yml` in this snapshot;
+build run in the verification workflow, not in this repository's `ci.yml`;
 both reproduce locally (see `reproduce.md`). Second, the Postgres claims:
 `crates/tacenta-accounts/tests/pg.rs` is behind the `postgres` feature and
 each test returns early without `TACENTA_TEST_DATABASE_URL`. The public `rust`
-job here does not exercise the `postgres` feature; a `postgres-integration`
-job in the release pipeline supplies a `postgres:16` service container and
+job here does not exercise the `postgres` feature; the release pipeline supplies a `postgres:16` service container and
 runs the DB-backed tests (four account tests, one server test). The local
 default `cargo test --workspace` skips them without a database URL; supply the
 URL to run them, as the pipeline job does.
@@ -142,7 +141,7 @@ Machine-checked in `spec/` about the Lean model itself:
   preserves peer agreement — the ping-pong induction step (`ratchet_sync`);
   and a session initialised from the handshake starts in that agreeing
   configuration (`init_facing`). **Spec-only, and scoped deliberately**: no
-  Rust in *this* repository is refined against it (decision records 0036,
+  Rust in *this* repository is refined against it (decision record
   0075). tacenta-core proves its own implementation against its own Lean
   model, which is a different model on a separate axiom baseline; the two are
   not connected by any theorem. It models in-order delivery (what the relay
@@ -253,8 +252,7 @@ not in our proofs' dependency cone.
   directions, across the initial-message to ratchet-message transition (a
   one-byte type header on the frame carries the type; malformed frames
   are rejected). This demonstrates the *integration* works; it is
-  **not** a cryptographic proof, and none is claimed (decision record
-  0010). The in-memory store is the default. Full resumable state — the identity plus live ratchet sessions per peer — serializes via `Client::export_state` and restores via `connect_with_state` / `sign_in_with_state` (decision 0051).
+  **not** a cryptographic proof, and none is claimed. The in-memory store is the default. Full resumable state — the identity plus live ratchet sessions per peer — serializes via `Client::export_state` and restores via `connect_with_state` / `sign_in_with_state` (decision 0051).
 - **Full-stack integration** (`tests/delivery_crypto.rs`): a real E2EE
   conversation routed through `tacenta-relay`, the server component — a
   ciphertext framed in an envelope, serialized by the proven codec,
@@ -506,7 +504,7 @@ not in our proofs' dependency cone.
 
 - **The cryptography is tacenta-core's, in full.** All confidentiality,
   integrity, and authentication come from the pinned `tacenta-core`
-  dependency (decision records 0053, 0075). **This repository writes no
+  dependency (decision record 0075). **This repository writes no
   cryptography and proves none**: our proofs cover the wire format and the
   delivery state machines and say nothing about crypto.
 - **Underneath tacenta-core, the primitives are third-party and trusted.**
@@ -549,14 +547,12 @@ not in our proofs' dependency cone.
 - No claims about the server, transport, storage, timing, or
   side channels.
 - **Nothing here covers `tacenta-core`.** The clean-room protocol library is
-  pinned by this repository and its `open-provider` feature is built and tested
-  by CI, but every claim on this page is about *this* repository's code and
+  pinned by this repository and built and tested by CI, but every claim on
+  this page is about *this* repository's code and
   *this* repository's proofs. `tacenta-core` states its own claims and its own
   limits in its own `CLAIMS.md` and `LIMITATIONS.md`, on a separate axiom
   baseline.
 
   **The shipping provider is tacenta-core's `OpenParty`** —
   `DefaultProvider = open::OpenParty` in `crates/tacenta-core/src/crypto.rs`,
-  and `DefaultClient = Client<DefaultProvider>` (decision record 0075). The
-  `open-provider` cargo feature exists in two manifests as a no-op, kept for
-  compatibility.
+  and `DefaultClient = Client<DefaultProvider>` (decision record 0075).

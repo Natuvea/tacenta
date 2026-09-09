@@ -23,9 +23,8 @@ two distinct byte strings can decode to the same value, so a signature over one
 does not pin the other, and "the bytes were authenticated" stops implying "the
 message was".
 
-`parse_ratchet_body` accepts fields in any order. It does so deliberately —
-`encode_ratchet_body`'s own comment cites the research record — while the
-encoder emits ascending. So a reordered input that the parser accepts re-encodes
+`parse_ratchet_body` accepts fields in any order, while the encoder emits
+ascending. So a reordered input that the parser accepts re-encodes
 to *different* bytes, and the property cannot hold for a parser that accepts
 any order. No amount of proof effort changes that; the format has to change.
 
@@ -34,14 +33,9 @@ the primitive. The gap is at the message level.
 
 ## Why ascending, and why now
 
-Accepting any order was never a preference. It was a **compatibility
-concession**: a peer might spell a message in an order we did not choose, and
-refusing it would break interoperability we were trying to obtain.
-
-**A later decision removed that constraint.** With the message layer off the
-release bar there is no peer whose spelling the product must accept, so the
-concession costs nothing to withdraw. Ascending order is what our own encoder
-already emits, so nothing this product produces is affected.
+Accepting any order is a permissive default with no consumer: the encoder
+emits ascending, so requiring ascending order on input affects no message this
+product produces, and it is what makes canonical emission provable.
 
 This is the same shape as decision 0072's class, seen from the other side: an
 accommodation made for a reason that has since expired, still being paid for.

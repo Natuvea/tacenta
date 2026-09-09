@@ -51,7 +51,7 @@ impl EchoBot {
     }
 
     /// Connect a bot under a saved identity, so it keeps the same address and
-    /// bound key across restarts and peers see no safety-number change.
+    /// bound key across restarts and peers see no key-fingerprint change.
     pub async fn connect_with_identity(config: &Config, identity: &[u8]) -> Result<EchoBot> {
         Ok(EchoBot {
             client: DefaultClient::connect_with_identity(config, identity).await?,

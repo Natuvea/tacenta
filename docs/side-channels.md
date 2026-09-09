@@ -89,7 +89,7 @@ secret.
 
 ## What is out of scope here
 
-- **The cryptographic primitives** (AEAD, the ratchet, key agreement, Kyber):
+- **The cryptographic primitives** (AEAD, the ratchet, key agreement, ML-KEM):
   their constant-time and side-channel properties are tacenta-core's, assumed, not
   re-established here.
 - **Micro-architectural channels** (cache, speculative execution, power) are not

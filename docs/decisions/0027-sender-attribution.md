@@ -55,7 +55,7 @@ it already wraps logs with device/cursor headers.
 
 - **Sealed sender.** Attribution exposes the sender to the *relay* (which
   already authenticated it) and to the recipient. Hiding the sender from the
-  server — Signal's sealed sender — is a distinct, later design; it would
+  server — a sealed-sender design — is a distinct, later design; it would
   move attribution into the sealed envelope rather than relay metadata.
 - **Spoofing across the crypto boundary.** The relay attributes by
   authenticated connection, but it does not (and cannot) check that the

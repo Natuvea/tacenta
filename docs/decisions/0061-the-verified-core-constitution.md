@@ -53,16 +53,16 @@ only on success depends on nothing.
 Stated plainly, because a principle whose current scope is unlisted is an
 aspiration.
 
-**Two receive paths are not yet proof-shaped.** `tacenta-ratchet::receive` and
-`tacenta-spqr::State::receive` take `&mut`. They are safe because every caller
+**Two receive paths in tacenta-core are not yet proof-shaped.**
+`tacenta-ratchet::receive` and `tacenta-spqr::State::receive` take `&mut`. They are safe because every caller
 clones first, and `tacenta-core/AUTHENTICATION-BOUNDARY.md` records that as a
 property of the callers. Under this principle that is a boundary to close
 rather than a caveat to document: the whole point is that safety stops
 depending on who calls.
 
-**The translation pipeline runs nightly and on a path filter.** Under this
-principle, fresh translation and every refinement proof run on every change
-that could affect them, as a required check.
+**The translation pipeline runs in tacenta-core's verification workflow.**
+Under this principle, fresh translation and every refinement proof run on
+every change that could affect them.
 
 **Serialization is outside the verified core.** Nothing is proved from wire
 bytes, which is exactly the gap the protobuf decision below turns on.

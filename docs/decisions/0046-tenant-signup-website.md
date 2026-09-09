@@ -11,8 +11,8 @@ HTTP — a browser cannot talk to it directly:
    in front of the account store, so browsers (and any HTTP client) can perform
    control-plane signup. It reuses `AccountStore`, so it inherits the same
    argon2id hashing, coarse errors, and (for later endpoints) session handling,
-   and it stays under the same brand-hygiene and verification discipline as the
-   rest of the protocol code.
+   and it stays under the same verification discipline as the rest of the
+   protocol code.
 
 2. **`tacenta-web`** — a new **sibling repo**. A content-first static site
    (landing, quickstart, later docs) with a small script for the signup form.
@@ -66,13 +66,13 @@ tacenta-gateway (this repo)  ──TCP framed / TLS──►  account service
 
 Voice + brand follow the same restrained, literary register as the rest of the
 docs (no exclamation marks, sentence-case headlines, numbers that earn their
-place); brand hygiene applies to the sibling repo too.
+place).
 
 ## Verification (planned)
 
 The gateway gets the same treatment as the rest of the repo: `cargo test` (HTTP
 handler behaviour — success, each `SignupError` mapping, rate-limit trip, CORS
-headers), clippy, fmt, and brand hygiene, wired into CI's `rust` job. A cold
+headers), clippy and fmt, in CI. A cold
 end-to-end check: bring up the account service + gateway, `POST /v1/tenants`,
 and confirm the returned key authenticates a subsequent user signup.
 

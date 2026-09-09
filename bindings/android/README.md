@@ -42,8 +42,7 @@ root:
 TACENTA_API_KEY=tct_your_key_here ./gradlew -p conformance -q run
 ```
 
-`TACENTA_DOCUMENT_URL` points it at another server. The `android-package` job in
-the release pipeline compiles it against the `.aar`'s Kotlin on every push.
+`TACENTA_DOCUMENT_URL` points it at another server. The release pipeline compiles it against the `.aar`'s Kotlin on every push.
 
 ## Use it
 

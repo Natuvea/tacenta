@@ -8,7 +8,7 @@ three Apple slices — macOS (Apple Silicon), iOS device, iOS simulator —
 generates the UniFFI Swift bindings once, and assembles
 `dist/TacentaFFI.xcframework`. `Package.swift` wraps that framework and the
 generated Swift as the `Tacenta` library and builds a runnable `quickstart`
-example. A `swift-package` CI job, on a macOS runner, builds the
+example. A CI job on a macOS runner builds the
 xcframework and compiles the package + example on every push.
 
 The FFI gains the TLS constructors this requires: `sign_up_tls` and

@@ -29,7 +29,7 @@ killed, that would be messages silently lost across every restart.
 ## Considered
 
 - **Persist only the identity** (status quo, 0031). Keeps the binding and
-  avoids a safety-number change, but loses in-flight messages on every
+  avoids a key-fingerprint change, but loses in-flight messages on every
   restart. Kept as `connect_with_identity` for callers that genuinely want
   a fresh store (e.g. a deliberate session reset).
 - **A server-side session store.** Wrong layer: sessions carry the private

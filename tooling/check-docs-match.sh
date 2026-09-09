@@ -11,7 +11,8 @@
 # **Why this exists.** Documentation drifts from the code it describes: a claim
 # about a dependency, a named module, a path, a pin, a port or a feature can
 # outlive the change that made it false. Machine checks already guard the
-# dependency graph, the tree, workflow syntax and brand hygiene; this guards the mechanically checkable claims in prose. It catches
+# dependency graph, the tree and workflow syntax; this guards the mechanically
+# checkable claims in prose. It catches
 # only the subset that quotes machine-readable facts -- a crate named as a
 # dependency, a cited path, pin, port or feature -- and the rest still needs a
 # person who updates the prose in the same commit as the code.
@@ -209,7 +210,7 @@ else
   note "every documented feature is declared somewhere"
 fi
 
-# --- 5. Named dependencies are actually dependencies -------------------------
+# --- 4. Named dependencies are actually dependencies -------------------------
 # **A crate named in backticks and called a dependency, or described as
 # pinned, is a claim about `Cargo.lock`** and can be checked against it.
 # Blockquoted lines are excluded: a quotation is not a claim of the document

@@ -7,12 +7,12 @@
 //!
 //! Two properties fall out of writing it as a trait:
 //!
-//! - **Substitutability.** The client is written against the trait, so it
-//!   never names a provider's concrete types.
+//! - **One name.** The client is written against the trait, so the provider's
+//!   concrete types are named in one place.
 //! - **A provider tag on persisted state.** A session is bound to the
 //!   provider that established it, because keys are derived under
-//!   provider-specific labels; the state envelope records which provider a
-//!   session belongs to (see `SessionProvider`).
+//!   provider-specific labels; the state envelope `tacenta-client` writes
+//!   records the tag.
 //!
 //! ## Why every boundary is bytes
 //!
@@ -52,13 +52,13 @@ impl Address {
 /// fails in the expected cases. The `conformance` suite is that statement as
 /// code.
 pub trait CryptoProvider: Sized {
-    /// Whatever this provider fails with. Deliberately opaque: the oracle
-    /// compares *whether* an operation failed and against a shared
-    /// classification, not the provider's own error text.
+    /// Whatever this provider fails with. Deliberately opaque: the
+    /// conformance suite checks *whether* an operation failed, against a
+    /// shared classification, not the provider's own error text.
     type Error: core::fmt::Debug;
 
-    /// A name for this provider, for test output and for recording which one a
-    /// session was established under.
+    /// A name for this provider, for test output and for the state
+    /// envelope's provider tag.
     const NAME: &'static str;
 
     /// Classify a failure into terms the provider can be held to.
@@ -100,10 +100,9 @@ pub trait CryptoProvider: Sized {
     /// this function, and it is why the trait has an associated function
     /// rather than only methods.
     ///
-    /// It is the one place the two sides of a deployment must agree with each
-    /// other rather than merely behave alike: a client signing under one
-    /// provider and a server verifying under another would reject every
-    /// connection, so both sides name `DefaultProvider`.
+    /// It is the one place the two sides of a deployment must agree with
+    /// each other rather than merely behave alike, so both sides name
+    /// `DefaultProvider`.
     fn verify_challenge(identity: &[u8], challenge: &[u8], signature: &[u8]) -> bool;
 
     /// Publish a prekey bundle, serialized. The private halves stay here.
@@ -226,15 +225,14 @@ pub trait CryptoProvider: Sized {
     fn clear_sessions(&mut self);
 }
 
-/// How an operation failed, in terms any provider can be held to.
+/// How an operation failed, in terms the provider can be held to.
 ///
-/// Providers' own error types say different things in different words, and
-/// neither is wrong. What the conformance suite can require is that they fail in
-/// the same *cases*, so failures are classified into this before comparison.
+/// The provider's own error type says what went wrong in its own words. What
+/// the conformance suite requires is that it fails in the expected *cases*,
+/// so failures are classified into this before they are checked.
 ///
-/// Kept deliberately coarse. A finer classification would be asserting agreement
-/// implementations were never built to have, and a suite that fails
-/// for that reason teaches nothing.
+/// Kept deliberately coarse, so callers branch on the kind of failure rather
+/// than on error text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// The ciphertext was not well-formed, or not for this session.
@@ -243,6 +241,6 @@ pub enum Failure {
     BadBundle,
     /// No session with that peer, where one was required.
     NoSession,
-    /// Anything else. Two providers landing here have not been shown to agree.
+    /// Anything else.
     Other,
 }

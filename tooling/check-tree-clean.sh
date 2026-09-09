@@ -7,7 +7,7 @@
 # never build output, and no tracked non-text file carries symbols of a
 # strong-copyleft crate. Two things are checked: no tracked file lives in a
 # build directory, and no tracked non-text file names a crate that
-# tooling/check-no-agpl.sh's licence scan classifies as strong-copyleft.
+# tooling/check-licences.sh's licence scan classifies as strong-copyleft.
 # Source and prose may name any library freely; only non-text files are
 # inspected for symbols.
 #
@@ -37,7 +37,7 @@ fi
 # --- Object code carrying strong-copyleft symbols --------------------------
 # The names to look for are read from the build graph rather than written
 # here: every crate whose declared licence is strong-copyleft (the same
-# classification tooling/check-no-agpl.sh applies). With none in the graph
+# classification tooling/check-licences.sh applies). With none in the graph
 # there is nothing to scan for, and the step says so.
 pattern=$(cargo metadata --format-version 1 --all-features 2>/dev/null | python3 -c '
 import json, sys
@@ -46,7 +46,10 @@ names = sorted({p["name"] for p in m["packages"]
                 if ("AGPL" in (p.get("license") or "").upper() or "GPL" in (p.get("license") or "").upper())
                 and " OR " not in (p.get("license") or "")})
 print("|".join(n.replace("-", "[-_]") for n in names))
-' 2>/dev/null || true)
+') || {
+  echo "check-tree-clean: cargo metadata failed; the dependency graph could not be resolved" >&2
+  exit 1
+}
 suspect=""
 if [ -n "$pattern" ]; then
   while IFS= read -r f; do

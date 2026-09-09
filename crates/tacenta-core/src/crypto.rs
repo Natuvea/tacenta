@@ -1,4 +1,4 @@
-//! The cryptographic provider seam, and the choice of provider.
+//! The cryptographic provider seam.
 //!
 //! This module is the seam itself: the `CryptoProvider` trait, the provider
 //! the product ships, and the one function a server needs that is not a
@@ -7,14 +7,13 @@
 //! The cryptography is tacenta-core's, consumed as the pinned `open-tacenta`
 //! dependency. What this repository claims about it is in `docs/claims.md`,
 //! and what it does not claim is in tacenta-core's
-//! `tacenta-proofs/LIMITATIONS.md`; neither is a claim that the primitives
-//! are novel.
+//! `tacenta-proofs/LIMITATIONS.md`.
 
 /// The provider the product ships with.
 ///
-/// **The single place the choice is named.** Every consumer writes
+/// **The single place the provider is named.** Every consumer writes
 /// `DefaultProvider` (or is generic over `CryptoProvider`) rather than a
-/// concrete type, so the choice lives here and nowhere else.
+/// concrete type, so the name lives here and nowhere else.
 ///
 /// The provider ratchets post-quantum: `Session` drives the Triple Ratchet
 /// and the braid through a candidate/commit path. The suite in `conformance`
@@ -37,7 +36,7 @@ pub fn verify_challenge(identity: &[u8], challenge: &[u8], signature: &[u8]) -> 
 /// docs for why this is a concrete type rather than another
 /// `CryptoProvider` implementation.
 pub mod durable_open;
-/// The open-tacenta provider: the one the product ships, and the only one.
+/// The tacenta-core provider.
 pub mod open;
 pub mod provider;
 pub use provider::{Address, CryptoProvider, Failure};

@@ -2,8 +2,9 @@
 
 ## Why this exists
 
-The enforcement exists in code: `tacenta-core/AUTHENTICATION-BOUNDARY.md` and
-`tooling/check_authentication_boundary.py` fail the build on a receive path
+The enforcement exists in code, in the tacenta-core repository: its
+`tacenta-core/AUTHENTICATION-BOUNDARY.md` registry and
+`tooling/check_authentication_boundary.py` fail that build on a receive path
 that commits state before authenticating. This record is the statement of
 what that enforcement guarantees, so the registry and the tests have
 something to be checked against.
@@ -118,7 +119,8 @@ It does not claim the library detects identity change. It claims a changed
 identity cannot continue an existing session undetected, and that deciding what a
 change *means* is the application's.
 
-It does not extend to group messaging or multi-device, neither of which exists.
+It does not extend to group messaging, which does not exist; multi-device
+fan-out is covered by decision 0018.
 
 ## What would reopen this
 

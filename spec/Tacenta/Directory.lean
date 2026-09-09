@@ -116,7 +116,7 @@ theorem rotate_rebinds (d : Directory Device Identity) (dev : Device)
 Identity`). The Rust mirrors that with a `HashMap`, which is outside the subset
 a Charon/Aeneas refinement can translate. So the Rust factors the *trust
 decision* into a pure function of the single device's current binding —
-`register_core` / `rotate_core` in `crates/tacenta-directory/src/lib.rs` — with
+`register_core` / `rotate_core` in `crates/tacenta-directory-core/src/lib.rs` — with
 the `HashMap` reduced to trust-irrelevant glue (store the bundle, index the
 device). `registerCore` / `rotateCore` below are those exact functions, and are
 the crisp target the mechanical refinement

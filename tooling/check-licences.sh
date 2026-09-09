@@ -11,12 +11,12 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-echo "no-agpl: resolving the product graph"
+echo "licences: resolving the product graph"
 
 # Resolve first and fail plainly if the graph cannot be fetched, rather than
 # handing an empty document to the scan below.
 metadata="$(cargo metadata --format-version 1 --all-features)" || {
-  echo "no-agpl: cargo metadata failed; the dependency graph could not be resolved" >&2
+  echo "licences: cargo metadata failed; the dependency graph could not be resolved" >&2
   exit 1
 }
 
@@ -65,4 +65,4 @@ fi
 # Scope note: this checks the Cargo graph only. Before publishing packages, also
 # inspect the npm, Gradle/Maven and Swift-tooling graphs and the final binary
 # SBOMs (the .aar / xcframework contents), which this check does not cover.
-echo "no-agpl: no AGPL/GPL crate, and every external crate declares a licence (Cargo graph only)"
+echo "licences: no strong-copyleft crate, and every external crate declares a licence (Cargo graph only)"

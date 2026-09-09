@@ -38,16 +38,15 @@ in the tree first, merged to `main` and green; the tag second.
    The last line must print `on main`; if it does not, the tag is on the wrong
    commit (see the immutability note below).
 
-   the deploy, CLI-publish, and conformance workflows all fire on
-   the tag. The first two run `check-versions.sh --tag` before anything
-   ships, so a tag that got ahead of the tree fails there rather than
+   The release pipeline fires on the tag. It runs `check-versions.sh --tag`
+   before anything ships, so a tag that got ahead of the tree fails there rather than
    publishing packages that call themselves something else. The
    conformance run waits for the other two, then drives every head
    against the deployed server and places its transcript at
    `tacenta.com/dl/conformance/vX.Y.Z.md`.
 6. **Verify what is live** — a green workflow is not proof. The generated
    references (DocC, Dokka, rustdoc, TypeDoc) are **best-effort**
-   (`continue-on-error` in the publish workflow): they must never gate a release,
+   (`continue-on-error` in the release pipeline): they must never gate a release,
    and a step that "succeeds" under that flag may have failed and published
    nothing. Check the artifact, not the run: the transcript's verdict, the
    manifest's `release` field at `tacenta.com/dl/sdk/surface.json`, the CLI's

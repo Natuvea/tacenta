@@ -8,8 +8,8 @@
 //   bindings/android/generate-kotlin.sh debug target/kotlin
 // then, from bindings/android:
 //   TACENTA_API_KEY=tct_... ./gradlew -p conformance -q run
-// TACENTA_KOTLIN_BINDINGS names the generated source (CI's android-package
-// job compiles this program against the .aar's copy) and TACENTA_FFI_LIB_DIR
+// TACENTA_KOTLIN_BINDINGS names the generated source (the release pipeline
+// compiles this program against the .aar's copy) and TACENTA_FFI_LIB_DIR
 // the directory holding the host library (target/debug by default).
 plugins {
     kotlin("jvm") version "2.0.20"

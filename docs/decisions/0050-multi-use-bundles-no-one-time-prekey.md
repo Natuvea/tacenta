@@ -5,7 +5,7 @@
 ## Decision
 
 `Party::publish_bundle` publishes a bundle with **no one-time EC
-prekey** — identity, signed prekey, and Kyber prekey only. The directory
+prekey** — identity, signed prekey, and ML-KEM prekey only. The directory
 stores one bundle blob per device and serves the same copy to every
 peer (decision 0018), so everything in the bundle must be multi-use.
 
@@ -20,9 +20,8 @@ served-many-times bundle must carry no single-use material.
 
 ## Considered
 
-- **Dispensing one-time prekeys from the directory** (Signal's actual
-  design: a pool per device, each lookup pops one, bundle-without-prekey
-  as the exhausted fallback). Correct, and where this ends up — but it
+- **Dispensing one-time prekeys from the directory** (a pool per device, each lookup pops one, bundle-without-prekey as the
+  exhausted fallback). Correct, and where this ends up — but it
   changes the directory from "stores public blobs" (0018) to a stateful
   dispenser, touches the wire protocol, and deserves its own record.
 - **Republishing a fresh bundle after each consumed first contact.**
@@ -33,12 +32,12 @@ served-many-times bundle must carry no single-use material.
 
 ## Why
 
-The signed prekey and the Kyber prekey are multi-use by design, so a
+The signed prekey and the ML-KEM prekey are multi-use by design, so a
 served-many-times bundle composed of only those is sound — verified
 by `both_sides_agree_without_one_time_prekey` (initiator and responder
 derive the same secret when the bundle carries no one-time prekey,
 only the signed and reusable KEM keys). PQXDH's
-post-quantum contribution is preserved: the Kyber prekey still feeds
+post-quantum contribution is preserved: the ML-KEM prekey still feeds
 the handshake (the spec's `pqxdh_agree` covers the no-one-time-prekey
 case explicitly).
 

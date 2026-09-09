@@ -73,5 +73,5 @@ binding-mutation surface a single, already-tested method.
   an old recovery key is not notified.
 - **Peer notification of a binding change.** Recovery changes the bound
   identity, so a peer who verified the old one should be warned to
-  re-verify (safety-number-change UX) — a client concern layered on top,
+  re-verify (key-fingerprint-change UX) — a client concern layered on top,
   not addressed in the directory.

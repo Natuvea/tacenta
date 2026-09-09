@@ -144,8 +144,7 @@ impl OpenParty {
     ///
     /// **This is symmetry and defence in depth.** A sampled sweep over 128
     /// positions of a real prekey blob finds no byte string that decodes and
-    /// re-encodes differently, unlike the session format, where the same
-    /// sweep finds 32. The check is here because the entry point would
+    /// re-encodes differently. The check is here because the entry point would
     /// otherwise be unguarded, a future optional field could introduce a
     /// non-canonical spelling without anyone noticing, and a reader should not
     /// have to ask why one half of a file is checked and the other is not. The

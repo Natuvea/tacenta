@@ -32,7 +32,7 @@ use.
   but a returning client presents a new identity key for an address the
   directory already bound to the old one, so trust-on-first-use refuses it —
   the client is locked out of its own address, and any peer who verified it
-  sees a safety-number change every restart. Not viable for a real client.
+  sees a key-fingerprint change every restart. Not viable for a real client.
 - **A separate `Identity` type instead of a byte blob.** Cleaner typing, but
   more surface for no behavioural gain this slice; the byte blob matches how
   bundles already cross the facade. Revisit if the export grows structure.
@@ -41,7 +41,7 @@ use.
 
 Identity continuity is the property that actually matters for a returning
 client: the same bound key means the directory refreshes rather than rejects,
-and peers see no safety-number change. Sessions are recoverable without it —
+and peers see no key-fingerprint change. Sessions are recoverable without it —
 the Double Ratchet re-establishes from a fresh prekey exchange under the same
 identity, at the cost of one round of re-establishment, no more. So the
 identity is the part worth persisting first, and it is small (one keypair

@@ -1,4 +1,4 @@
-# 0090 — the SDK facade and its language heads
+# 0090 — the SDK facade and its growth into groups
 
 ## What this is
 

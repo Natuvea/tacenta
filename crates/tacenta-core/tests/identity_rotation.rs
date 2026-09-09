@@ -1,6 +1,6 @@
 //! Authorized identity rotation: an address's bound identity key can be
 //! replaced, but only by the key that currently controls it — key
-//! continuity, the same shape as a safety-number change in a messaging app.
+//! continuity, the same shape as a key-fingerprint change in a messaging app.
 //!
 //! Admitting a rotation takes two cryptographic checks, then the crypto-free
 //! `Directory::rotate`:
