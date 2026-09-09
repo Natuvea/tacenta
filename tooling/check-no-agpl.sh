@@ -13,8 +13,15 @@ cd "$(git rev-parse --show-toplevel)"
 
 echo "no-agpl: resolving the product graph"
 
+# Resolve first and fail plainly if the graph cannot be fetched, rather than
+# handing an empty document to the scan below.
+metadata="$(cargo metadata --format-version 1 --all-features)" || {
+  echo "no-agpl: cargo metadata failed; the dependency graph could not be resolved" >&2
+  exit 1
+}
+
 # Licence metadata, not crate names: renaming a crate should not evade this.
-found="$(cargo metadata --format-version 1 --all-features 2>/dev/null | python3 -c '
+found="$(printf '%s' "$metadata" | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
 strong, missing = [], []
