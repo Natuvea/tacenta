@@ -2,6 +2,11 @@
 
 **Verifiable end-to-end encrypted messaging for your app.**
 
+Website: [tacenta.com](https://tacenta.com) ·
+[Quickstart](https://tacenta.com/quickstart/) ·
+[SDK](https://tacenta.com/sdk/) ·
+[Assurance](https://tacenta.com/assurance/)
+
 One Rust protocol core, shared by the server and every client binding, with its
 security-critical zones machine-checked against a Lean spec, and a recipe to
 rerun the proofs yourself. Where most messaging stacks ask you to trust the
