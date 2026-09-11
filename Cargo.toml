@@ -34,7 +34,7 @@ tacenta-server = { path = "crates/tacenta-server", version = "1" }
 tacenta-gateway = { path = "crates/tacenta-gateway", version = "1" }
 # tacenta-core, pinned by revision. Aliased because both crates are called
 # `tacenta-core`.
-open-tacenta = { git = "https://github.com/Natuvea/tacenta-core", rev = "36b5db2312b504984dd9a1354708aacffc4b6f51", package = "tacenta-core" }
+open-tacenta = { git = "https://github.com/Natuvea/tacenta-core", rev = "e1537e69611e9aa05cc9441c341fd00af32a075a", package = "tacenta-core" }
 # The `rand_core` generation open-tacenta's curve dependencies still require.
 # See `crypto::open::RngBridge` for why both are present.
 rand_core_06 = { package = "rand_core", version = "0.6" }
