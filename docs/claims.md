@@ -530,7 +530,7 @@ not in our proofs' dependency cone.
   modeled, not about emitted machine code.
 - Platform model: `usize` is at least 32 bits.
 - **tacenta-core** is consumed as a dependency pinned by revision
-  (`e1537e6`); this repository makes no verification claims about it. Its
+  (`fb89b15`); this repository makes no verification claims about it. Its
   claims are its own, on a separate axiom baseline, and are not inherited
   here.
 
