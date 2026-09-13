@@ -63,8 +63,10 @@ use tacenta_wire::{Envelope, Kind};
 mod secure_store;
 pub use secure_store::{SecureStore, SecureStoreError};
 mod dial;
+mod operations;
 use dial::Dialer;
 pub use dial::{ByteStream, Connecting, Connector};
+use operations::PreparedSend;
 mod tenant;
 pub use tacenta_discovery::{ServiceDocument, Tls, WELL_KNOWN_PATH};
 pub use tenant::{Endpoints, Tacenta};
@@ -1887,17 +1889,23 @@ impl<P: CryptoProvider> Client<P> {
         // message goes out, so a restore of any state older than this send is
         // caught (the per-send window). No-op unless a store is attached.
         self.commit_ratchet_advance()?;
-        let request = encode_request(&Request::Send {
+        let prepared = PreparedSend::new(encode_request(&Request::Send {
             to: to.clone(),
             envelope: Envelope {
                 kind: Kind::Dm,
                 payload: framed,
             },
-        });
-        let resp = match self.relay.request(&request).await {
+        }));
+        self.dispatch_prepared_send(&prepared).await
+    }
+
+    /// Dispatch one exact prepared request. The reconnect retry uses the same
+    /// bytes, so it cannot re-enter encryption or ratchet advancement.
+    async fn dispatch_prepared_send(&mut self, prepared: &PreparedSend) -> Result<()> {
+        let resp = match self.relay.request(prepared.request()).await {
             Err(_) => {
                 self.reconnect_with_patience().await?;
-                self.relay.request(&request).await?
+                self.relay.request(prepared.request()).await?
             }
             Ok(resp) => resp,
         };
@@ -2044,17 +2052,24 @@ impl<P: CryptoProvider> Client<P> {
             let _ = self.commit_ratchet_advance();
         }
 
-        if !messages.is_empty() {
-            let ack = encode_request(&Request::Ack {
-                device: self.me.clone(),
-                up_to: from + messages.len() as u64,
-            });
-            match decode_response(&self.relay.request(&ack).await?) {
-                Some(Response::Acked { accepted: true }) => {}
-                _ => return Err(Error::Protocol("acknowledgement was not accepted")),
-            }
-        }
+        self.acknowledge_fetched(from, messages.len()).await?;
         Ok(received)
+    }
+
+    /// The acknowledgement stage is distinct from fetching and processing so a
+    /// durable receiver can later insert its commit boundary before this call.
+    async fn acknowledge_fetched(&mut self, from: u64, count: usize) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let ack = encode_request(&Request::Ack {
+            device: self.me.clone(),
+            up_to: from + count as u64,
+        });
+        match decode_response(&self.relay.request(&ack).await?) {
+            Some(Response::Acked { accepted: true }) => Ok(()),
+            _ => Err(Error::Protocol("acknowledgement was not accepted")),
+        }
     }
 
     /// Re-key this client's identity: generate a fresh identity, rotate the
