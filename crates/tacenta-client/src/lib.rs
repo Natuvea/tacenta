@@ -63,6 +63,10 @@ use tacenta_wire::{Envelope, Kind};
 mod secure_store;
 pub use secure_store::{SecureStore, SecureStoreError};
 mod dial;
+// GC-03's deterministic harness exercises the port before live operations can
+// provide the provider-state effect required for a real durable commit.
+#[allow(dead_code)]
+mod durable;
 // GC-03's port is intentionally not wired into live DM operations until the
 // provider outcome contract supplies the state effect that must be persisted.
 #[allow(dead_code)]

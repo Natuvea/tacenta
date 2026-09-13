@@ -15,6 +15,7 @@ pub(crate) struct OperationSnapshot {
     pub(crate) application_state: Vec<u8>,
     pub(crate) outbox: Vec<Vec<u8>>,
     pub(crate) inbox: Vec<Vec<u8>>,
+    pub(crate) dedup: Vec<Vec<u8>>,
     pub(crate) delivery_cursor: u64,
 }
 
@@ -27,6 +28,7 @@ impl OperationSnapshot {
             application_state: Vec::new(),
             outbox: Vec::new(),
             inbox: Vec::new(),
+            dedup: Vec::new(),
             delivery_cursor: 0,
         }
     }
@@ -56,5 +58,6 @@ mod tests {
         assert_eq!(snapshot.generation, 7);
         assert!(snapshot.outbox.is_empty());
         assert!(snapshot.inbox.is_empty());
+        assert!(snapshot.dedup.is_empty());
     }
 }
