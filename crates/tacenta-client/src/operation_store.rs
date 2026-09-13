@@ -4,6 +4,9 @@
 //! store. It gives crash schedules a versioned value to commit and recover
 //! without claiming that current direct-message operations already use it.
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+
 /// The first combined snapshot format.
 pub(crate) const OPERATION_SNAPSHOT_VERSION: u8 = 1;
 
@@ -32,6 +35,86 @@ impl OperationSnapshot {
             delivery_cursor: 0,
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode(&self) -> Option<Vec<u8>> {
+        fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
+            out.extend_from_slice(&u32::try_from(bytes.len()).ok()?.to_be_bytes());
+            out.extend_from_slice(bytes);
+            Some(())
+        }
+        fn put_many(out: &mut Vec<u8>, entries: &[Vec<u8>]) -> Option<()> {
+            out.extend_from_slice(&u32::try_from(entries.len()).ok()?.to_be_bytes());
+            for entry in entries {
+                put_bytes(out, entry)?;
+            }
+            Some(())
+        }
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"TCOP");
+        out.push(self.version);
+        out.extend_from_slice(&self.generation.to_be_bytes());
+        put_bytes(&mut out, &self.provider_state)?;
+        put_bytes(&mut out, &self.application_state)?;
+        put_many(&mut out, &self.outbox)?;
+        put_many(&mut out, &self.inbox)?;
+        put_many(&mut out, &self.dedup)?;
+        out.extend_from_slice(&self.delivery_cursor.to_be_bytes());
+        Some(out)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
+            let (head, tail) = cursor.split_at_checked(count)?;
+            *cursor = tail;
+            Some(head)
+        }
+        fn take_u32(cursor: &mut &[u8]) -> Option<u32> {
+            Some(u32::from_be_bytes(take(cursor, 4)?.try_into().ok()?))
+        }
+        fn take_u64(cursor: &mut &[u8]) -> Option<u64> {
+            Some(u64::from_be_bytes(take(cursor, 8)?.try_into().ok()?))
+        }
+        fn take_bytes(cursor: &mut &[u8]) -> Option<Vec<u8>> {
+            let count = usize::try_from(take_u32(cursor)?).ok()?;
+            Some(take(cursor, count)?.to_vec())
+        }
+        fn take_many(cursor: &mut &[u8]) -> Option<Vec<Vec<u8>>> {
+            let count = usize::try_from(take_u32(cursor)?).ok()?;
+            (0..count).map(|_| take_bytes(cursor)).collect()
+        }
+
+        let mut cursor = bytes;
+        if take(&mut cursor, 4)? != b"TCOP" {
+            return None;
+        }
+        let version = *take(&mut cursor, 1)?.first()?;
+        if version != OPERATION_SNAPSHOT_VERSION {
+            return None;
+        }
+        let generation = take_u64(&mut cursor)?;
+        let provider_state = take_bytes(&mut cursor)?;
+        let application_state = take_bytes(&mut cursor)?;
+        let outbox = take_many(&mut cursor)?;
+        let inbox = take_many(&mut cursor)?;
+        let dedup = take_many(&mut cursor)?;
+        let delivery_cursor = take_u64(&mut cursor)?;
+        if !cursor.is_empty() {
+            return None;
+        }
+        Some(Self {
+            version,
+            generation,
+            provider_state,
+            application_state,
+            outbox,
+            inbox,
+            dedup,
+            delivery_cursor,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +130,44 @@ pub(crate) trait OperationStore {
     fn recover(&mut self) -> Result<Option<OperationSnapshot>, ()>;
 }
 
+/// Native reference implementation of the operation-store port.  Platform
+/// bindings provide their own store; this uses the product's crash-safe atomic
+/// writer without adding a database dependency to the initial coordinator.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct FileOperationStore {
+    path: PathBuf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FileOperationStore {
+    pub(crate) fn new(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl OperationStore for FileOperationStore {
+    fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+        let Some(bytes) = snapshot.encode() else {
+            return CommitOutcome::Failed;
+        };
+        match tacenta_core::persist::write_atomically(&self.path, &bytes) {
+            Ok(()) => CommitOutcome::Committed,
+            Err(_) => CommitOutcome::Failed,
+        }
+    }
+
+    fn recover(&mut self) -> Result<Option<OperationSnapshot>, ()> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => OperationSnapshot::decode(&bytes).map(Some).ok_or(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +180,48 @@ mod tests {
         assert!(snapshot.outbox.is_empty());
         assert!(snapshot.inbox.is_empty());
         assert!(snapshot.dedup.is_empty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_native_store_atomically_recovers_a_complete_opaque_snapshot() {
+        let path = std::env::temp_dir().join(format!(
+            "tacenta-operation-store-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut snapshot = OperationSnapshot::empty(4);
+        snapshot.provider_state = vec![1, 2, 3];
+        snapshot.application_state = vec![4, 5];
+        snapshot.outbox = vec![vec![6, 7]];
+        snapshot.inbox = vec![vec![8]];
+        snapshot.dedup = vec![vec![9, 10]];
+        snapshot.delivery_cursor = 12;
+
+        let mut store = FileOperationStore::new(&path);
+        assert_eq!(store.commit(&snapshot), CommitOutcome::Committed);
+        assert_eq!(store.recover(), Ok(Some(snapshot)));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_native_store_refuses_a_torn_or_unknown_snapshot() {
+        let path = std::env::temp_dir().join(format!(
+            "tacenta-operation-store-invalid-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"TCOP\x02").unwrap();
+
+        assert_eq!(FileOperationStore::new(&path).recover(), Err(()));
+        let _ = std::fs::remove_file(path);
     }
 }
