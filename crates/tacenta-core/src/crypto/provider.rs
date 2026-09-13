@@ -139,6 +139,18 @@ pub trait CryptoProvider: Sized {
         csprng: &mut R,
     ) -> impl Future<Output = Result<(), Self::Error>>;
 
+    /// Open a session only if `bundle` authenticates the expected peer
+    /// identity.  The relay address is a routing input, not identity evidence;
+    /// callers that obtained an identity through a directory or roster use
+    /// this operation so a substituted bundle is refused before state changes.
+    fn establish_session_for<R: Rng + CryptoRng>(
+        &mut self,
+        peer: &Address,
+        bundle: &[u8],
+        expected_identity: &[u8],
+        csprng: &mut R,
+    ) -> impl Future<Output = Result<(), Self::Error>>;
+
     /// Encrypt for `peer`, returning framed ciphertext ready to be an envelope
     /// payload.
     fn encrypt<R: Rng + CryptoRng>(

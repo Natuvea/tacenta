@@ -31,7 +31,8 @@
 
 use super::provider::{Address, CryptoProvider, Failure};
 use open_tacenta::sessions::{
-    self, Identity, PrekeyStore, PublishedBundle, Session, establish_initiator, establish_responder,
+    self, Identity, PrekeyStore, PublishedBundle, Session, establish_initiator,
+    establish_initiator_for, establish_responder,
 };
 use open_tacenta::{primitives::dh, serialization};
 use rand::{CryptoRng, Rng};
@@ -351,6 +352,29 @@ impl CryptoProvider for OpenParty {
         let published = Self::bundle_from_wire(&wire);
         let session = establish_initiator(&self.identity, &published, &mut RngBridge(csprng))
             .map_err(|_| OpenError::Bundle)?;
+        self.sessions.insert(peer.clone(), session);
+        Ok(())
+    }
+
+    async fn establish_session_for<R: Rng + CryptoRng>(
+        &mut self,
+        peer: &Address,
+        bundle: &[u8],
+        expected_identity: &[u8],
+        csprng: &mut R,
+    ) -> Result<(), OpenError> {
+        let wire = serialization::decode_bundle(bundle).map_err(|_| OpenError::Bundle)?;
+        let published = Self::bundle_from_wire(&wire);
+        let expected: [u8; 32] = expected_identity
+            .try_into()
+            .map_err(|_| OpenError::Bundle)?;
+        let session = establish_initiator_for(
+            &self.identity,
+            &published,
+            &dh::PublicKeyBytes::from_bytes(expected),
+            &mut RngBridge(csprng),
+        )
+        .map_err(|_| OpenError::Bundle)?;
         self.sessions.insert(peer.clone(), session);
         Ok(())
     }
@@ -722,6 +746,26 @@ mod tests {
         now(alice.establish_session(&bob.address(), &bundle, &mut rng)).unwrap();
 
         assert_eq!(alice.known_peers(), vec![bob.address()]);
+    }
+
+    #[test]
+    fn an_expected_identity_refuses_a_substituted_bundle_without_a_session() {
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let mut alice = OpenParty::generate("alice", 1, &mut rng).expect("generate");
+        let mut bob = OpenParty::generate("bob", 1, &mut rng).expect("generate");
+        let bundle = now(bob.publish_bundle(&mut rng)).expect("publish");
+
+        assert!(
+            now(alice.establish_session_for(
+                &bob.address(),
+                &bundle,
+                &alice.identity_key(),
+                &mut rng,
+            ))
+            .is_err(),
+            "a bundle authenticated by Bob cannot stand in for Alice"
+        );
+        assert!(alice.known_peers().is_empty());
     }
 
     /// A prekey store survives an export/import round trip and keeps
