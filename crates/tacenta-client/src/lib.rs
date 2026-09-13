@@ -70,7 +70,7 @@ mod operation_store;
 mod operations;
 use dial::Dialer;
 pub use dial::{ByteStream, Connecting, Connector};
-use operations::PreparedSend;
+use operations::{PreparedAcknowledgement, PreparedSend};
 mod tenant;
 pub use tacenta_discovery::{ServiceDocument, Tls, WELL_KNOWN_PATH};
 pub use tenant::{Endpoints, Tacenta};
@@ -2066,11 +2066,11 @@ impl<P: CryptoProvider> Client<P> {
         if count == 0 {
             return Ok(());
         }
-        let ack = encode_request(&Request::Ack {
-            device: self.me.clone(),
-            up_to: from + count as u64,
-        });
-        match decode_response(&self.relay.request(&ack).await?) {
+        let Some(acknowledgement) = PreparedAcknowledgement::for_fetched(&self.me, from, count)
+        else {
+            return Err(Error::Protocol("delivery acknowledgement prefix overflow"));
+        };
+        match decode_response(&self.relay.request(acknowledgement.request()).await?) {
             Some(Response::Acked { accepted: true }) => Ok(()),
             _ => Err(Error::Protocol("acknowledgement was not accepted")),
         }
