@@ -19,3 +19,15 @@ impl PreparedSend {
         &self.request
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PreparedSend;
+
+    #[test]
+    fn a_retry_keeps_the_exact_prepared_request() {
+        let prepared = PreparedSend::new(vec![0, 1, 2, 0xff]);
+        let retry = prepared.clone();
+        assert_eq!(prepared.request(), retry.request());
+    }
+}
