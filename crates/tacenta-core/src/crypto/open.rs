@@ -29,7 +29,7 @@
 //! functional test in this repository, because those only check that
 //! encryption round-trips.
 
-use super::provider::{Address, CryptoProvider, Failure};
+use super::provider::{Address, CryptoOperation, CryptoProvider, CryptoStateEffect, Failure};
 use open_tacenta::sessions::{
     self, Identity, PrekeyStore, PublishedBundle, Session, establish_initiator,
     establish_initiator_for, establish_responder,
@@ -391,6 +391,36 @@ impl CryptoProvider for OpenParty {
             .map_err(|_| OpenError::Message)
     }
 
+    async fn encrypt_with_outcome<R: Rng + CryptoRng>(
+        &mut self,
+        peer: &Address,
+        plaintext: &[u8],
+        csprng: &mut R,
+    ) -> CryptoOperation<Vec<u8>, OpenError> {
+        let authenticated_peer = self
+            .sessions
+            .get(peer)
+            .map(|session| session.peer_identity().as_bytes().to_vec());
+        let result = self.encrypt(peer, plaintext, csprng).await;
+        let state_effect = match result {
+            Ok(_) => CryptoStateEffect::Advanced,
+            Err(_)
+                if self
+                    .sessions
+                    .get(peer)
+                    .is_some_and(Session::agreement_failed) =>
+            {
+                CryptoStateEffect::Terminal
+            }
+            Err(_) => CryptoStateEffect::Unchanged,
+        };
+        CryptoOperation {
+            result,
+            authenticated_peer,
+            state_effect,
+        }
+    }
+
     // A peer with no stored session is skipped. There is no separate identity
     // to carry alongside each session: `Session::export` already includes the
     // peer's identity public key.
@@ -503,6 +533,36 @@ impl CryptoProvider for OpenParty {
                     .map_err(|_| OpenError::Message)
             }
             None => Err(OpenError::Message),
+        }
+    }
+
+    async fn decrypt_with_outcome<R: Rng + CryptoRng>(
+        &mut self,
+        peer: &Address,
+        framed: &[u8],
+        csprng: &mut R,
+    ) -> CryptoOperation<Vec<u8>, OpenError> {
+        let result = self.decrypt(peer, framed, csprng).await;
+        let authenticated_peer = self
+            .sessions
+            .get(peer)
+            .map(|session| session.peer_identity().as_bytes().to_vec());
+        let state_effect = match result {
+            Ok(_) => CryptoStateEffect::Advanced,
+            Err(_)
+                if self
+                    .sessions
+                    .get(peer)
+                    .is_some_and(Session::agreement_failed) =>
+            {
+                CryptoStateEffect::Terminal
+            }
+            Err(_) => CryptoStateEffect::Unchanged,
+        };
+        CryptoOperation {
+            result,
+            authenticated_peer,
+            state_effect,
         }
     }
 }
@@ -766,6 +826,22 @@ mod tests {
             "a bundle authenticated by Bob cannot stand in for Alice"
         );
         assert!(alice.known_peers().is_empty());
+    }
+
+    #[test]
+    fn an_encrypt_outcome_carries_peer_identity_and_state_effect() {
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let mut alice = OpenParty::generate("alice", 1, &mut rng).expect("generate");
+        let mut bob = OpenParty::generate("bob", 1, &mut rng).expect("generate");
+        let bob_identity = bob.identity_key();
+        let bundle = now(bob.publish_bundle(&mut rng)).expect("publish");
+        now(alice.establish_session_for(&bob.address(), &bundle, &bob_identity, &mut rng))
+            .expect("establish");
+
+        let outcome = now(alice.encrypt_with_outcome(&bob.address(), b"hello", &mut rng));
+        assert_eq!(outcome.state_effect, CryptoStateEffect::Advanced);
+        assert_eq!(outcome.authenticated_peer, Some(bob_identity));
+        assert!(outcome.result.is_ok());
     }
 
     /// A prekey store survives an export/import round trip and keeps

@@ -16,7 +16,7 @@ use tacenta_client::{
     SecureStore, SecureStoreError, SessionProvider,
 };
 use tacenta_core::crypto::{
-    Address, CryptoProvider, DefaultProvider, Failure,
+    Address, CryptoOperation, CryptoProvider, DefaultProvider, Failure,
     open::{OpenError, OpenParty},
 };
 use tacenta_directory::DirResponse;
@@ -196,6 +196,24 @@ impl CryptoProvider for CountingProvider {
         csprng: &mut R,
     ) -> Result<Vec<u8>, Self::Error> {
         self.0.decrypt(peer, framed, csprng).await
+    }
+
+    async fn encrypt_with_outcome<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        peer: &Address,
+        plaintext: &[u8],
+        csprng: &mut R,
+    ) -> CryptoOperation<Vec<u8>, Self::Error> {
+        self.0.encrypt_with_outcome(peer, plaintext, csprng).await
+    }
+
+    async fn decrypt_with_outcome<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        peer: &Address,
+        framed: &[u8],
+        csprng: &mut R,
+    ) -> CryptoOperation<Vec<u8>, Self::Error> {
+        self.0.decrypt_with_outcome(peer, framed, csprng).await
     }
 
     async fn export_sessions(&self, peers: &[Address]) -> Result<Vec<u8>, Self::Error> {
