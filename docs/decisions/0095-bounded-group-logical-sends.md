@@ -26,8 +26,8 @@ Exhaustion records `exhausted_unknown`, never a nondelivery conclusion.
 
 A newly accepted removal cancels obsolete unsent recipient work and retries,
 while retaining prior handoff evidence and consumed pairwise state. Work
-already ordered before the local removal update remains handed off; it is not
-rewritten as cancelled.
+already handed off becomes `cancelled_after_handoff`: it preserves its immutable
+ciphertext and attempt evidence but cannot reserve another automatic retry.
 
 ## Considered
 
