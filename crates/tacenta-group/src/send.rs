@@ -1,8 +1,8 @@
 //! Immutable logical fan-out records for the bounded group experiment.
 
 use crate::{
-    ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_LIVE_LOGICAL_SENDS, MAX_PAYLOAD_LEN,
-    Member, RESERVED_REVISION, Roster,
+    ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_LIVE_LOGICAL_SENDS, MAX_MEMBERS,
+    MAX_PAYLOAD_LEN, Member, RESERVED_REVISION, Roster,
 };
 use std::collections::BTreeSet;
 
@@ -231,6 +231,84 @@ impl LogicalSend {
         Ok(out)
     }
 
+    /// Recovers one immutable logical send from its canonical `TCGI` preimage.
+    /// Mutable recipient progress is deliberately not encoded here: recovery
+    /// replays later transcript records only after this immutable root passes
+    /// every profile validation.
+    pub fn decode_intent(bytes: &[u8]) -> Result<Self, Error> {
+        fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Result<&'a [u8], Error> {
+            let (head, tail) = cursor.split_at_checked(count).ok_or(Error::Malformed)?;
+            *cursor = tail;
+            Ok(head)
+        }
+        fn take_u32(cursor: &mut &[u8]) -> Result<u32, Error> {
+            Ok(u32::from_be_bytes(
+                take(cursor, 4)?.try_into().map_err(|_| Error::Malformed)?,
+            ))
+        }
+        fn take_u64(cursor: &mut &[u8]) -> Result<u64, Error> {
+            Ok(u64::from_be_bytes(
+                take(cursor, 8)?.try_into().map_err(|_| Error::Malformed)?,
+            ))
+        }
+        fn take_lp(cursor: &mut &[u8]) -> Result<Vec<u8>, Error> {
+            let length = usize::try_from(take_u32(cursor)?).map_err(|_| Error::Malformed)?;
+            Ok(take(cursor, length)?.to_vec())
+        }
+        fn take_member(cursor: &mut &[u8]) -> Result<Member, Error> {
+            let member = Member::new(take_lp(cursor)?, take_lp(cursor)?);
+            member.validate()?;
+            Ok(member)
+        }
+
+        let mut cursor = bytes;
+        if !cursor.starts_with(LOGICAL_SEND_DOMAIN) {
+            return Err(Error::Malformed);
+        }
+        cursor = &cursor[LOGICAL_SEND_DOMAIN.len()..];
+        let group_id = GroupId::try_from(take_lp(&mut cursor)?.as_slice())?;
+        let revision = take_u64(&mut cursor)?;
+        let sender = take_member(&mut cursor)?;
+        let sequence = take_u64(&mut cursor)?;
+        let roster_digest: [u8; DIGEST_LEN] = take_lp(&mut cursor)?
+            .try_into()
+            .map_err(|_| Error::Malformed)?;
+        let payload = take_lp(&mut cursor)?;
+        if payload.len() > MAX_PAYLOAD_LEN {
+            return Err(Error::PayloadTooLarge);
+        }
+        let count = usize::try_from(take_u32(&mut cursor)?).map_err(|_| Error::Malformed)?;
+        if count == 0 {
+            return Err(Error::EmptyRecipients);
+        }
+        if count > MAX_MEMBERS {
+            return Err(Error::TooManyMembers);
+        }
+        let recipients: Vec<Member> = (0..count)
+            .map(|_| take_member(&mut cursor))
+            .collect::<Result<_, _>>()?;
+        if !cursor.is_empty() {
+            return Err(Error::Malformed);
+        }
+        validate_recovery_recipients(&recipients)?;
+
+        Ok(Self {
+            id: LogicalMessageId::new(group_id, revision, sender, sequence)?,
+            roster_digest,
+            payload,
+            recipients: recipients
+                .into_iter()
+                .map(|recipient| RecipientProgress {
+                    recipient,
+                    disposition: RecipientDisposition::Pending,
+                    context_commitment: None,
+                    ciphertext: None,
+                    attempts_reserved: 0,
+                })
+                .collect(),
+        })
+    }
+
     fn same_immutable_fields(&self, candidate: &Self) -> bool {
         self.id == candidate.id
             && self.roster_digest == candidate.roster_digest
@@ -422,6 +500,23 @@ fn validate_recipients(roster: &Roster, recipients: &[Member]) -> Result<(), Err
     Ok(())
 }
 
+fn validate_recovery_recipients(recipients: &[Member]) -> Result<(), Error> {
+    let mut previous: Option<&Member> = None;
+    let mut identities = BTreeSet::new();
+    for recipient in recipients {
+        if let Some(previous) = previous
+            && previous.canonical_sort_key() >= recipient.canonical_sort_key()
+        {
+            return Err(Error::NonCanonical);
+        }
+        if !identities.insert(recipient.identity()) {
+            return Err(Error::NonCanonical);
+        }
+        previous = Some(recipient);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +583,34 @@ mod tests {
             logical_send.application_context(&Member::new(b"eve".to_vec(), vec![1])),
             Err(Error::NotMember)
         );
+    }
+
+    #[test]
+    fn canonical_intent_round_trips_to_pending_recipient_progress() {
+        let original = send();
+        let recovered = LogicalSend::decode_intent(&original.encode_intent().unwrap()).unwrap();
+
+        assert_eq!(recovered, original);
+        assert!(recovered.recipients().iter().all(|progress| {
+            progress.disposition == RecipientDisposition::Pending
+                && progress.context_commitment.is_none()
+                && progress.ciphertext.is_none()
+                && progress.attempts_reserved == 0
+        }));
+    }
+
+    #[test]
+    fn intent_recovery_refuses_noncanonical_or_trailing_recipient_data() {
+        let mut reordered = send();
+        reordered.recipients.swap(0, 1);
+        assert_eq!(
+            LogicalSend::decode_intent(&reordered.encode_intent().unwrap()),
+            Err(Error::NonCanonical)
+        );
+
+        let mut trailing = send().encode_intent().unwrap();
+        trailing.push(0);
+        assert_eq!(LogicalSend::decode_intent(&trailing), Err(Error::Malformed));
     }
 
     #[test]
