@@ -11,9 +11,9 @@ use tacenta_core::crypto::{
     groups::{payload_commitment, roster_commitment},
 };
 use tacenta_group::{
-    ApplicationContext, Error as GroupError, GroupReceiver, LogicalSend, Member,
-    ReceiveDisposition, ReceiveRefusal, RecipientProgress, RevalidatedReceive, Roster,
-    RosterDisposition, RosterRefusal, RosterView,
+    ApplicationContext, Error as GroupError, GroupOutbox, GroupReceiver, LogicalSend, Member,
+    OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress, RevalidatedReceive,
+    Roster, RosterDisposition, RosterRefusal, RosterView,
 };
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
@@ -43,6 +43,42 @@ pub(crate) fn bind_prepared_ciphertext(
     logical_send
         .record_prepared(recipient, commitment, ciphertext)
         .cloned()
+}
+
+/// Commits immutable group send intent before a caller can begin a
+/// recipient-specific pairwise preparation. An exact duplicate observes the
+/// existing logical record without publishing another snapshot generation.
+pub(crate) fn commit_logical_intent<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut GroupOutbox,
+    send: LogicalSend,
+) -> Result<OutboxDisposition, GroupOperationError> {
+    let intent = send
+        .encode_intent()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let mut candidate_outbox = outbox.clone();
+    let disposition = candidate_outbox
+        .record(send)
+        .map_err(|_| GroupOperationError::Policy)?;
+    if disposition == OutboxDisposition::Duplicate {
+        return Ok(disposition);
+    }
+
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot
+        .outbox
+        .push(encode_intent_record(&intent)?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *outbox = candidate_outbox;
+    Ok(disposition)
 }
 
 /// Records a prepared ciphertext and its core-bound application context in the
@@ -269,6 +305,15 @@ fn encode_prepared_record(
     Ok(record)
 }
 
+fn encode_intent_record(intent: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
+    let length = u32::try_from(intent.len()).map_err(|_| GroupOperationError::Policy)?;
+    let mut record = Vec::with_capacity(8 + intent.len());
+    record.extend_from_slice(b"TCGI");
+    record.extend_from_slice(&length.to_be_bytes());
+    record.extend_from_slice(intent);
+    Ok(record)
+}
+
 fn encode_receive_record(
     provider_effect: CryptoStateEffect,
     context: &[u8],
@@ -370,15 +415,16 @@ fn encode_roster_record(
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupOperationError, bind_prepared_ciphertext, commit_prepared_ciphertext,
-        commit_receive_disposition, commit_roster_successor, commit_roster_successor_with_receiver,
+        GroupOperationError, bind_prepared_ciphertext, commit_logical_intent,
+        commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
+        commit_roster_successor_with_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::CryptoStateEffect;
     use tacenta_group::{
-        ApplicationContext, DIGEST_LEN, GroupId, GroupReceiver, LogicalSend, Member,
-        POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal, RecipientDisposition, Roster,
-        RosterDisposition, RosterView,
+        ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupReceiver, LogicalSend, Member,
+        OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal,
+        RecipientDisposition, Roster, RosterDisposition, RosterView,
     };
 
     fn alice() -> Member {
@@ -462,6 +508,48 @@ mod tests {
             Some(tacenta_core::crypto::groups::payload_commitment(&context))
         );
         assert_eq!(progress.ciphertext, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn logical_intent_commits_once_before_recipient_preparation() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+        let send = logical_send();
+
+        assert_eq!(
+            commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send.clone()),
+            Ok(OutboxDisposition::Inserted)
+        );
+        assert_eq!(snapshot.generation, 5);
+        assert_eq!(&snapshot.outbox[0][..4], b"TCGI");
+        assert_eq!(outbox.sends().len(), 1);
+        assert_eq!(
+            commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send),
+            Ok(OutboxDisposition::Duplicate)
+        );
+        assert_eq!(snapshot.generation, 5);
+    }
+
+    #[test]
+    fn unknown_logical_intent_commit_freezes_without_adding_live_outbox_state() {
+        let mut store = Store {
+            outcome: CommitOutcome::Unknown,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let before_snapshot = snapshot.clone();
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+
+        assert_eq!(
+            commit_logical_intent(&mut store, &mut snapshot, &mut outbox, logical_send()),
+            Err(GroupOperationError::Frozen)
+        );
+        assert_eq!(snapshot, before_snapshot);
+        assert!(outbox.sends().is_empty());
     }
 
     struct Store {

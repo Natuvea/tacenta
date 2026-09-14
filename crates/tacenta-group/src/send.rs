@@ -6,6 +6,8 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+const LOGICAL_SEND_DOMAIN: &[u8] = b"Tacenta Group Logical Send v1";
+
 /// An application identifier allocated independently from pairwise ratchets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogicalMessageId {
@@ -78,6 +80,14 @@ pub struct GroupOutbox {
     sends: Vec<LogicalSend>,
 }
 
+/// Whether recording a logical intent inserted a new durable value or reused
+/// the prior immutable value for the same logical ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutboxDisposition {
+    Inserted,
+    Duplicate,
+}
+
 impl GroupOutbox {
     pub fn new(group_id: GroupId) -> Self {
         Self {
@@ -92,13 +102,13 @@ impl GroupOutbox {
 
     /// Adds a distinct live logical send. An exact replay uses the prior
     /// immutable record, while changed data for its ID cannot replace it.
-    pub fn record(&mut self, send: LogicalSend) -> Result<&LogicalSend, Error> {
+    pub fn record(&mut self, send: LogicalSend) -> Result<OutboxDisposition, Error> {
         if send.id.group_id != self.group_id {
             return Err(Error::Conflict);
         }
         if let Some(position) = self.sends.iter().position(|known| known.id == send.id) {
             if self.sends[position].same_immutable_fields(&send) {
-                return Ok(&self.sends[position]);
+                return Ok(OutboxDisposition::Duplicate);
             }
             return Err(Error::Conflict);
         }
@@ -106,7 +116,7 @@ impl GroupOutbox {
             return Err(Error::OutboxFull);
         }
         self.sends.push(send);
-        Ok(self.sends.last().expect("just inserted"))
+        Ok(OutboxDisposition::Inserted)
     }
 
     /// Applies a locally accepted newer roster to all its logical records.
@@ -175,6 +185,36 @@ impl LogicalSend {
                     | RecipientDisposition::ExhaustedUnknown
             )
         })
+    }
+
+    /// The canonical immutable intent that commits one logical ID before any
+    /// recipient-specific pairwise operation begins.
+    pub fn encode_intent(&self) -> Result<Vec<u8>, Error> {
+        fn put_lp(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
+            let len = u32::try_from(bytes.len()).map_err(|_| Error::Malformed)?;
+            out.extend_from_slice(&len.to_be_bytes());
+            out.extend_from_slice(bytes);
+            Ok(())
+        }
+        fn put_member(out: &mut Vec<u8>, member: &Member) -> Result<(), Error> {
+            put_lp(out, member.identity())?;
+            put_lp(out, member.device())
+        }
+
+        let recipient_count = u32::try_from(self.recipients.len()).map_err(|_| Error::Malformed)?;
+        let mut out = Vec::new();
+        out.extend_from_slice(LOGICAL_SEND_DOMAIN);
+        put_lp(&mut out, self.id.group_id.as_bytes())?;
+        out.extend_from_slice(&self.id.revision.to_be_bytes());
+        put_member(&mut out, &self.id.sender)?;
+        out.extend_from_slice(&self.id.sequence.to_be_bytes());
+        put_lp(&mut out, &self.roster_digest)?;
+        put_lp(&mut out, &self.payload)?;
+        out.extend_from_slice(&recipient_count.to_be_bytes());
+        for progress in &self.recipients {
+            put_member(&mut out, &progress.recipient)?;
+        }
+        Ok(out)
     }
 
     fn same_immutable_fields(&self, candidate: &Self) -> bool {
@@ -531,13 +571,19 @@ mod tests {
     fn outbox_applies_live_backpressure_without_discarding_terminal_evidence() {
         let mut outbox = GroupOutbox::new(group());
         for sequence in 0..MAX_LIVE_LOGICAL_SENDS as u64 {
-            outbox.record(send_at(sequence)).unwrap();
+            assert_eq!(
+                outbox.record(send_at(sequence)),
+                Ok(OutboxDisposition::Inserted)
+            );
         }
         assert_eq!(outbox.record(send_at(8)), Err(Error::OutboxFull));
 
         outbox.cancel_for_newer_roster(3);
         for sequence in 8..=15 {
-            outbox.record(send_at(sequence)).unwrap();
+            assert_eq!(
+                outbox.record(send_at(sequence)),
+                Ok(OutboxDisposition::Inserted)
+            );
         }
         assert_eq!(outbox.sends().len(), 16);
         assert_eq!(outbox.record(send_at(16)), Err(Error::OutboxFull));
@@ -547,17 +593,33 @@ mod tests {
     fn outbox_retry_uses_the_committed_record_after_recipient_progresses() {
         let mut outbox = GroupOutbox::new(group());
         let original = send_at(4);
-        outbox.record(original.clone()).unwrap();
+        assert_eq!(
+            outbox.record(original.clone()),
+            Ok(OutboxDisposition::Inserted)
+        );
         outbox.sends[0]
             .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
             .unwrap();
 
-        let recovered = outbox.record(original).unwrap();
+        assert_eq!(outbox.record(original), Ok(OutboxDisposition::Duplicate));
         assert_eq!(
-            recovered.recipients()[0].disposition,
+            outbox.sends()[0].recipients()[0].disposition,
             RecipientDisposition::Prepared
         );
-        assert_eq!(recovered.recipients()[0].ciphertext, Some(vec![1, 2, 3]));
+        assert_eq!(
+            outbox.sends()[0].recipients()[0].ciphertext,
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn logical_intent_is_canonical_and_excludes_recipient_progress() {
+        let mut logical_send = send();
+        let before = logical_send.encode_intent().unwrap();
+        logical_send
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
+            .unwrap();
+        assert_eq!(logical_send.encode_intent(), Ok(before));
     }
 
     #[test]

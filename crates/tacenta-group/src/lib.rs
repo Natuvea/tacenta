@@ -17,7 +17,8 @@ pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus}
 pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};
 pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
 pub use send::{
-    GroupOutbox, LogicalMessageId, LogicalSend, RecipientDisposition, RecipientProgress,
+    GroupOutbox, LogicalMessageId, LogicalSend, OutboxDisposition, RecipientDisposition,
+    RecipientProgress,
 };
 
 /// The first bounded profile uses 16 opaque group-ID bytes.
