@@ -95,8 +95,8 @@ impl OperationSnapshot {
         if take(&mut cursor, 4)? != b"TCOP" {
             return None;
         }
-        let version = *take(&mut cursor, 1)?.first()?;
-        if version != 1 && version != OPERATION_SNAPSHOT_VERSION {
+        let encoded_version = *take(&mut cursor, 1)?.first()?;
+        if encoded_version != 1 && encoded_version != OPERATION_SNAPSHOT_VERSION {
             return None;
         }
         let generation = take_u64(&mut cursor)?;
@@ -105,7 +105,7 @@ impl OperationSnapshot {
         let outbox = take_many(&mut cursor)?;
         let inbox = take_many(&mut cursor)?;
         let dedup = take_many(&mut cursor)?;
-        let group_controls = if version == 1 {
+        let group_controls = if encoded_version == 1 {
             Vec::new()
         } else {
             take_many(&mut cursor)?
@@ -115,7 +115,10 @@ impl OperationSnapshot {
             return None;
         }
         Some(Self {
-            version,
+            // A recovered v1 value becomes v2 before its next publication;
+            // otherwise encoding its added group-control field under a v1 tag
+            // would make the following recovery reject trailing bytes.
+            version: OPERATION_SNAPSHOT_VERSION,
             generation,
             provider_state,
             application_state,
@@ -263,19 +266,21 @@ mod tests {
         put_many(&mut legacy, &[vec![5]]);
         legacy.extend_from_slice(&6_u64.to_be_bytes());
 
+        let migrated = OperationSnapshot {
+            version: OPERATION_SNAPSHOT_VERSION,
+            generation: 7,
+            provider_state: vec![1],
+            application_state: vec![2],
+            outbox: vec![vec![3]],
+            inbox: vec![vec![4]],
+            dedup: vec![vec![5]],
+            group_controls: Vec::new(),
+            delivery_cursor: 6,
+        };
+        assert_eq!(OperationSnapshot::decode(&legacy), Some(migrated.clone()));
         assert_eq!(
-            OperationSnapshot::decode(&legacy),
-            Some(OperationSnapshot {
-                version: 1,
-                generation: 7,
-                provider_state: vec![1],
-                application_state: vec![2],
-                outbox: vec![vec![3]],
-                inbox: vec![vec![4]],
-                dedup: vec![vec![5]],
-                group_controls: Vec::new(),
-                delivery_cursor: 6,
-            })
+            OperationSnapshot::decode(&migrated.encode().unwrap()),
+            Some(migrated)
         );
     }
 }
