@@ -102,6 +102,7 @@ pub(crate) fn commit_prepared_ciphertext<S: OperationStore>(
     logical_send: &mut LogicalSend,
     recipient: &Member,
     ciphertext: Vec<u8>,
+    provider_state: Vec<u8>,
 ) -> Result<RecipientProgress, GroupOperationError> {
     let mut candidate_send = logical_send.clone();
     let progress = bind_prepared_ciphertext(&mut candidate_send, recipient, ciphertext)
@@ -127,6 +128,7 @@ pub(crate) fn commit_prepared_ciphertext<S: OperationStore>(
     candidate_snapshot
         .outbox
         .push(encode_prepared_record(&context, &commitment, ciphertext)?);
+    candidate_snapshot.provider_state = provider_state;
 
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
@@ -145,6 +147,7 @@ pub(crate) fn commit_outbox_prepared_ciphertext<S: OperationStore>(
     id: &LogicalMessageId,
     recipient: &Member,
     ciphertext: Vec<u8>,
+    provider_state: Vec<u8>,
 ) -> Result<RecipientProgress, GroupOperationError> {
     let mut candidate_outbox = outbox.clone();
     let (progress, context) = {
@@ -176,6 +179,7 @@ pub(crate) fn commit_outbox_prepared_ciphertext<S: OperationStore>(
     candidate_snapshot
         .outbox
         .push(encode_prepared_record(&context, &commitment, ciphertext)?);
+    candidate_snapshot.provider_state = provider_state;
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }
@@ -909,6 +913,7 @@ mod tests {
                 &id,
                 &bob(),
                 vec![7, 8],
+                vec![4, 5, 6],
             )
             .unwrap()
             .ciphertext,
@@ -932,6 +937,7 @@ mod tests {
         );
         assert_eq!(&snapshot.outbox[0][..4], b"TCGI");
         assert_eq!(&snapshot.outbox[1][..4], b"TCGP");
+        assert_eq!(snapshot.provider_state, vec![4, 5, 6]);
         assert_eq!(&snapshot.outbox[2][..4], b"TCGH");
         assert_eq!(&snapshot.outbox[3][..4], b"TCGA");
     }
@@ -959,6 +965,7 @@ mod tests {
                 &id,
                 &bob(),
                 vec![7, 8],
+                vec![4, 5, 6],
             ),
             Err(GroupOperationError::Frozen)
         );
@@ -984,6 +991,7 @@ mod tests {
             &id,
             &bob(),
             vec![7, 8],
+            vec![4, 5, 6],
         )
         .unwrap();
         commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &bob())
@@ -1012,8 +1020,15 @@ mod tests {
         };
         let mut snapshot = OperationSnapshot::empty(4);
         let mut send = logical_send();
-        commit_prepared_ciphertext(&mut store, &mut snapshot, &mut send, &bob(), vec![7, 8])
-            .unwrap();
+        commit_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut send,
+            &bob(),
+            vec![7, 8],
+            vec![4, 5, 6],
+        )
+        .unwrap();
 
         let progress =
             commit_handoff_reservation(&mut store, &mut snapshot, &mut send, &bob()).unwrap();
@@ -1031,8 +1046,15 @@ mod tests {
         };
         let mut snapshot = OperationSnapshot::empty(4);
         let mut send = logical_send();
-        commit_prepared_ciphertext(&mut store, &mut snapshot, &mut send, &bob(), vec![7, 8])
-            .unwrap();
+        commit_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut send,
+            &bob(),
+            vec![7, 8],
+            vec![4, 5, 6],
+        )
+        .unwrap();
         store.outcome = CommitOutcome::Unknown;
         let before_snapshot = snapshot.clone();
         let before_send = send.clone();
@@ -1071,13 +1093,20 @@ mod tests {
         };
         let mut snapshot = OperationSnapshot::empty(4);
         let mut send = logical_send();
-        let progress =
-            commit_prepared_ciphertext(&mut store, &mut snapshot, &mut send, &bob(), vec![1, 2, 3])
-                .unwrap();
+        let progress = commit_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut send,
+            &bob(),
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+        )
+        .unwrap();
 
         assert_eq!(snapshot.generation, 5);
         assert_eq!(store.recover().unwrap(), Some(snapshot.clone()));
         assert_eq!(progress.ciphertext, Some(vec![1, 2, 3]));
+        assert_eq!(snapshot.provider_state, vec![4, 5, 6]);
         assert_eq!(snapshot.outbox.len(), 1);
         assert_eq!(&snapshot.outbox[0][..4], b"TCGP");
     }
@@ -1094,7 +1123,14 @@ mod tests {
         let before_send = send.clone();
 
         assert_eq!(
-            commit_prepared_ciphertext(&mut store, &mut snapshot, &mut send, &bob(), vec![1]),
+            commit_prepared_ciphertext(
+                &mut store,
+                &mut snapshot,
+                &mut send,
+                &bob(),
+                vec![1],
+                vec![4, 5, 6],
+            ),
             Err(GroupOperationError::Frozen)
         );
         assert_eq!(snapshot, before_snapshot);
