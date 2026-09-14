@@ -158,7 +158,7 @@ impl GroupOutbox {
             };
             match tag {
                 b"TCGI" => {
-                    let send = LogicalSend::decode_intent(&entry[4..])?;
+                    let send = decode_intent_record(&entry[4..])?;
                     if send.id.group_id != group_id {
                         continue;
                     }
@@ -236,6 +236,18 @@ impl GroupOutbox {
         }
         Ok(outbox)
     }
+}
+
+fn decode_intent_record(bytes: &[u8]) -> Result<LogicalSend, Error> {
+    let (length, intent) = bytes.split_at_checked(4).ok_or(Error::Malformed)?;
+    let length = usize::try_from(u32::from_be_bytes(
+        length.try_into().map_err(|_| Error::Malformed)?,
+    ))
+    .map_err(|_| Error::Malformed)?;
+    if intent.len() != length {
+        return Err(Error::Malformed);
+    }
+    LogicalSend::decode_intent(intent)
 }
 
 fn logical_id_from_context(context: &ApplicationContext) -> Result<LogicalMessageId, Error> {
@@ -820,6 +832,14 @@ mod tests {
         record
     }
 
+    fn intent_record(send: &LogicalSend) -> Vec<u8> {
+        let intent = send.encode_intent().unwrap();
+        let mut record = b"TCGI".to_vec();
+        record.extend_from_slice(&(intent.len() as u32).to_be_bytes());
+        record.extend_from_slice(&intent);
+        record
+    }
+
     #[test]
     fn outbox_recovery_replays_preparation_handoff_and_relay_acceptance() {
         let mut original = send();
@@ -836,11 +856,7 @@ mod tests {
         original.record_relay_accepted(&bob()).unwrap();
 
         let entries = vec![
-            [
-                b"TCGI".as_slice(),
-                send().encode_intent().unwrap().as_slice(),
-            ]
-            .concat(),
+            intent_record(&send()),
             progress_record(b"TCGP", &context, &ciphertext, &[]),
             progress_record(b"TCGH", &context, &ciphertext, &[1, 0]),
             progress_record(b"TCGA", &context, &ciphertext, &[]),
@@ -857,11 +873,7 @@ mod tests {
         let original = send();
         let context = original.application_context(&bob()).unwrap();
         let entries = vec![
-            [
-                b"TCGI".as_slice(),
-                original.encode_intent().unwrap().as_slice(),
-            ]
-            .concat(),
+            intent_record(&original),
             progress_record(b"TCGP", &context, &[1, 2, 3], &[]),
         ];
 

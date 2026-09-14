@@ -92,6 +92,17 @@ pub(crate) fn commit_logical_intent<S: OperationStore>(
     Ok(disposition)
 }
 
+/// Rebuilds the in-memory group outbox from the exact durable outbox transcript.
+/// The group policy codec owns its grammar while the client supplies the
+/// standalone core's commitment domain.
+pub(crate) fn recover_group_outbox(
+    snapshot: &OperationSnapshot,
+    group_id: tacenta_group::GroupId,
+) -> Result<GroupOutbox, GroupOperationError> {
+    GroupOutbox::recover_from_transcript(group_id, &snapshot.outbox, payload_commitment)
+        .map_err(|_| GroupOperationError::Policy)
+}
+
 /// Records a prepared ciphertext and its core-bound application context in the
 /// combined operation snapshot. The logical record changes only after the
 /// store reports `Committed`; no transport caller receives ciphertext from a
@@ -758,7 +769,7 @@ mod tests {
         commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver,
+        commit_roster_successor_with_receiver, recover_group_outbox,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::{Address, CryptoStateEffect};
@@ -1009,6 +1020,38 @@ mod tests {
         assert_eq!(
             outbox.send(&id).unwrap().recipients()[0].disposition,
             RecipientDisposition::HandedOff
+        );
+    }
+
+    #[test]
+    fn core_bound_outbox_transcript_recovers_the_exact_recipient_progress() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+        let send = logical_send();
+        let id = send.id.clone();
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+        commit_outbox_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            &id,
+            &bob(),
+            vec![7, 8],
+            vec![4, 5, 6],
+        )
+        .unwrap();
+        commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &bob())
+            .unwrap();
+        commit_outbox_relay_acceptance(&mut store, &mut snapshot, &mut outbox, &id, &bob())
+            .unwrap();
+
+        assert_eq!(
+            recover_group_outbox(&snapshot, GroupId::new(*b"bounded-group-id")),
+            Ok(outbox)
         );
     }
 
