@@ -12,8 +12,8 @@ use tacenta_core::crypto::{
 };
 use tacenta_group::{
     ApplicationContext, Error as GroupError, GroupReceiver, LogicalSend, Member,
-    ReceiveDisposition, ReceiveRefusal, RecipientProgress, Roster, RosterDisposition,
-    RosterRefusal, RosterView,
+    ReceiveDisposition, ReceiveRefusal, RecipientProgress, RevalidatedReceive, Roster,
+    RosterDisposition, RosterRefusal, RosterView,
 };
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
@@ -24,6 +24,13 @@ use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
 pub(crate) enum GroupOperationError {
     Policy,
     Frozen,
+}
+
+/// The durable result of a roster transition and its deferred-item replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RosterCommit {
+    pub(crate) disposition: RosterDisposition,
+    pub(crate) revalidated: Vec<RevalidatedReceive>,
 }
 
 pub(crate) fn bind_prepared_ciphertext(
@@ -132,6 +139,49 @@ pub(crate) fn commit_roster_successor<S: OperationStore>(
     candidate: Roster,
     logical_sends: &mut [LogicalSend],
 ) -> Result<RosterDisposition, GroupOperationError> {
+    Ok(commit_roster_transition(
+        store,
+        snapshot,
+        view,
+        None,
+        authenticated_authority,
+        candidate,
+        logical_sends,
+    )?
+    .disposition)
+}
+
+/// As `commit_roster_successor`, while durably recording every revalidated
+/// future item before returning its accepted event or terminal refusal.
+pub(crate) fn commit_roster_successor_with_receiver<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: &mut GroupReceiver,
+    authenticated_authority: &Member,
+    candidate: Roster,
+    logical_sends: &mut [LogicalSend],
+) -> Result<RosterCommit, GroupOperationError> {
+    commit_roster_transition(
+        store,
+        snapshot,
+        view,
+        Some(receiver),
+        authenticated_authority,
+        candidate,
+        logical_sends,
+    )
+}
+
+fn commit_roster_transition<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: Option<&mut GroupReceiver>,
+    authenticated_authority: &Member,
+    candidate: Roster,
+    logical_sends: &mut [LogicalSend],
+) -> Result<RosterCommit, GroupOperationError> {
     let preimage = candidate
         .encode()
         .map_err(|_| GroupOperationError::Policy)?;
@@ -158,13 +208,45 @@ pub(crate) fn commit_roster_successor<S: OperationStore>(
         &commitment,
         disposition,
     )?);
+    let mut candidate_receiver = receiver.as_deref().cloned();
+    let revalidated = if disposition == RosterDisposition::Accepted {
+        if let Some(receiver) = &mut candidate_receiver {
+            let revalidated = receiver
+                .install_accepted_roster(candidate.clone(), commitment)
+                .map_err(|_| GroupOperationError::Policy)?;
+            for item in &revalidated {
+                let context = item
+                    .context
+                    .encode()
+                    .map_err(|_| GroupOperationError::Policy)?;
+                candidate_snapshot.inbox.push(encode_receive_record(
+                    CryptoStateEffect::Unchanged,
+                    &context,
+                    &item.commitment,
+                    item.disposition,
+                )?);
+                candidate_snapshot.dedup.push(context);
+            }
+            revalidated
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }
     *snapshot = candidate_snapshot;
     *view = candidate_view;
     logical_sends.clone_from_slice(&candidate_sends);
-    Ok(disposition)
+    if let (Some(receiver), Some(candidate_receiver)) = (receiver, candidate_receiver) {
+        *receiver = candidate_receiver;
+    }
+    Ok(RosterCommit {
+        disposition,
+        revalidated,
+    })
 }
 
 fn encode_prepared_record(
@@ -289,7 +371,7 @@ fn encode_roster_record(
 mod tests {
     use super::{
         GroupOperationError, bind_prepared_ciphertext, commit_prepared_ciphertext,
-        commit_receive_disposition, commit_roster_successor,
+        commit_receive_disposition, commit_roster_successor, commit_roster_successor_with_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::CryptoStateEffect;
@@ -602,5 +684,61 @@ mod tests {
         assert_eq!(view, before_view);
         assert_eq!(sends, before_sends);
         assert_eq!(snapshot, before_snapshot);
+    }
+
+    #[test]
+    fn roster_commit_revalidates_future_items_before_returning_their_events() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment =
+            tacenta_core::crypto::groups::roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+        let r1 = roster(1, *view.digest(), vec![alice(), bob()]);
+        let r1_commitment = tacenta_core::crypto::groups::roster_commitment(&r1.encode().unwrap());
+        assert_eq!(
+            view.accept_successor(&alice(), r1.clone(), r1_commitment),
+            RosterDisposition::Accepted
+        );
+        let r2 = roster(2, *view.digest(), vec![alice(), bob()]);
+        let r2_commitment = tacenta_core::crypto::groups::roster_commitment(&r2.encode().unwrap());
+        let mut receiver = GroupReceiver::new(r1, r1_commitment, bob());
+        let future = ApplicationContext::new(
+            GroupId::new(*b"bounded-group-id"),
+            2,
+            r2_commitment,
+            alice(),
+            bob(),
+            8,
+            b"hello".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.receive(&future, &alice(), [7; DIGEST_LEN]),
+            ReceiveDisposition::Deferred
+        );
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(1);
+        let mut sends = Vec::new();
+
+        let result = commit_roster_successor_with_receiver(
+            &mut store,
+            &mut snapshot,
+            &mut view,
+            &mut receiver,
+            &alice(),
+            r2,
+            &mut sends,
+        )
+        .unwrap();
+        assert_eq!(result.disposition, RosterDisposition::Accepted);
+        assert_eq!(
+            result.revalidated[0].disposition,
+            ReceiveDisposition::Accepted { event_id: 0 }
+        );
+        assert_eq!(snapshot.inbox.len(), 1);
+        assert_eq!(&snapshot.inbox[0][..5], b"TCGR\x00");
+        assert_eq!(store.recover().unwrap(), Some(snapshot));
     }
 }

@@ -28,6 +28,14 @@ pub enum ReceiveDisposition {
     Rejected(ReceiveRefusal),
 }
 
+/// A formerly deferred context after it was checked against an accepted roster.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevalidatedReceive {
+    pub context: ApplicationContext,
+    pub commitment: [u8; DIGEST_LEN],
+    pub disposition: ReceiveDisposition,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Key {
     group_id: GroupId,
@@ -45,7 +53,7 @@ struct Accepted {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Deferred {
-    key: Key,
+    context: ApplicationContext,
     commitment: [u8; DIGEST_LEN],
 }
 
@@ -112,7 +120,32 @@ impl GroupReceiver {
         if context.revision > self.roster.revision.saturating_add(FUTURE_REVISIONS) {
             return ReceiveDisposition::Rejected(ReceiveRefusal::FutureOutOfRange);
         }
-        self.defer(key, commitment)
+        self.defer(context, commitment)
+    }
+
+    /// Installs a roster that the control layer has already authenticated and
+    /// accepted, then repeats ordinary receive validation for every deferred
+    /// item. Callers must durably record the returned dispositions with the
+    /// roster transition before acknowledging or delivering any accepted item.
+    pub fn install_accepted_roster(
+        &mut self,
+        roster: Roster,
+        roster_digest: [u8; DIGEST_LEN],
+    ) -> Result<Vec<RevalidatedReceive>, ReceiveRefusal> {
+        if roster.group_id != self.roster.group_id {
+            return Err(ReceiveRefusal::WrongGroup);
+        }
+        self.roster = roster;
+        self.roster_digest = roster_digest;
+        let deferred = std::mem::take(&mut self.deferred);
+        Ok(deferred
+            .into_iter()
+            .map(|item| RevalidatedReceive {
+                disposition: self.receive(&item.context, &item.context.sender, item.commitment),
+                context: item.context,
+                commitment: item.commitment,
+            })
+            .collect())
     }
 
     fn is_active(&self, member: &Member) -> bool {
@@ -148,8 +181,23 @@ impl GroupReceiver {
         ReceiveDisposition::Accepted { event_id }
     }
 
-    fn defer(&mut self, key: Key, commitment: [u8; DIGEST_LEN]) -> ReceiveDisposition {
-        if let Some(existing) = self.deferred.iter().find(|item| item.key == key) {
+    fn defer(
+        &mut self,
+        context: &ApplicationContext,
+        commitment: [u8; DIGEST_LEN],
+    ) -> ReceiveDisposition {
+        let key = Key {
+            group_id: context.group_id,
+            revision: context.revision,
+            sender: context.sender.clone(),
+            sequence: context.logical_sequence,
+        };
+        if let Some(existing) = self.deferred.iter().find(|item| {
+            item.context.group_id == key.group_id
+                && item.context.revision == key.revision
+                && item.context.sender == key.sender
+                && item.context.logical_sequence == key.sequence
+        }) {
             return if existing.commitment == commitment {
                 ReceiveDisposition::Deferred
             } else {
@@ -159,7 +207,10 @@ impl GroupReceiver {
         if self.deferred.len() == MAX_DEFERRED {
             return ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull);
         }
-        self.deferred.push(Deferred { key, commitment });
+        self.deferred.push(Deferred {
+            context: context.clone(),
+            commitment,
+        });
         ReceiveDisposition::Deferred
     }
 }
@@ -238,6 +289,43 @@ mod tests {
         assert_eq!(
             receiver.receive(&context(5, 7), &alice(), [1; DIGEST_LEN]),
             ReceiveDisposition::Rejected(ReceiveRefusal::FutureOutOfRange)
+        );
+    }
+
+    #[test]
+    fn deferred_items_are_revalidated_before_a_new_roster_can_deliver_them() {
+        let mut receiver = receiver();
+        let future = ApplicationContext::new(
+            group(),
+            3,
+            [10; DIGEST_LEN],
+            alice(),
+            bob(),
+            7,
+            b"hello".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.receive(&future, &alice(), [1; DIGEST_LEN]),
+            ReceiveDisposition::Deferred
+        );
+        let next = Roster::new(
+            group(),
+            3,
+            [9; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.install_accepted_roster(next, [10; DIGEST_LEN]),
+            Ok(vec![RevalidatedReceive {
+                context: future,
+                commitment: [1; DIGEST_LEN],
+                disposition: ReceiveDisposition::Accepted { event_id: 0 },
+            }])
         );
     }
 }

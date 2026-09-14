@@ -14,7 +14,7 @@ mod roster_view;
 mod send;
 
 pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus};
-pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal};
+pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};
 pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
 pub use send::{LogicalMessageId, LogicalSend, RecipientDisposition, RecipientProgress};
 
