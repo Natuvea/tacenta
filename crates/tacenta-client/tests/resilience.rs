@@ -7,12 +7,18 @@
 use rand::{RngCore as _, TryRngCore as _};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tacenta_client::{
-    Config as ClientConfig, DefaultClient, DeviceAddr, Error, ErrorKind, RestoreOutcome,
+    Client, Config as ClientConfig, DefaultClient, DeviceAddr, Error, ErrorKind, RestoreOutcome,
     SecureStore, SecureStoreError, SessionProvider,
 };
-use tacenta_core::crypto::{CryptoProvider, DefaultProvider};
+use tacenta_core::crypto::{
+    Address, CryptoProvider, DefaultProvider, Failure,
+    open::{OpenError, OpenParty},
+};
 use tacenta_directory::DirResponse;
 use tacenta_relay::{Request, Response, decode_response, encode_request};
 use tacenta_server::{Config, Server};
@@ -85,6 +91,122 @@ fn client_config(running: &Running, user: &str) -> ClientConfig {
     }
 }
 
+/// A real provider adapter with one observation point.  The reconnect test
+/// below uses it to prove the client does not re-enter encryption when a
+/// transport retry is needed; it does not replace the real adapter's own
+/// conformance tests.
+struct CountingProvider(OpenParty);
+
+static ENCRYPT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+impl CryptoProvider for CountingProvider {
+    type Error = OpenError;
+
+    const NAME: &'static str = OpenParty::NAME;
+
+    fn classify(err: &Self::Error) -> Failure {
+        OpenParty::classify(err)
+    }
+
+    fn generate<R: rand::Rng + rand::CryptoRng>(
+        user: &str,
+        device: u8,
+        csprng: &mut R,
+    ) -> Result<Self, Self::Error> {
+        OpenParty::generate(user, device, csprng).map(Self)
+    }
+
+    fn export_identity(&self) -> Vec<u8> {
+        self.0.export_identity()
+    }
+
+    fn from_identity(user: &str, device: u8, bytes: &[u8]) -> Result<Self, Self::Error> {
+        OpenParty::from_identity(user, device, bytes).map(Self)
+    }
+
+    fn address(&self) -> Address {
+        self.0.address()
+    }
+
+    fn identity_key(&self) -> Vec<u8> {
+        self.0.identity_key()
+    }
+
+    fn sign_challenge<R: rand::Rng + rand::CryptoRng>(
+        &self,
+        challenge: &[u8],
+        csprng: &mut R,
+    ) -> Vec<u8> {
+        self.0.sign_challenge(challenge, csprng)
+    }
+
+    fn verify_challenge(identity: &[u8], challenge: &[u8], signature: &[u8]) -> bool {
+        OpenParty::verify_challenge(identity, challenge, signature)
+    }
+
+    async fn publish_bundle<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        csprng: &mut R,
+    ) -> Result<Vec<u8>, Self::Error> {
+        self.0.publish_bundle(csprng).await
+    }
+
+    async fn publish_one_time_batch<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        csprng: &mut R,
+    ) -> Result<Vec<Vec<u8>>, Self::Error> {
+        self.0.publish_one_time_batch(csprng).await
+    }
+
+    async fn establish_session<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        peer: &Address,
+        bundle: &[u8],
+        csprng: &mut R,
+    ) -> Result<(), Self::Error> {
+        self.0.establish_session(peer, bundle, csprng).await
+    }
+
+    async fn encrypt<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        peer: &Address,
+        plaintext: &[u8],
+        csprng: &mut R,
+    ) -> Result<Vec<u8>, Self::Error> {
+        ENCRYPT_CALLS.fetch_add(1, Ordering::SeqCst);
+        self.0.encrypt(peer, plaintext, csprng).await
+    }
+
+    async fn decrypt<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        peer: &Address,
+        framed: &[u8],
+        csprng: &mut R,
+    ) -> Result<Vec<u8>, Self::Error> {
+        self.0.decrypt(peer, framed, csprng).await
+    }
+
+    async fn export_sessions(&self, peers: &[Address]) -> Result<Vec<u8>, Self::Error> {
+        self.0.export_sessions(peers).await
+    }
+
+    async fn import_sessions(&mut self, bytes: &[u8]) -> Result<Vec<Address>, Self::Error> {
+        self.0.import_sessions(bytes).await
+    }
+
+    fn export_prekeys(&self) -> Option<Vec<u8>> {
+        self.0.export_prekeys().map(|bytes| bytes.to_vec())
+    }
+
+    fn import_prekeys(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.0.import_prekeys(bytes)
+    }
+
+    fn clear_sessions(&mut self) {
+        self.0.clear_sessions();
+    }
+}
+
 /// A server restart drops both clients' connections and the sender's next
 /// messages queue while the receiver is away. The sender reconnects
 /// transparently inside `send`; the receiver reconnects inside `receive`
@@ -128,6 +250,47 @@ async fn backlog_drains_after_a_server_restart() {
     let got = bob.receive().await.unwrap();
     let texts: Vec<&[u8]> = got.iter().map(|m| m.plaintext.as_slice()).collect();
     assert_eq!(texts, vec![b"two".as_slice(), b"three".as_slice()]);
+
+    second.shutdown().await;
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// A transport reconnect retries the already prepared relay request.  The
+/// counting adapter is the real OpenParty implementation, so the observed
+/// count covers the actual client/provider path rather than a mocked send.
+#[tokio::test]
+async fn reconnect_retries_a_prepared_send_without_encrypting_twice() {
+    ENCRYPT_CALLS.store(0, Ordering::SeqCst);
+    let data_dir = scratch_dir();
+    let config = server_config(&data_dir);
+    let first = Running::start(&config).await;
+
+    let mut alice = Client::<CountingProvider>::connect(&client_config(&first, "+alice"))
+        .await
+        .unwrap();
+    let mut bob = DefaultClient::connect(&client_config(&first, "+bob"))
+        .await
+        .unwrap();
+    let bob_addr = DeviceAddr::new("+bob", 1);
+
+    alice.send(&bob_addr, b"before restart").await.unwrap();
+    assert_eq!(bob.receive().await.unwrap()[0].plaintext, b"before restart");
+    assert_eq!(ENCRYPT_CALLS.load(Ordering::SeqCst), 1);
+
+    let (dir_port, relay_port) = (first.directory.port(), first.relay.port());
+    first.shutdown().await;
+    let mut restarted = server_config(&data_dir);
+    restarted.directory_port = dir_port;
+    restarted.relay_port = relay_port;
+    let second = Running::start(&restarted).await;
+
+    alice.send(&bob_addr, b"after restart").await.unwrap();
+    assert_eq!(
+        ENCRYPT_CALLS.load(Ordering::SeqCst),
+        2,
+        "the reconnect retries the prepared request rather than re-encrypting it"
+    );
+    assert_eq!(bob.receive().await.unwrap()[0].plaintext, b"after restart");
 
     second.shutdown().await;
     let _ = std::fs::remove_dir_all(&data_dir);
@@ -985,6 +1148,14 @@ async fn the_store_is_attached_once_and_must_advance() {
     stuck.freeze();
     let refused = bob.send(&alice_addr, b"two").await.unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::State, "{refused}");
+
+    // Encryption has already advanced the local session when the counter
+    // rejects this send, but dispatch is after that durable boundary.  The
+    // peer's immediate poll must therefore find no second relay record.
+    assert!(
+        alice.drain().await.unwrap().is_empty(),
+        "a secure-store refusal must prevent relay dispatch"
+    );
 
     running.shutdown().await;
     let _ = std::fs::remove_dir_all(&data_dir);
