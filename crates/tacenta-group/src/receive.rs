@@ -1,10 +1,15 @@
 //! Bounded receive dispositions before the client ACKs relay delivery.
 
-use crate::{ApplicationContext, DIGEST_LEN, GroupId, Member, Roster};
+use crate::{
+    ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_APPLICATION_CONTEXT_LEN, MAX_MEMBERS,
+    MAX_ROSTER_LEN, Member, Roster,
+};
 
 const DEDUP_WINDOW: u64 = 64;
 const FUTURE_REVISIONS: u64 = 2;
 const MAX_DEFERRED: usize = 4;
+const RECEIVER_STATE_DOMAIN: &[u8] = b"Tacenta Group Receiver State v1";
+const MAX_RECEIVER_STATE_LEN: usize = 262_144;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiveRefusal {
@@ -151,6 +156,200 @@ impl GroupReceiver {
                 commitment: item.commitment,
             })
             .collect())
+    }
+
+    /// Encodes the bounded receiver state needed to resume stable event IDs,
+    /// duplicate detection, and deferred validation after restart.
+    pub fn encode_state(&self) -> Result<Vec<u8>, Error> {
+        fn put_lp(out: &mut Vec<u8>, value: &[u8]) -> Result<(), Error> {
+            let length = u32::try_from(value.len()).map_err(|_| Error::Malformed)?;
+            out.extend_from_slice(&length.to_be_bytes());
+            out.extend_from_slice(value);
+            Ok(())
+        }
+        fn put_member(out: &mut Vec<u8>, member: &Member) -> Result<(), Error> {
+            put_lp(out, member.identity())?;
+            put_lp(out, member.device())
+        }
+
+        let roster = self.roster.encode()?;
+        let mut out = RECEIVER_STATE_DOMAIN.to_vec();
+        put_lp(&mut out, &roster)?;
+        out.extend_from_slice(&self.roster_digest);
+        put_member(&mut out, &self.local)?;
+        out.extend_from_slice(&self.next_event_id.to_be_bytes());
+        out.extend_from_slice(
+            &u32::try_from(self.accepted.len())
+                .map_err(|_| Error::Malformed)?
+                .to_be_bytes(),
+        );
+        for accepted in &self.accepted {
+            out.extend_from_slice(&accepted.key.revision.to_be_bytes());
+            put_member(&mut out, &accepted.key.sender)?;
+            out.extend_from_slice(&accepted.key.sequence.to_be_bytes());
+            out.extend_from_slice(&accepted.commitment);
+            out.extend_from_slice(&accepted.event_id.to_be_bytes());
+        }
+        out.extend_from_slice(
+            &u32::try_from(self.deferred.len())
+                .map_err(|_| Error::Malformed)?
+                .to_be_bytes(),
+        );
+        for deferred in &self.deferred {
+            put_lp(&mut out, &deferred.context.encode()?)?;
+            out.extend_from_slice(&deferred.commitment);
+        }
+        if out.len() > MAX_RECEIVER_STATE_LEN {
+            return Err(Error::Malformed);
+        }
+        Ok(out)
+    }
+
+    /// Decodes a receiver state only after the caller's core commitment
+    /// functions reproduce its accepted roster and every deferred context.
+    pub fn decode_state(
+        bytes: &[u8],
+        roster_commitment: impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+        payload_commitment: impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+    ) -> Result<Self, Error> {
+        fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Result<&'a [u8], Error> {
+            let (head, tail) = cursor.split_at_checked(count).ok_or(Error::Malformed)?;
+            *cursor = tail;
+            Ok(head)
+        }
+        fn take_u32(cursor: &mut &[u8]) -> Result<u32, Error> {
+            Ok(u32::from_be_bytes(
+                take(cursor, 4)?.try_into().map_err(|_| Error::Malformed)?,
+            ))
+        }
+        fn take_u64(cursor: &mut &[u8]) -> Result<u64, Error> {
+            Ok(u64::from_be_bytes(
+                take(cursor, 8)?.try_into().map_err(|_| Error::Malformed)?,
+            ))
+        }
+        fn take_lp(cursor: &mut &[u8]) -> Result<Vec<u8>, Error> {
+            let length = usize::try_from(take_u32(cursor)?).map_err(|_| Error::Malformed)?;
+            Ok(take(cursor, length)?.to_vec())
+        }
+        fn take_member(cursor: &mut &[u8]) -> Result<Member, Error> {
+            let member = Member::new(take_lp(cursor)?, take_lp(cursor)?);
+            if member.identity().len() > crate::MAX_IDENTITY_LEN {
+                return Err(Error::IdentityTooLarge);
+            }
+            if member.device().len() > crate::MAX_DEVICE_LEN {
+                return Err(Error::DeviceTooLarge);
+            }
+            Ok(member)
+        }
+
+        if bytes.len() > MAX_RECEIVER_STATE_LEN || !bytes.starts_with(RECEIVER_STATE_DOMAIN) {
+            return Err(Error::Malformed);
+        }
+        let mut cursor = &bytes[RECEIVER_STATE_DOMAIN.len()..];
+        let roster_bytes = take_lp(&mut cursor)?;
+        if roster_bytes.len() > MAX_ROSTER_LEN {
+            return Err(Error::RosterTooLarge);
+        }
+        let roster = Roster::decode(&roster_bytes)?;
+        let roster_digest = take(&mut cursor, DIGEST_LEN)?
+            .try_into()
+            .map_err(|_| Error::Malformed)?;
+        if roster_digest != roster_commitment(&roster_bytes) {
+            return Err(Error::Conflict);
+        }
+        let local = take_member(&mut cursor)?;
+        if !roster.members.iter().any(|member| member == &local) || roster.closed {
+            return Err(Error::NotMember);
+        }
+        let next_event_id = take_u64(&mut cursor)?;
+        let accepted_count =
+            usize::try_from(take_u32(&mut cursor)?).map_err(|_| Error::Malformed)?;
+        if accepted_count > MAX_MEMBERS * DEDUP_WINDOW as usize {
+            return Err(Error::Malformed);
+        }
+        let mut accepted = Vec::with_capacity(accepted_count);
+        for _ in 0..accepted_count {
+            let revision = take_u64(&mut cursor)?;
+            let sender = take_member(&mut cursor)?;
+            let sequence = take_u64(&mut cursor)?;
+            let commitment = take(&mut cursor, DIGEST_LEN)?
+                .try_into()
+                .map_err(|_| Error::Malformed)?;
+            let event_id = take_u64(&mut cursor)?;
+            if revision != roster.revision
+                || !roster.members.iter().any(|member| member == &sender)
+                || event_id >= next_event_id
+            {
+                return Err(Error::Malformed);
+            }
+            let key = Key {
+                group_id: roster.group_id,
+                revision,
+                sender,
+                sequence,
+            };
+            if accepted.iter().any(|item: &Accepted| item.key == key)
+                || accepted.iter().any(|item| item.event_id == event_id)
+            {
+                return Err(Error::Conflict);
+            }
+            accepted.push(Accepted {
+                key,
+                commitment,
+                event_id,
+            });
+        }
+        let deferred_count =
+            usize::try_from(take_u32(&mut cursor)?).map_err(|_| Error::Malformed)?;
+        if deferred_count > MAX_DEFERRED {
+            return Err(Error::Malformed);
+        }
+        let mut deferred = Vec::with_capacity(deferred_count);
+        for _ in 0..deferred_count {
+            let context_bytes = take_lp(&mut cursor)?;
+            if context_bytes.len() > MAX_APPLICATION_CONTEXT_LEN {
+                return Err(Error::ContextTooLarge);
+            }
+            let context = ApplicationContext::decode(&context_bytes)?;
+            let commitment = take(&mut cursor, DIGEST_LEN)?
+                .try_into()
+                .map_err(|_| Error::Malformed)?;
+            if context.group_id != roster.group_id
+                || context.recipient != local
+                || !roster
+                    .members
+                    .iter()
+                    .any(|member| member == &context.sender)
+                || context.revision <= roster.revision
+                || context.revision > roster.revision.saturating_add(FUTURE_REVISIONS)
+                || commitment != payload_commitment(&context_bytes)
+            {
+                return Err(Error::Conflict);
+            }
+            if deferred.iter().any(|item: &Deferred| {
+                item.context.group_id == context.group_id
+                    && item.context.revision == context.revision
+                    && item.context.sender == context.sender
+                    && item.context.logical_sequence == context.logical_sequence
+            }) {
+                return Err(Error::Conflict);
+            }
+            deferred.push(Deferred {
+                context,
+                commitment,
+            });
+        }
+        if !cursor.is_empty() {
+            return Err(Error::Malformed);
+        }
+        Ok(Self {
+            roster,
+            roster_digest,
+            local,
+            accepted,
+            deferred,
+            next_event_id,
+        })
     }
 
     fn is_active(&self, member: &Member) -> bool {
@@ -372,5 +571,40 @@ mod tests {
             .install_accepted_roster(next, [10; DIGEST_LEN])
             .unwrap();
         assert!(receiver.accepted.is_empty());
+    }
+
+    #[test]
+    fn receiver_state_round_trips_stable_events_and_deferred_contexts() {
+        let mut original = receiver();
+        let accepted = context(2, 7);
+        let deferred = context(3, 8);
+        assert_eq!(
+            original.receive(&accepted, &alice(), [1; DIGEST_LEN]),
+            ReceiveDisposition::Accepted { event_id: 0 }
+        );
+        assert_eq!(
+            original.receive(&deferred, &alice(), [2; DIGEST_LEN]),
+            ReceiveDisposition::Deferred
+        );
+        let encoded = original.encode_state().unwrap();
+        let deferred_bytes = deferred.encode().unwrap();
+
+        let recovered = GroupReceiver::decode_state(
+            &encoded,
+            |_| [9; DIGEST_LEN],
+            |bytes| {
+                if bytes == deferred_bytes {
+                    [2; DIGEST_LEN]
+                } else {
+                    [1; DIGEST_LEN]
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(recovered, original);
+        assert_eq!(
+            GroupReceiver::decode_state(&encoded, |_| [0; DIGEST_LEN], |_| [0; DIGEST_LEN]),
+            Err(Error::Conflict)
+        );
     }
 }

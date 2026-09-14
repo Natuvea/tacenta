@@ -103,6 +103,19 @@ pub(crate) fn recover_group_outbox(
         .map_err(|_| GroupOperationError::Policy)
 }
 
+/// Restores the bounded receiver's stable event and deferred state from the
+/// combined snapshot, verifying every retained core commitment on the way in.
+pub(crate) fn recover_group_receiver(
+    snapshot: &OperationSnapshot,
+) -> Result<GroupReceiver, GroupOperationError> {
+    GroupReceiver::decode_state(
+        &snapshot.application_state,
+        roster_commitment,
+        payload_commitment,
+    )
+    .map_err(|_| GroupOperationError::Policy)
+}
+
 /// Records a prepared ciphertext and its core-bound application context in the
 /// combined operation snapshot. The logical record changes only after the
 /// store reports `Committed`; no transport caller receives ciphertext from a
@@ -373,6 +386,9 @@ pub(crate) fn commit_receive_disposition<S: OperationStore>(
         .checked_add(1)
         .ok_or(GroupOperationError::Frozen)?;
     candidate_snapshot.provider_state = provider_state;
+    candidate_snapshot.application_state = candidate_receiver
+        .encode_state()
+        .map_err(|_| GroupOperationError::Policy)?;
     candidate_snapshot.inbox.push(encode_receive_record(
         provider_effect,
         &context_bytes,
@@ -555,6 +571,11 @@ fn commit_roster_transition<S: OperationStore>(
     } else {
         Vec::new()
     };
+    if let Some(receiver) = &candidate_receiver {
+        candidate_snapshot.application_state = receiver
+            .encode_state()
+            .map_err(|_| GroupOperationError::Policy)?;
+    }
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }
@@ -769,10 +790,10 @@ mod tests {
         commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver, recover_group_outbox,
+        commit_roster_successor_with_receiver, recover_group_outbox, recover_group_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
-    use tacenta_core::crypto::{Address, CryptoStateEffect};
+    use tacenta_core::crypto::{Address, CryptoStateEffect, groups::roster_commitment};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupReceiver, LogicalSend, Member,
         OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal,
@@ -1053,6 +1074,51 @@ mod tests {
             recover_group_outbox(&snapshot, GroupId::new(*b"bounded-group-id")),
             Ok(outbox)
         );
+    }
+
+    #[test]
+    fn core_bound_receiver_state_recovers_stable_group_delivery() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(9);
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let digest = roster_commitment(&roster.encode().unwrap());
+        let mut receiver = GroupReceiver::new(roster, digest, bob());
+        let context = ApplicationContext::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            digest,
+            alice(),
+            bob(),
+            3,
+            b"hello".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            commit_receive_disposition(
+                &mut store,
+                &mut snapshot,
+                &mut receiver,
+                &context,
+                &alice(),
+                vec![4, 5, 6],
+                CryptoStateEffect::Advanced,
+            ),
+            Ok(ReceiveDisposition::Accepted { event_id: 0 })
+        );
+
+        assert_eq!(recover_group_receiver(&snapshot), Ok(receiver));
     }
 
     #[test]
