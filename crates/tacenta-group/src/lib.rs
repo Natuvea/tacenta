@@ -28,6 +28,14 @@ pub const DIGEST_LEN: usize = 32;
 pub const MAX_MEMBERS: usize = 8;
 /// The initial group-application payload bound.
 pub const MAX_PAYLOAD_LEN: usize = 1_024;
+/// Maximum canonical identity bytes held by one bounded member binding.
+pub const MAX_IDENTITY_LEN: usize = 256;
+/// Maximum canonical device bytes held by one bounded member binding.
+pub const MAX_DEVICE_LEN: usize = 64;
+/// Maximum complete canonical bounded-roster preimage size.
+pub const MAX_ROSTER_LEN: usize = 4_096;
+/// Maximum complete canonical bounded-application-context size.
+pub const MAX_APPLICATION_CONTEXT_LEN: usize = 2_048;
 /// The bounded profile's maximum number of unfinished logical sends per group.
 pub const MAX_LIVE_LOGICAL_SENDS: usize = 8;
 /// Policy version selected by the bounded validation profile.
@@ -47,6 +55,10 @@ pub enum Error {
     ReservedRevision,
     TooManyMembers,
     PayloadTooLarge,
+    IdentityTooLarge,
+    DeviceTooLarge,
+    RosterTooLarge,
+    ContextTooLarge,
     Unauthorized,
     Conflict,
     WrongTarget,
@@ -70,6 +82,10 @@ impl fmt::Display for Error {
             Self::ReservedRevision => "reserved bounded group revision",
             Self::TooManyMembers => "too many bounded group members",
             Self::PayloadTooLarge => "bounded group payload is too large",
+            Self::IdentityTooLarge => "bounded group identity is too large",
+            Self::DeviceTooLarge => "bounded group device is too large",
+            Self::RosterTooLarge => "bounded group roster is too large",
+            Self::ContextTooLarge => "bounded group application context is too large",
             Self::Unauthorized => "unauthorized bounded group action",
             Self::Conflict => "conflicting bounded group record",
             Self::WrongTarget => "bounded group invitation targets another member",
@@ -141,6 +157,16 @@ impl Member {
     pub(crate) fn canonical_sort_key(&self) -> Vec<u8> {
         self.sort_key()
     }
+
+    fn validate(&self) -> Result<(), Error> {
+        if self.identity.len() > MAX_IDENTITY_LEN {
+            return Err(Error::IdentityTooLarge);
+        }
+        if self.device.len() > MAX_DEVICE_LEN {
+            return Err(Error::DeviceTooLarge);
+        }
+        Ok(())
+    }
 }
 
 /// The exact product-owned preimage for a bounded group roster commitment.
@@ -198,6 +224,9 @@ impl Roster {
 
     /// Decodes only an exact, canonical version-one roster preimage.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_ROSTER_LEN {
+            return Err(Error::RosterTooLarge);
+        }
         let mut input = bytes;
         take_exact(&mut input, ROSTER_DOMAIN)?;
         let group_id = GroupId::try_from(take_lp(&mut input)?.as_slice())?;
@@ -245,9 +274,11 @@ impl Roster {
         if self.members.len() > MAX_MEMBERS {
             return Err(Error::TooManyMembers);
         }
+        self.authority.validate()?;
         let mut previous: Option<&Member> = None;
         let mut identities = BTreeSet::new();
         for member in &self.members {
+            member.validate()?;
             if let Some(previous) = previous
                 && previous.sort_key() >= member.sort_key()
             {
@@ -258,7 +289,22 @@ impl Roster {
             }
             previous = Some(member);
         }
+        if self.encoded_len() > MAX_ROSTER_LEN {
+            return Err(Error::RosterTooLarge);
+        }
         Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        ROSTER_DOMAIN.len()
+            + lp_len(GROUP_ID_LEN)
+            + 8
+            + lp_len(DIGEST_LEN)
+            + member_len(&self.authority)
+            + 4
+            + 1
+            + 4
+            + self.members.iter().map(member_len).sum::<usize>()
     }
 }
 
@@ -312,6 +358,9 @@ impl ApplicationContext {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_APPLICATION_CONTEXT_LEN {
+            return Err(Error::ContextTooLarge);
+        }
         let mut input = bytes;
         take_exact(&mut input, APPLICATION_DOMAIN)?;
         let group_id = GroupId::try_from(take_lp(&mut input)?.as_slice())?;
@@ -343,8 +392,32 @@ impl ApplicationContext {
         if self.payload.len() > MAX_PAYLOAD_LEN {
             return Err(Error::PayloadTooLarge);
         }
+        self.sender.validate()?;
+        self.recipient.validate()?;
+        if self.encoded_len() > MAX_APPLICATION_CONTEXT_LEN {
+            return Err(Error::ContextTooLarge);
+        }
         Ok(())
     }
+
+    fn encoded_len(&self) -> usize {
+        APPLICATION_DOMAIN.len()
+            + lp_len(GROUP_ID_LEN)
+            + 8
+            + lp_len(DIGEST_LEN)
+            + member_len(&self.sender)
+            + member_len(&self.recipient)
+            + 8
+            + lp_len(self.payload.len())
+    }
+}
+
+fn lp_len(value_len: usize) -> usize {
+    4 + value_len
+}
+
+fn member_len(member: &Member) -> usize {
+    lp_len(member.identity.len()) + lp_len(member.device.len())
 }
 
 fn put_u32(out: &mut Vec<u8>, value: usize) -> Result<(), Error> {
@@ -402,7 +475,9 @@ fn take_lp(input: &mut &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 fn take_member(input: &mut &[u8]) -> Result<Member, Error> {
-    Ok(Member::new(take_lp(input)?, take_lp(input)?))
+    let member = Member::new(take_lp(input)?, take_lp(input)?);
+    member.validate()?;
+    Ok(member)
 }
 
 #[cfg(test)]
@@ -559,6 +634,44 @@ mod tests {
                 vec![0; MAX_PAYLOAD_LEN + 1],
             ),
             Err(Error::PayloadTooLarge)
+        );
+    }
+
+    #[test]
+    fn group_codecs_reject_oversized_identity_device_and_input_before_parsing() {
+        let oversized_identity = Member::new(vec![0; MAX_IDENTITY_LEN + 1], vec![1]);
+        assert_eq!(
+            Roster::new(
+                group(),
+                0,
+                [0; DIGEST_LEN],
+                oversized_identity.clone(),
+                POLICY_VERSION_V1,
+                false,
+                vec![oversized_identity],
+            ),
+            Err(Error::IdentityTooLarge)
+        );
+        let oversized_device = Member::new(b"alice-key".to_vec(), vec![1; MAX_DEVICE_LEN + 1]);
+        assert_eq!(
+            ApplicationContext::new(
+                group(),
+                0,
+                [0; DIGEST_LEN],
+                oversized_device.clone(),
+                bob(),
+                0,
+                Vec::new(),
+            ),
+            Err(Error::DeviceTooLarge)
+        );
+        assert_eq!(
+            Roster::decode(&vec![0; MAX_ROSTER_LEN + 1]),
+            Err(Error::RosterTooLarge)
+        );
+        assert_eq!(
+            ApplicationContext::decode(&vec![0; MAX_APPLICATION_CONTEXT_LEN + 1]),
+            Err(Error::ContextTooLarge)
         );
     }
 }
