@@ -100,6 +100,20 @@ impl GroupOutbox {
         &self.sends
     }
 
+    pub fn send(&self, id: &LogicalMessageId) -> Result<&LogicalSend, Error> {
+        self.sends
+            .iter()
+            .find(|send| &send.id == id)
+            .ok_or(Error::Malformed)
+    }
+
+    pub fn send_mut(&mut self, id: &LogicalMessageId) -> Result<&mut LogicalSend, Error> {
+        self.sends
+            .iter_mut()
+            .find(|send| &send.id == id)
+            .ok_or(Error::Malformed)
+    }
+
     /// Adds a distinct live logical send. An exact replay uses the prior
     /// immutable record, while changed data for its ID cannot replace it.
     pub fn record(&mut self, send: LogicalSend) -> Result<OutboxDisposition, Error> {

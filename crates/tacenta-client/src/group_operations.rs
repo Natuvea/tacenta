@@ -11,9 +11,9 @@ use tacenta_core::crypto::{
     groups::{payload_commitment, roster_commitment},
 };
 use tacenta_group::{
-    ApplicationContext, Error as GroupError, GroupOutbox, GroupReceiver, LogicalSend, Member,
-    OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress, RevalidatedReceive,
-    Roster, RosterDisposition, RosterRefusal, RosterView,
+    ApplicationContext, Error as GroupError, GroupOutbox, GroupReceiver, LogicalMessageId,
+    LogicalSend, Member, OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress,
+    RevalidatedReceive, Roster, RosterDisposition, RosterRefusal, RosterView,
 };
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
@@ -136,6 +136,54 @@ pub(crate) fn commit_prepared_ciphertext<S: OperationStore>(
     Ok(progress)
 }
 
+/// Prepares one recipient on the logical record already committed in the
+/// group outbox. This is the durable path after `commit_logical_intent`.
+pub(crate) fn commit_outbox_prepared_ciphertext<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut GroupOutbox,
+    id: &LogicalMessageId,
+    recipient: &Member,
+    ciphertext: Vec<u8>,
+) -> Result<RecipientProgress, GroupOperationError> {
+    let mut candidate_outbox = outbox.clone();
+    let (progress, context) = {
+        let send = candidate_outbox
+            .send_mut(id)
+            .map_err(|_| GroupOperationError::Policy)?;
+        let progress = bind_prepared_ciphertext(send, recipient, ciphertext)
+            .map_err(|_| GroupOperationError::Policy)?;
+        let context = send
+            .application_context(recipient)
+            .map_err(|_| GroupOperationError::Policy)?
+            .encode()
+            .map_err(|_| GroupOperationError::Policy)?;
+        (progress, context)
+    };
+    let commitment = progress
+        .context_commitment
+        .ok_or(GroupOperationError::Policy)?;
+    let ciphertext = progress
+        .ciphertext
+        .as_deref()
+        .ok_or(GroupOperationError::Policy)?;
+
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot
+        .outbox
+        .push(encode_prepared_record(&context, &commitment, ciphertext)?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *outbox = candidate_outbox;
+    Ok(progress)
+}
+
 /// Reserves an exact prepared ciphertext attempt before returning it to a
 /// transport caller. The caller may dispatch only the returned committed
 /// record; a failed or uncertain commit exposes no handoff-eligible value.
@@ -179,6 +227,58 @@ pub(crate) fn commit_handoff_reservation<S: OperationStore>(
     }
     *snapshot = candidate_snapshot;
     *logical_send = candidate_send;
+    Ok(progress)
+}
+
+/// Reserves a handoff on an outbox-owned logical record. This keeps retries
+/// tied to the immutable intent that was durably created first.
+pub(crate) fn commit_outbox_handoff_reservation<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut GroupOutbox,
+    id: &LogicalMessageId,
+    recipient: &Member,
+) -> Result<RecipientProgress, GroupOperationError> {
+    let mut candidate_outbox = outbox.clone();
+    let (progress, context) = {
+        let send = candidate_outbox
+            .send_mut(id)
+            .map_err(|_| GroupOperationError::Policy)?;
+        let progress = send
+            .reserve_handoff(recipient)
+            .map_err(|_| GroupOperationError::Policy)?
+            .clone();
+        let context = send
+            .application_context(recipient)
+            .map_err(|_| GroupOperationError::Policy)?
+            .encode()
+            .map_err(|_| GroupOperationError::Policy)?;
+        (progress, context)
+    };
+    let commitment = progress
+        .context_commitment
+        .ok_or(GroupOperationError::Policy)?;
+    let ciphertext = progress
+        .ciphertext
+        .as_deref()
+        .ok_or(GroupOperationError::Policy)?;
+
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot.outbox.push(encode_handoff_record(
+        &context,
+        &commitment,
+        ciphertext,
+        &progress,
+    )?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *outbox = candidate_outbox;
     Ok(progress)
 }
 
@@ -579,8 +679,9 @@ fn encode_roster_record(
 mod tests {
     use super::{
         GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext, commit_group_plaintext,
-        commit_handoff_reservation, commit_logical_intent, commit_prepared_ciphertext,
-        commit_receive_disposition, commit_roster_successor, commit_roster_successor_with_receiver,
+        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
+        commit_outbox_prepared_ciphertext, commit_prepared_ciphertext, commit_receive_disposition,
+        commit_roster_successor, commit_roster_successor_with_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::{Address, CryptoStateEffect};
@@ -713,6 +814,76 @@ mod tests {
         );
         assert_eq!(snapshot, before_snapshot);
         assert!(outbox.sends().is_empty());
+    }
+
+    #[test]
+    fn outbox_owned_progress_keeps_intent_preparation_and_handoff_together() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+        let send = logical_send();
+        let id = send.id.clone();
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+
+        assert_eq!(
+            commit_outbox_prepared_ciphertext(
+                &mut store,
+                &mut snapshot,
+                &mut outbox,
+                &id,
+                &bob(),
+                vec![7, 8],
+            )
+            .unwrap()
+            .ciphertext,
+            Some(vec![7, 8])
+        );
+        assert_eq!(
+            commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &bob(),)
+                .unwrap()
+                .disposition,
+            RecipientDisposition::HandedOff
+        );
+        assert_eq!(
+            outbox.send(&id).unwrap().recipients()[0].attempts_reserved,
+            1
+        );
+        assert_eq!(&snapshot.outbox[0][..4], b"TCGI");
+        assert_eq!(&snapshot.outbox[1][..4], b"TCGP");
+        assert_eq!(&snapshot.outbox[2][..4], b"TCGH");
+    }
+
+    #[test]
+    fn unknown_outbox_progress_commit_leaves_the_committed_send_unchanged() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+        let send = logical_send();
+        let id = send.id.clone();
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+        store.outcome = CommitOutcome::Unknown;
+        let before_snapshot = snapshot.clone();
+        let before_outbox = outbox.clone();
+
+        assert_eq!(
+            commit_outbox_prepared_ciphertext(
+                &mut store,
+                &mut snapshot,
+                &mut outbox,
+                &id,
+                &bob(),
+                vec![7, 8],
+            ),
+            Err(GroupOperationError::Frozen)
+        );
+        assert_eq!(snapshot, before_snapshot);
+        assert_eq!(outbox, before_outbox);
     }
 
     #[test]
