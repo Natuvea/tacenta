@@ -45,6 +45,30 @@ impl Address {
     }
 }
 
+/// The crypto-state consequence of one provider operation.  This is separate
+/// from durable storage: `Advanced` and `Terminal` describe state the caller
+/// must retain, while a store reports whether that retention committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CryptoStateEffect {
+    /// The provider refused before changing the relevant crypto state.
+    Unchanged,
+    /// The provider accepted the operation and advanced crypto state.
+    Advanced,
+    /// The operation reached a terminal crypto state that must be retained.
+    Terminal,
+}
+
+/// One operation's independent result, authenticated peer context and
+/// crypto-state effect.  `authenticated_peer` is absent when an operation
+/// fails before a peer identity can be authenticated; a caller must not use a
+/// relay address as a substitute.
+#[derive(Debug)]
+pub struct CryptoOperation<T, E> {
+    pub result: Result<T, E>,
+    pub authenticated_peer: Option<Vec<u8>>,
+    pub state_effect: CryptoStateEffect,
+}
+
 /// One participant's cryptography: an identity, its prekeys, and its sessions.
 ///
 /// What an implementation is required to do is stated as behaviour: a
@@ -167,6 +191,27 @@ pub trait CryptoProvider: Sized {
         framed: &[u8],
         csprng: &mut R,
     ) -> impl Future<Output = Result<Vec<u8>, Self::Error>>;
+
+    /// Encrypt while reporting the authenticated peer and state effect the
+    /// operation produced.  A terminal failure remains observable even though
+    /// the ciphertext result is an error, so the caller can persist it before
+    /// retrying or re-establishing.
+    fn encrypt_with_outcome<R: Rng + CryptoRng>(
+        &mut self,
+        peer: &Address,
+        plaintext: &[u8],
+        csprng: &mut R,
+    ) -> impl Future<Output = CryptoOperation<Vec<u8>, Self::Error>>;
+
+    /// Decrypt while reporting the authenticated peer and state effect.  An
+    /// authenticated payload can therefore be durably retained, rejected or
+    /// deferred without losing the provider transition that produced it.
+    fn decrypt_with_outcome<R: Rng + CryptoRng>(
+        &mut self,
+        peer: &Address,
+        framed: &[u8],
+        csprng: &mut R,
+    ) -> impl Future<Output = CryptoOperation<Vec<u8>, Self::Error>>;
 
     /// Serialize the live sessions with `peers`, so a client can resume a
     /// conversation mid-ratchet across a restart rather than re-establishing.

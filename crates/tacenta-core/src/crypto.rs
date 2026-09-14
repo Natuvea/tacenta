@@ -39,7 +39,7 @@ pub mod durable_open;
 /// The tacenta-core provider.
 pub mod open;
 pub mod provider;
-pub use provider::{Address, CryptoProvider, Failure};
+pub use provider::{Address, CryptoOperation, CryptoProvider, CryptoStateEffect, Failure};
 
 /// The behavioural bar a provider must clear, generic over the provider.
 ///
