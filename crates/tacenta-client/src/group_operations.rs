@@ -282,6 +282,59 @@ pub(crate) fn commit_outbox_handoff_reservation<S: OperationStore>(
     Ok(progress)
 }
 
+/// Records the relay's acceptance of an already handed-off ciphertext. This
+/// is an observable transport result, never an application delivery receipt.
+pub(crate) fn commit_outbox_relay_acceptance<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut GroupOutbox,
+    id: &LogicalMessageId,
+    recipient: &Member,
+) -> Result<RecipientProgress, GroupOperationError> {
+    let mut candidate_outbox = outbox.clone();
+    let (progress, context) = {
+        let send = candidate_outbox
+            .send_mut(id)
+            .map_err(|_| GroupOperationError::Policy)?;
+        let progress = send
+            .record_relay_accepted(recipient)
+            .map_err(|_| GroupOperationError::Policy)?
+            .clone();
+        let context = send
+            .application_context(recipient)
+            .map_err(|_| GroupOperationError::Policy)?
+            .encode()
+            .map_err(|_| GroupOperationError::Policy)?;
+        (progress, context)
+    };
+    let commitment = progress
+        .context_commitment
+        .ok_or(GroupOperationError::Policy)?;
+    let ciphertext = progress
+        .ciphertext
+        .as_deref()
+        .ok_or(GroupOperationError::Policy)?;
+
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot
+        .outbox
+        .push(encode_relay_acceptance_record(
+            &context,
+            &commitment,
+            ciphertext,
+        )?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *outbox = candidate_outbox;
+    Ok(progress)
+}
+
 /// Records an authenticated group's disposition with the provider transition
 /// that produced it. A caller receives no disposition for acknowledgement or
 /// application delivery until the combined candidate snapshot is committed.
@@ -558,6 +611,25 @@ fn encode_handoff_record(
     Ok(record)
 }
 
+fn encode_relay_acceptance_record(
+    context: &[u8],
+    commitment: &[u8; 32],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, GroupOperationError> {
+    fn put_lp(out: &mut Vec<u8>, value: &[u8]) -> Result<(), GroupOperationError> {
+        let length = u32::try_from(value.len()).map_err(|_| GroupOperationError::Policy)?;
+        out.extend_from_slice(&length.to_be_bytes());
+        out.extend_from_slice(value);
+        Ok(())
+    }
+    let mut record = Vec::new();
+    record.extend_from_slice(b"TCGA");
+    put_lp(&mut record, context)?;
+    record.extend_from_slice(commitment);
+    put_lp(&mut record, ciphertext)?;
+    Ok(record)
+}
+
 fn encode_receive_record(
     provider_effect: CryptoStateEffect,
     context: &[u8],
@@ -680,8 +752,9 @@ mod tests {
     use super::{
         GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext, commit_group_plaintext,
         commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
-        commit_outbox_prepared_ciphertext, commit_prepared_ciphertext, commit_receive_disposition,
-        commit_roster_successor, commit_roster_successor_with_receiver,
+        commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
+        commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
+        commit_roster_successor_with_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::{Address, CryptoStateEffect};
@@ -848,12 +921,19 @@ mod tests {
             RecipientDisposition::HandedOff
         );
         assert_eq!(
+            commit_outbox_relay_acceptance(&mut store, &mut snapshot, &mut outbox, &id, &bob(),)
+                .unwrap()
+                .disposition,
+            RecipientDisposition::RelayAccepted
+        );
+        assert_eq!(
             outbox.send(&id).unwrap().recipients()[0].attempts_reserved,
             1
         );
         assert_eq!(&snapshot.outbox[0][..4], b"TCGI");
         assert_eq!(&snapshot.outbox[1][..4], b"TCGP");
         assert_eq!(&snapshot.outbox[2][..4], b"TCGH");
+        assert_eq!(&snapshot.outbox[3][..4], b"TCGA");
     }
 
     #[test]
@@ -884,6 +964,44 @@ mod tests {
         );
         assert_eq!(snapshot, before_snapshot);
         assert_eq!(outbox, before_outbox);
+    }
+
+    #[test]
+    fn unknown_relay_acceptance_commit_keeps_the_handoff_pending() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+        let send = logical_send();
+        let id = send.id.clone();
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+        commit_outbox_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            &id,
+            &bob(),
+            vec![7, 8],
+        )
+        .unwrap();
+        commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &bob())
+            .unwrap();
+        store.outcome = CommitOutcome::Unknown;
+        let before_snapshot = snapshot.clone();
+        let before_outbox = outbox.clone();
+
+        assert_eq!(
+            commit_outbox_relay_acceptance(&mut store, &mut snapshot, &mut outbox, &id, &bob()),
+            Err(GroupOperationError::Frozen)
+        );
+        assert_eq!(snapshot, before_snapshot);
+        assert_eq!(outbox, before_outbox);
+        assert_eq!(
+            outbox.send(&id).unwrap().recipients()[0].disposition,
+            RecipientDisposition::HandedOff
+        );
     }
 
     #[test]
