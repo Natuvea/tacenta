@@ -8,6 +8,7 @@ const MAX_DEFERRED: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiveRefusal {
+    Malformed,
     WrongPeer,
     WrongGroup,
     WrongRecipient,

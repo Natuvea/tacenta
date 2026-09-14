@@ -7,7 +7,7 @@
 //! off.
 
 use tacenta_core::crypto::{
-    CryptoStateEffect,
+    Address, CryptoStateEffect,
     groups::{payload_commitment, roster_commitment},
 };
 use tacenta_group::{
@@ -31,6 +31,17 @@ pub(crate) enum GroupOperationError {
 pub(crate) struct RosterCommit {
     pub(crate) disposition: RosterDisposition,
     pub(crate) revalidated: Vec<RevalidatedReceive>,
+}
+
+/// The outcome data the live provider path supplies for one decrypted group
+/// plaintext. The provider identity and crypto address are kept separate from
+/// relay routing values until the adapter binds them to a `Member`.
+pub(crate) struct GroupReceiveInput<'a> {
+    pub(crate) plaintext: &'a [u8],
+    pub(crate) authenticated_identity: &'a [u8],
+    pub(crate) peer: &'a Address,
+    pub(crate) provider_state: Vec<u8>,
+    pub(crate) provider_effect: CryptoStateEffect,
 }
 
 pub(crate) fn bind_prepared_ciphertext(
@@ -208,6 +219,66 @@ pub(crate) fn commit_receive_disposition<S: OperationStore>(
     *snapshot = candidate_snapshot;
     *receiver = candidate_receiver;
     Ok(disposition)
+}
+
+/// Binds pairwise-authenticated provider identity and device data to the
+/// product member representation, then durably applies one group plaintext.
+/// A malformed plaintext is a terminal disposition with no application event.
+pub(crate) fn commit_group_plaintext<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    receiver: &mut GroupReceiver,
+    input: GroupReceiveInput<'_>,
+) -> Result<ReceiveDisposition, GroupOperationError> {
+    let context = match ApplicationContext::decode(input.plaintext) {
+        Ok(context) => context,
+        Err(_) => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            return Ok(ReceiveDisposition::Rejected(ReceiveRefusal::Malformed));
+        }
+    };
+    let authenticated_peer = Member::new(
+        input.authenticated_identity.to_vec(),
+        vec![input.peer.device],
+    );
+    commit_receive_disposition(
+        store,
+        snapshot,
+        receiver,
+        &context,
+        &authenticated_peer,
+        input.provider_state,
+        input.provider_effect,
+    )
+}
+
+fn commit_malformed_group_payload<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    plaintext: &[u8],
+    provider_state: Vec<u8>,
+    provider_effect: CryptoStateEffect,
+) -> Result<(), GroupOperationError> {
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot.provider_state = provider_state;
+    candidate_snapshot
+        .inbox
+        .push(encode_malformed_record(provider_effect, plaintext)?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    Ok(())
 }
 
 /// Accepts or refuses one core-bound roster successor and records the control
@@ -408,16 +479,17 @@ fn encode_receive_record(
     }
     fn refusal_code(refusal: ReceiveRefusal) -> u8 {
         match refusal {
-            ReceiveRefusal::WrongPeer => 0,
-            ReceiveRefusal::WrongGroup => 1,
-            ReceiveRefusal::WrongRecipient => 2,
-            ReceiveRefusal::NotActive => 3,
-            ReceiveRefusal::OldRevision => 4,
-            ReceiveRefusal::InvalidRoster => 5,
-            ReceiveRefusal::FutureOutOfRange => 6,
-            ReceiveRefusal::SequenceExpired => 7,
-            ReceiveRefusal::Conflict => 8,
-            ReceiveRefusal::DeferredFull => 9,
+            ReceiveRefusal::Malformed => 0,
+            ReceiveRefusal::WrongPeer => 1,
+            ReceiveRefusal::WrongGroup => 2,
+            ReceiveRefusal::WrongRecipient => 3,
+            ReceiveRefusal::NotActive => 4,
+            ReceiveRefusal::OldRevision => 5,
+            ReceiveRefusal::InvalidRoster => 6,
+            ReceiveRefusal::FutureOutOfRange => 7,
+            ReceiveRefusal::SequenceExpired => 8,
+            ReceiveRefusal::Conflict => 9,
+            ReceiveRefusal::DeferredFull => 10,
         }
     }
 
@@ -441,6 +513,24 @@ fn encode_receive_record(
             record.push(refusal_code(refusal));
         }
     }
+    Ok(record)
+}
+
+fn encode_malformed_record(
+    provider_effect: CryptoStateEffect,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, GroupOperationError> {
+    let length = u32::try_from(plaintext.len()).map_err(|_| GroupOperationError::Policy)?;
+    let effect = match provider_effect {
+        CryptoStateEffect::Unchanged => 0,
+        CryptoStateEffect::Advanced => 1,
+        CryptoStateEffect::Terminal => 2,
+    };
+    let mut record = Vec::with_capacity(9 + plaintext.len());
+    record.extend_from_slice(b"TCGM");
+    record.push(effect);
+    record.extend_from_slice(&length.to_be_bytes());
+    record.extend_from_slice(plaintext);
     Ok(record)
 }
 
@@ -488,12 +578,12 @@ fn encode_roster_record(
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupOperationError, bind_prepared_ciphertext, commit_handoff_reservation,
-        commit_logical_intent, commit_prepared_ciphertext, commit_receive_disposition,
-        commit_roster_successor, commit_roster_successor_with_receiver,
+        GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext, commit_group_plaintext,
+        commit_handoff_reservation, commit_logical_intent, commit_prepared_ciphertext,
+        commit_receive_disposition, commit_roster_successor, commit_roster_successor_with_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
-    use tacenta_core::crypto::CryptoStateEffect;
+    use tacenta_core::crypto::{Address, CryptoStateEffect};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupReceiver, LogicalSend, Member,
         OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal,
@@ -775,6 +865,61 @@ mod tests {
         );
         assert_eq!(snapshot.provider_state, vec![9]);
         assert_eq!(&snapshot.inbox[0][..5], b"TCGR\x02");
+        assert_eq!(store.recover().unwrap(), Some(snapshot));
+    }
+
+    #[test]
+    fn provider_bound_group_plaintext_uses_identity_and_crypto_device() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(2);
+        let mut receiver = receiver();
+
+        assert_eq!(
+            commit_group_plaintext(
+                &mut store,
+                &mut snapshot,
+                &mut receiver,
+                GroupReceiveInput {
+                    plaintext: &receive_context().encode().unwrap(),
+                    authenticated_identity: b"alice-key",
+                    peer: &Address::new("alice", 1),
+                    provider_state: vec![9],
+                    provider_effect: CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Accepted { event_id: 0 })
+        );
+    }
+
+    #[test]
+    fn malformed_group_plaintext_retains_terminal_provider_state_before_ack() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(2);
+        let mut receiver = receiver();
+
+        assert_eq!(
+            commit_group_plaintext(
+                &mut store,
+                &mut snapshot,
+                &mut receiver,
+                GroupReceiveInput {
+                    plaintext: b"not a group context",
+                    authenticated_identity: b"alice-key",
+                    peer: &Address::new("alice", 1),
+                    provider_state: vec![9],
+                    provider_effect: CryptoStateEffect::Terminal,
+                },
+            ),
+            Ok(ReceiveDisposition::Rejected(ReceiveRefusal::Malformed))
+        );
+        assert_eq!(snapshot.provider_state, vec![9]);
+        assert_eq!(&snapshot.inbox[0][..5], b"TCGM\x02");
         assert_eq!(store.recover().unwrap(), Some(snapshot));
     }
 
