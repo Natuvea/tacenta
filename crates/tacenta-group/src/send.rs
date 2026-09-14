@@ -50,6 +50,9 @@ pub enum RecipientDisposition {
 pub struct RecipientProgress {
     pub recipient: Member,
     pub disposition: RecipientDisposition,
+    /// The core-derived commitment of this recipient's canonical application
+    /// context. It is retained with ciphertext and cannot change on retry.
+    pub context_commitment: Option<[u8; DIGEST_LEN]>,
     pub ciphertext: Option<Vec<u8>>,
     pub attempts_reserved: u8,
 }
@@ -101,6 +104,7 @@ impl LogicalSend {
                 .map(|recipient| RecipientProgress {
                     recipient,
                     disposition: RecipientDisposition::Pending,
+                    context_commitment: None,
                     ciphertext: None,
                     attempts_reserved: 0,
                 })
@@ -134,17 +138,21 @@ impl LogicalSend {
     pub fn record_prepared(
         &mut self,
         recipient: &Member,
+        context_commitment: [u8; DIGEST_LEN],
         ciphertext: Vec<u8>,
     ) -> Result<&RecipientProgress, Error> {
         let progress = self.progress_mut(recipient)?;
         match progress.disposition {
             RecipientDisposition::Pending => {
+                progress.context_commitment = Some(context_commitment);
                 progress.ciphertext = Some(ciphertext);
                 progress.disposition = RecipientDisposition::Prepared;
                 Ok(progress)
             }
             RecipientDisposition::Prepared | RecipientDisposition::HandedOff => {
-                if progress.ciphertext.as_deref() == Some(ciphertext.as_slice()) {
+                if progress.context_commitment == Some(context_commitment)
+                    && progress.ciphertext.as_deref() == Some(ciphertext.as_slice())
+                {
                     Ok(progress)
                 } else {
                     Err(Error::Conflict)
@@ -321,16 +329,22 @@ mod tests {
     #[test]
     fn preparation_and_retry_keep_the_exact_ciphertext() {
         let mut logical_send = send();
-        logical_send.record_prepared(&bob(), vec![1, 2, 3]).unwrap();
+        logical_send
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
+            .unwrap();
         assert_eq!(
             logical_send
-                .record_prepared(&bob(), vec![1, 2, 3])
+                .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
                 .unwrap()
                 .ciphertext,
             Some(vec![1, 2, 3])
         );
         assert_eq!(
-            logical_send.record_prepared(&bob(), vec![1, 2, 4]),
+            logical_send.record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 4]),
+            Err(Error::Conflict)
+        );
+        assert_eq!(
+            logical_send.record_prepared(&bob(), [2; DIGEST_LEN], vec![1, 2, 3]),
             Err(Error::Conflict)
         );
     }
@@ -338,7 +352,9 @@ mod tests {
     #[test]
     fn attempts_are_bounded_and_exhaustion_never_claims_nondelivery() {
         let mut logical_send = send();
-        logical_send.record_prepared(&bob(), vec![1, 2, 3]).unwrap();
+        logical_send
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
+            .unwrap();
         for expected_attempt in 1..=3 {
             let progress = logical_send.reserve_handoff(&bob()).unwrap();
             assert_eq!(progress.attempts_reserved, expected_attempt);
@@ -356,8 +372,12 @@ mod tests {
     #[test]
     fn removal_cancels_only_unsent_recipient_work() {
         let mut logical_send = send();
-        logical_send.record_prepared(&bob(), vec![1]).unwrap();
-        logical_send.record_prepared(&carol(), vec![2]).unwrap();
+        logical_send
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1])
+            .unwrap();
+        logical_send
+            .record_prepared(&carol(), [2; DIGEST_LEN], vec![2])
+            .unwrap();
         logical_send.reserve_handoff(&bob()).unwrap();
         assert_eq!(
             logical_send.cancel_unsent_for(&bob()).unwrap().disposition,
