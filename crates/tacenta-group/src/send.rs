@@ -1,8 +1,8 @@
 //! Immutable logical fan-out records for the bounded group experiment.
 
 use crate::{
-    ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_PAYLOAD_LEN, Member, RESERVED_REVISION,
-    Roster,
+    ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_LIVE_LOGICAL_SENDS, MAX_PAYLOAD_LEN,
+    Member, RESERVED_REVISION, Roster,
 };
 use std::collections::BTreeSet;
 
@@ -69,6 +69,54 @@ pub struct LogicalSend {
     recipients: Vec<RecipientProgress>,
 }
 
+/// Bounded durable ownership of a group's logical send records. The client
+/// serializes this value with its snapshot before allowing any preparation or
+/// handoff to cross an external boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupOutbox {
+    group_id: GroupId,
+    sends: Vec<LogicalSend>,
+}
+
+impl GroupOutbox {
+    pub fn new(group_id: GroupId) -> Self {
+        Self {
+            group_id,
+            sends: Vec::new(),
+        }
+    }
+
+    pub fn sends(&self) -> &[LogicalSend] {
+        &self.sends
+    }
+
+    /// Adds a distinct live logical send. An exact replay uses the prior
+    /// immutable record, while changed data for its ID cannot replace it.
+    pub fn record(&mut self, send: LogicalSend) -> Result<&LogicalSend, Error> {
+        if send.id.group_id != self.group_id {
+            return Err(Error::Conflict);
+        }
+        if let Some(position) = self.sends.iter().position(|known| known.id == send.id) {
+            if self.sends[position] == send {
+                return Ok(&self.sends[position]);
+            }
+            return Err(Error::Conflict);
+        }
+        if self.sends.iter().filter(|send| !send.is_terminal()).count() >= MAX_LIVE_LOGICAL_SENDS {
+            return Err(Error::OutboxFull);
+        }
+        self.sends.push(send);
+        Ok(self.sends.last().expect("just inserted"))
+    }
+
+    /// Applies a locally accepted newer roster to all its logical records.
+    pub fn cancel_for_newer_roster(&mut self, revision: u64) {
+        for send in &mut self.sends {
+            send.cancel_for_newer_roster(revision);
+        }
+    }
+}
+
 impl LogicalSend {
     /// Allocates the immutable group, revision, sender, payload, and recipient
     /// set before any per-recipient pairwise preparation occurs.
@@ -115,6 +163,18 @@ impl LogicalSend {
 
     pub fn recipients(&self) -> &[RecipientProgress] {
         &self.recipients
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.recipients.iter().all(|progress| {
+            matches!(
+                progress.disposition,
+                RecipientDisposition::RelayAccepted
+                    | RecipientDisposition::Cancelled
+                    | RecipientDisposition::CancelledAfterHandoff
+                    | RecipientDisposition::ExhaustedUnknown
+            )
+        })
     }
 
     /// Produces the exact canonical plaintext that must be encrypted for this
@@ -342,6 +402,12 @@ mod tests {
         .unwrap()
     }
 
+    fn send_at(sequence: u64) -> LogicalSend {
+        let mut send = send();
+        send.id.sequence = sequence;
+        send
+    }
+
     #[test]
     fn a_logical_send_fixes_the_context_and_recipient_set() {
         let logical_send = send();
@@ -447,6 +513,22 @@ mod tests {
             logical_send.recipients()[1].disposition,
             RecipientDisposition::Cancelled
         );
+    }
+
+    #[test]
+    fn outbox_applies_live_backpressure_without_discarding_terminal_evidence() {
+        let mut outbox = GroupOutbox::new(group());
+        for sequence in 0..MAX_LIVE_LOGICAL_SENDS as u64 {
+            outbox.record(send_at(sequence)).unwrap();
+        }
+        assert_eq!(outbox.record(send_at(8)), Err(Error::OutboxFull));
+
+        outbox.cancel_for_newer_roster(3);
+        for sequence in 8..=15 {
+            outbox.record(send_at(sequence)).unwrap();
+        }
+        assert_eq!(outbox.sends().len(), 16);
+        assert_eq!(outbox.record(send_at(16)), Err(Error::OutboxFull));
     }
 
     #[test]

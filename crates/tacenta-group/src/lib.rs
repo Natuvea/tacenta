@@ -16,7 +16,9 @@ mod send;
 pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus};
 pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};
 pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
-pub use send::{LogicalMessageId, LogicalSend, RecipientDisposition, RecipientProgress};
+pub use send::{
+    GroupOutbox, LogicalMessageId, LogicalSend, RecipientDisposition, RecipientProgress,
+};
 
 /// The first bounded profile uses 16 opaque group-ID bytes.
 pub const GROUP_ID_LEN: usize = 16;
@@ -26,6 +28,8 @@ pub const DIGEST_LEN: usize = 32;
 pub const MAX_MEMBERS: usize = 8;
 /// The initial group-application payload bound.
 pub const MAX_PAYLOAD_LEN: usize = 1_024;
+/// The bounded profile's maximum number of unfinished logical sends per group.
+pub const MAX_LIVE_LOGICAL_SENDS: usize = 8;
 /// Policy version selected by the bounded validation profile.
 pub const POLICY_VERSION_V1: u32 = 1;
 /// `u64::MAX` is reserved and never encodes a group revision.
@@ -54,6 +58,7 @@ pub enum Error {
     NotMember,
     Closed,
     RetryExhausted,
+    OutboxFull,
 }
 
 impl fmt::Display for Error {
@@ -76,6 +81,7 @@ impl fmt::Display for Error {
             Self::NotMember => "bounded group member is not active in the roster",
             Self::Closed => "bounded group is closed",
             Self::RetryExhausted => "bounded group retry budget is exhausted",
+            Self::OutboxFull => "bounded group outbox is full",
         })
     }
 }
