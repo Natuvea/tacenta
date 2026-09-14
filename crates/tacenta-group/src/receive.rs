@@ -138,6 +138,10 @@ impl GroupReceiver {
         }
         self.roster = roster;
         self.roster_digest = roster_digest;
+        // Only the current revision can accept application messages. Dropping
+        // prior-revision entries keeps the 64-sequence dedup window bounded
+        // across a long-lived group without changing old-message refusal.
+        self.accepted.clear();
         let deferred = std::mem::take(&mut self.deferred);
         Ok(deferred
             .into_iter()
@@ -174,10 +178,19 @@ impl GroupReceiver {
         }
         let event_id = self.next_event_id;
         self.next_event_id = self.next_event_id.saturating_add(1);
+        let sender = key.sender.clone();
+        let revision = key.revision;
+        let sequence = key.sequence;
         self.accepted.push(Accepted {
             key,
             commitment,
             event_id,
+        });
+        let newest_sequence = newest.unwrap_or(sequence).max(sequence);
+        self.accepted.retain(|item| {
+            item.key.sender != sender
+                || item.key.revision != revision
+                || item.key.sequence.saturating_add(DEDUP_WINDOW) > newest_sequence
         });
         ReceiveDisposition::Accepted { event_id }
     }
@@ -328,5 +341,36 @@ mod tests {
                 disposition: ReceiveDisposition::Accepted { event_id: 0 },
             }])
         );
+    }
+
+    #[test]
+    fn accepted_dedup_state_is_bounded_to_the_current_sender_window() {
+        let mut receiver = receiver();
+        for sequence in 0..=DEDUP_WINDOW {
+            assert!(matches!(
+                receiver.receive(&context(2, sequence), &alice(), [1; DIGEST_LEN]),
+                ReceiveDisposition::Accepted { .. }
+            ));
+        }
+        assert_eq!(receiver.accepted.len(), DEDUP_WINDOW as usize);
+        assert_eq!(
+            receiver.receive(&context(2, 0), &alice(), [1; DIGEST_LEN]),
+            ReceiveDisposition::Rejected(ReceiveRefusal::SequenceExpired)
+        );
+
+        let next = Roster::new(
+            group(),
+            3,
+            [9; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        receiver
+            .install_accepted_roster(next, [10; DIGEST_LEN])
+            .unwrap();
+        assert!(receiver.accepted.is_empty());
     }
 }
