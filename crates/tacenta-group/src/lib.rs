@@ -10,10 +10,12 @@ use std::collections::BTreeSet;
 
 mod invitation;
 mod receive;
+mod roster_view;
 mod send;
 
 pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus};
 pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal};
+pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
 pub use send::{LogicalMessageId, LogicalSend, RecipientDisposition, RecipientProgress};
 
 /// The first bounded profile uses 16 opaque group-ID bytes.
