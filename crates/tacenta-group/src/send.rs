@@ -139,6 +139,184 @@ impl GroupOutbox {
             send.cancel_for_newer_roster(revision);
         }
     }
+
+    /// Rebuilds one group's live outbox from the ordered records in a combined
+    /// operation snapshot. The caller supplies the core's domain-separated
+    /// payload commitment so this policy crate stays crypto-independent.
+    pub fn recover_from_transcript(
+        group_id: GroupId,
+        entries: &[Vec<u8>],
+        payload_commitment: impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+    ) -> Result<Self, Error> {
+        let mut outbox = Self::new(group_id);
+        for entry in entries {
+            let Some(tag) = entry.get(..4) else {
+                if entry.starts_with(b"TCG") {
+                    return Err(Error::Malformed);
+                }
+                continue;
+            };
+            match tag {
+                b"TCGI" => {
+                    let send = LogicalSend::decode_intent(&entry[4..])?;
+                    if send.id.group_id != group_id {
+                        continue;
+                    }
+                    if outbox.record(send)? != OutboxDisposition::Inserted {
+                        return Err(Error::Conflict);
+                    }
+                }
+                b"TCGP" => {
+                    let record = decode_progress_record(&entry[4..])?;
+                    if !record.rest.is_empty() {
+                        return Err(Error::Malformed);
+                    }
+                    apply_recovered_preparation(
+                        &mut outbox,
+                        group_id,
+                        &record.context,
+                        record.commitment,
+                        record.ciphertext,
+                        &payload_commitment,
+                    )?;
+                }
+                b"TCGH" => {
+                    let record = decode_progress_record(&entry[4..])?;
+                    let (attempts, disposition) = decode_handoff_suffix(record.rest)?;
+                    if record.context.group_id != group_id {
+                        continue;
+                    }
+                    apply_recovered_preparation(
+                        &mut outbox,
+                        group_id,
+                        &record.context,
+                        record.commitment,
+                        record.ciphertext,
+                        &payload_commitment,
+                    )?;
+                    let send = outbox.send_mut(&logical_id_from_context(&record.context)?)?;
+                    let prior_attempts =
+                        send.progress(&record.context.recipient)?.attempts_reserved;
+                    if attempts != prior_attempts.checked_add(1).ok_or(Error::Malformed)? {
+                        return Err(Error::Malformed);
+                    }
+                    let progress = send.reserve_handoff(&record.context.recipient)?;
+                    if progress.attempts_reserved != attempts || progress.disposition != disposition
+                    {
+                        return Err(Error::Malformed);
+                    }
+                }
+                b"TCGA" => {
+                    let record = decode_progress_record(&entry[4..])?;
+                    if !record.rest.is_empty() {
+                        return Err(Error::Malformed);
+                    }
+                    if record.context.group_id != group_id {
+                        continue;
+                    }
+                    apply_recovered_preparation(
+                        &mut outbox,
+                        group_id,
+                        &record.context,
+                        record.commitment,
+                        record.ciphertext,
+                        &payload_commitment,
+                    )?;
+                    let send = outbox.send_mut(&logical_id_from_context(&record.context)?)?;
+                    if send.progress(&record.context.recipient)?.disposition
+                        != RecipientDisposition::HandedOff
+                    {
+                        return Err(Error::WrongDisposition);
+                    }
+                    send.record_relay_accepted(&record.context.recipient)?;
+                }
+                _ if tag.starts_with(b"TCG") => return Err(Error::Malformed),
+                _ => {}
+            }
+        }
+        Ok(outbox)
+    }
+}
+
+fn logical_id_from_context(context: &ApplicationContext) -> Result<LogicalMessageId, Error> {
+    LogicalMessageId::new(
+        context.group_id,
+        context.revision,
+        context.sender.clone(),
+        context.logical_sequence,
+    )
+}
+
+struct ProgressRecord<'a> {
+    context: ApplicationContext,
+    commitment: [u8; DIGEST_LEN],
+    ciphertext: Vec<u8>,
+    rest: &'a [u8],
+}
+
+fn decode_progress_record(bytes: &[u8]) -> Result<ProgressRecord<'_>, Error> {
+    fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Result<&'a [u8], Error> {
+        let (head, tail) = cursor.split_at_checked(count).ok_or(Error::Malformed)?;
+        *cursor = tail;
+        Ok(head)
+    }
+    fn take_lp(cursor: &mut &[u8]) -> Result<Vec<u8>, Error> {
+        let bytes = take(cursor, 4)?;
+        let count = usize::try_from(u32::from_be_bytes(
+            bytes.try_into().map_err(|_| Error::Malformed)?,
+        ))
+        .map_err(|_| Error::Malformed)?;
+        Ok(take(cursor, count)?.to_vec())
+    }
+
+    let mut cursor = bytes;
+    let context_bytes = take_lp(&mut cursor)?;
+    let context = ApplicationContext::decode(&context_bytes)?;
+    let commitment = take(&mut cursor, DIGEST_LEN)?
+        .try_into()
+        .map_err(|_| Error::Malformed)?;
+    let ciphertext = take_lp(&mut cursor)?;
+    Ok(ProgressRecord {
+        context,
+        commitment,
+        ciphertext,
+        rest: cursor,
+    })
+}
+
+fn decode_handoff_suffix(bytes: &[u8]) -> Result<(u8, RecipientDisposition), Error> {
+    let [attempts, code] = bytes else {
+        return Err(Error::Malformed);
+    };
+    let disposition = match code {
+        0 => RecipientDisposition::HandedOff,
+        1 => RecipientDisposition::ExhaustedUnknown,
+        _ => return Err(Error::Malformed),
+    };
+    Ok((*attempts, disposition))
+}
+
+fn apply_recovered_preparation(
+    outbox: &mut GroupOutbox,
+    group_id: GroupId,
+    context: &ApplicationContext,
+    commitment: [u8; DIGEST_LEN],
+    ciphertext: Vec<u8>,
+    payload_commitment: &impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+) -> Result<(), Error> {
+    if context.group_id != group_id {
+        return Ok(());
+    }
+    let context_bytes = context.encode()?;
+    if commitment != payload_commitment(&context_bytes) {
+        return Err(Error::Conflict);
+    }
+    let send = outbox.send_mut(&logical_id_from_context(context)?)?;
+    if send.application_context(&context.recipient)? != *context {
+        return Err(Error::Conflict);
+    }
+    send.record_prepared(&context.recipient, commitment, ciphertext)?;
+    Ok(())
 }
 
 impl LogicalSend {
@@ -409,11 +587,12 @@ impl LogicalSend {
     ) -> Result<&RecipientProgress, Error> {
         let progress = self.progress_mut(recipient)?;
         match progress.disposition {
-            RecipientDisposition::Prepared | RecipientDisposition::HandedOff => {
+            RecipientDisposition::HandedOff => {
                 progress.disposition = RecipientDisposition::RelayAccepted;
                 Ok(progress)
             }
             RecipientDisposition::Pending
+            | RecipientDisposition::Prepared
             | RecipientDisposition::Cancelled
             | RecipientDisposition::CancelledAfterHandoff
             | RecipientDisposition::ExhaustedUnknown
@@ -613,6 +792,85 @@ mod tests {
         assert_eq!(LogicalSend::decode_intent(&trailing), Err(Error::Malformed));
     }
 
+    fn test_payload_commitment(bytes: &[u8]) -> [u8; DIGEST_LEN] {
+        let mut commitment = [0u8; DIGEST_LEN];
+        for (index, byte) in bytes.iter().enumerate() {
+            commitment[index % DIGEST_LEN] ^= byte;
+        }
+        commitment
+    }
+
+    fn progress_record(
+        tag: &[u8; 4],
+        context: &ApplicationContext,
+        ciphertext: &[u8],
+        suffix: &[u8],
+    ) -> Vec<u8> {
+        fn put_lp(out: &mut Vec<u8>, value: &[u8]) {
+            out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            out.extend_from_slice(value);
+        }
+
+        let context = context.encode().unwrap();
+        let mut record = tag.to_vec();
+        put_lp(&mut record, &context);
+        record.extend_from_slice(&test_payload_commitment(&context));
+        put_lp(&mut record, ciphertext);
+        record.extend_from_slice(suffix);
+        record
+    }
+
+    #[test]
+    fn outbox_recovery_replays_preparation_handoff_and_relay_acceptance() {
+        let mut original = send();
+        let context = original.application_context(&bob()).unwrap();
+        let ciphertext = vec![1, 2, 3];
+        original
+            .record_prepared(
+                &bob(),
+                test_payload_commitment(&context.encode().unwrap()),
+                ciphertext.clone(),
+            )
+            .unwrap();
+        original.reserve_handoff(&bob()).unwrap();
+        original.record_relay_accepted(&bob()).unwrap();
+
+        let entries = vec![
+            [
+                b"TCGI".as_slice(),
+                send().encode_intent().unwrap().as_slice(),
+            ]
+            .concat(),
+            progress_record(b"TCGP", &context, &ciphertext, &[]),
+            progress_record(b"TCGH", &context, &ciphertext, &[1, 0]),
+            progress_record(b"TCGA", &context, &ciphertext, &[]),
+        ];
+        let recovered =
+            GroupOutbox::recover_from_transcript(group(), &entries, test_payload_commitment)
+                .unwrap();
+
+        assert_eq!(recovered.sends(), &[original]);
+    }
+
+    #[test]
+    fn outbox_recovery_refuses_a_progress_record_with_the_wrong_commitment() {
+        let original = send();
+        let context = original.application_context(&bob()).unwrap();
+        let entries = vec![
+            [
+                b"TCGI".as_slice(),
+                original.encode_intent().unwrap().as_slice(),
+            ]
+            .concat(),
+            progress_record(b"TCGP", &context, &[1, 2, 3], &[]),
+        ];
+
+        assert_eq!(
+            GroupOutbox::recover_from_transcript(group(), &entries, |_| [0; DIGEST_LEN]),
+            Err(Error::Conflict)
+        );
+    }
+
     #[test]
     fn preparation_and_retry_keep_the_exact_ciphertext() {
         let mut logical_send = send();
@@ -653,6 +911,26 @@ mod tests {
         assert_eq!(
             logical_send.reserve_handoff(&bob()),
             Err(Error::RetryExhausted)
+        );
+    }
+
+    #[test]
+    fn relay_acceptance_requires_a_committed_handoff() {
+        let mut logical_send = send();
+        logical_send
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
+            .unwrap();
+        assert_eq!(
+            logical_send.record_relay_accepted(&bob()),
+            Err(Error::WrongDisposition)
+        );
+        logical_send.reserve_handoff(&bob()).unwrap();
+        assert_eq!(
+            logical_send
+                .record_relay_accepted(&bob())
+                .unwrap()
+                .disposition,
+            RecipientDisposition::RelayAccepted
         );
     }
 
