@@ -125,6 +125,52 @@ pub(crate) fn commit_prepared_ciphertext<S: OperationStore>(
     Ok(progress)
 }
 
+/// Reserves an exact prepared ciphertext attempt before returning it to a
+/// transport caller. The caller may dispatch only the returned committed
+/// record; a failed or uncertain commit exposes no handoff-eligible value.
+pub(crate) fn commit_handoff_reservation<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    logical_send: &mut LogicalSend,
+    recipient: &Member,
+) -> Result<RecipientProgress, GroupOperationError> {
+    let mut candidate_send = logical_send.clone();
+    let progress = candidate_send
+        .reserve_handoff(recipient)
+        .map_err(|_| GroupOperationError::Policy)?
+        .clone();
+    let context = candidate_send
+        .application_context(recipient)
+        .map_err(|_| GroupOperationError::Policy)?
+        .encode()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let commitment = progress
+        .context_commitment
+        .ok_or(GroupOperationError::Policy)?;
+    let ciphertext = progress
+        .ciphertext
+        .as_deref()
+        .ok_or(GroupOperationError::Policy)?;
+
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot.outbox.push(encode_handoff_record(
+        &context,
+        &commitment,
+        ciphertext,
+        &progress,
+    )?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *logical_send = candidate_send;
+    Ok(progress)
+}
+
 /// Records an authenticated group's disposition with the provider transition
 /// that produced it. A caller receives no disposition for acknowledgement or
 /// application delivery until the combined candidate snapshot is committed.
@@ -314,6 +360,33 @@ fn encode_intent_record(intent: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
     Ok(record)
 }
 
+fn encode_handoff_record(
+    context: &[u8],
+    commitment: &[u8; 32],
+    ciphertext: &[u8],
+    progress: &RecipientProgress,
+) -> Result<Vec<u8>, GroupOperationError> {
+    fn put_lp(out: &mut Vec<u8>, value: &[u8]) -> Result<(), GroupOperationError> {
+        let length = u32::try_from(value.len()).map_err(|_| GroupOperationError::Policy)?;
+        out.extend_from_slice(&length.to_be_bytes());
+        out.extend_from_slice(value);
+        Ok(())
+    }
+    let disposition = match progress.disposition {
+        tacenta_group::RecipientDisposition::HandedOff => 0,
+        tacenta_group::RecipientDisposition::ExhaustedUnknown => 1,
+        _ => return Err(GroupOperationError::Policy),
+    };
+    let mut record = Vec::new();
+    record.extend_from_slice(b"TCGH");
+    put_lp(&mut record, context)?;
+    record.extend_from_slice(commitment);
+    put_lp(&mut record, ciphertext)?;
+    record.push(progress.attempts_reserved);
+    record.push(disposition);
+    Ok(record)
+}
+
 fn encode_receive_record(
     provider_effect: CryptoStateEffect,
     context: &[u8],
@@ -415,9 +488,9 @@ fn encode_roster_record(
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupOperationError, bind_prepared_ciphertext, commit_logical_intent,
-        commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver,
+        GroupOperationError, bind_prepared_ciphertext, commit_handoff_reservation,
+        commit_logical_intent, commit_prepared_ciphertext, commit_receive_disposition,
+        commit_roster_successor, commit_roster_successor_with_receiver,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::CryptoStateEffect;
@@ -550,6 +623,47 @@ mod tests {
         );
         assert_eq!(snapshot, before_snapshot);
         assert!(outbox.sends().is_empty());
+    }
+
+    #[test]
+    fn handoff_reservation_commits_exact_prepared_bytes_before_returning_them() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut send = logical_send();
+        commit_prepared_ciphertext(&mut store, &mut snapshot, &mut send, &bob(), vec![7, 8])
+            .unwrap();
+
+        let progress =
+            commit_handoff_reservation(&mut store, &mut snapshot, &mut send, &bob()).unwrap();
+        assert_eq!(progress.attempts_reserved, 1);
+        assert_eq!(progress.ciphertext, Some(vec![7, 8]));
+        assert_eq!(progress.disposition, RecipientDisposition::HandedOff);
+        assert_eq!(&snapshot.outbox[1][..4], b"TCGH");
+    }
+
+    #[test]
+    fn unknown_handoff_reservation_does_not_expose_a_new_attempt() {
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut send = logical_send();
+        commit_prepared_ciphertext(&mut store, &mut snapshot, &mut send, &bob(), vec![7, 8])
+            .unwrap();
+        store.outcome = CommitOutcome::Unknown;
+        let before_snapshot = snapshot.clone();
+        let before_send = send.clone();
+
+        assert_eq!(
+            commit_handoff_reservation(&mut store, &mut snapshot, &mut send, &bob()),
+            Err(GroupOperationError::Frozen)
+        );
+        assert_eq!(snapshot, before_snapshot);
+        assert_eq!(send, before_send);
     }
 
     struct Store {
