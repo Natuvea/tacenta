@@ -2800,6 +2800,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tacenta-group"
+version = "1.11.5"
+
+[[package]]
 name = "tacenta-kdf"
 version = "0.0.0"
 source = "git+https://github.com/Natuvea/tacenta-core?rev=c7499a9b6fedb9d211198671848c1e3acbe592af#c7499a9b6fedb9d211198671848c1e3acbe592af"

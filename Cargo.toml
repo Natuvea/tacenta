@@ -2,7 +2,7 @@
 resolver = "2"
 # tooling/check-licences.sh enforces the licence policy: no strong-copyleft
 # crate in the product graph.
-members = ["crates/tacenta-wire", "crates/tacenta-state", "crates/tacenta-relay", "crates/tacenta-directory-core", "crates/tacenta-directory", "crates/tacenta-transport", "crates/tacenta-core", "crates/tacenta-accounts", "crates/tacenta-discovery", "crates/tacenta-client", "crates/tacenta-ffi", "crates/uniffi-bindgen", "crates/tacenta-server", "crates/tacenta-gateway", "crates/tacenta-cli", "crates/tacenta-echo", "crates/tacenta-demo", "crates/tacenta-wasm"]
+members = ["crates/tacenta-wire", "crates/tacenta-state", "crates/tacenta-relay", "crates/tacenta-directory-core", "crates/tacenta-directory", "crates/tacenta-transport", "crates/tacenta-core", "crates/tacenta-accounts", "crates/tacenta-discovery", "crates/tacenta-client", "crates/tacenta-group", "crates/tacenta-ffi", "crates/uniffi-bindgen", "crates/tacenta-server", "crates/tacenta-gateway", "crates/tacenta-cli", "crates/tacenta-echo", "crates/tacenta-demo", "crates/tacenta-wasm"]
 
 [workspace.package]
 # The Rust crates are not published to crates.io: the SDK ships as the npm,
@@ -30,6 +30,7 @@ tacenta-core = { path = "crates/tacenta-core", version = "1" }
 tacenta-accounts = { path = "crates/tacenta-accounts", version = "1" }
 tacenta-discovery = { path = "crates/tacenta-discovery", version = "1" }
 tacenta-client = { path = "crates/tacenta-client", version = "1" }
+tacenta-group = { path = "crates/tacenta-group", version = "1" }
 tacenta-server = { path = "crates/tacenta-server", version = "1" }
 tacenta-gateway = { path = "crates/tacenta-gateway", version = "1" }
 # tacenta-core, pinned by revision. Aliased because both crates are called
