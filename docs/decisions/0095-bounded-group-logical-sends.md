@@ -6,9 +6,10 @@ A bounded group logical send is an immutable product record keyed by
 `(group_id, revision, sender_identity, sender_device, sequence)`. Sequence is
 a monotonically increasing unsigned 64-bit counter allocated with the record,
 never derived from a pairwise ratchet, never reused, and reset only in a new
-revision namespace. The record fixes the roster digest, payload bytes, payload
-commitment input, and the complete canonical recipient set before any pairwise
-operation or transport handoff.
+revision namespace. The record fixes the roster digest, payload bytes, the
+pinned core payload commitment over the canonical application context, and the
+complete canonical recipient set before any pairwise operation or transport
+handoff.
 
 Each recipient has its own immutable ciphertext and disposition:
 `pending`, `prepared`, `handed_off`, `relay_accepted`, `cancelled`, or

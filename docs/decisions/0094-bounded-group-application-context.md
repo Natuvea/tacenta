@@ -28,6 +28,11 @@ with an invalid group context retains its provider state effect but creates no
 membership or application effect. The product records its later durable
 disposition before acknowledgement; this record does not implement that store.
 
+The immutable payload commitment is the pinned standalone core's
+`payload_commitment` over these exact context bytes. The product reaches that
+helper only through its crypto adapter; it does not select a hash or reproduce
+the core's domain-separation label.
+
 ## Considered
 
 - Reuse the relay sender label as group identity evidence.
@@ -46,7 +51,6 @@ additive authenticated plaintext rule.
 
 ## What would reopen this
 
-A core commitment helper, a canonical payload commitment representation, group
-encryption, sealed sender, or a production multi-device profile requires a
-versioned successor. This record does not define a group wire envelope, change
-the relay, or make an end-to-end group security claim.
+Group encryption, sealed sender, or a production multi-device profile requires
+a versioned successor. This record does not define a group wire envelope,
+change the relay, or make an end-to-end group security claim.
