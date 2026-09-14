@@ -10,3 +10,4 @@ import Tacenta.Ratchet
 import Tacenta.Accounts
 import Tacenta.RelayAuth
 import Tacenta.Assurance
+import Tacenta.Group
