@@ -9,8 +9,10 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 mod invitation;
+mod send;
 
 pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus};
+pub use send::{LogicalMessageId, LogicalSend, RecipientDisposition, RecipientProgress};
 
 /// The first bounded profile uses 16 opaque group-ID bytes.
 pub const GROUP_ID_LEN: usize = 16;
@@ -44,6 +46,10 @@ pub enum Error {
     Expired,
     Revoked,
     WrongDisposition,
+    EmptyRecipients,
+    NotMember,
+    Closed,
+    RetryExhausted,
 }
 
 impl fmt::Display for Error {
@@ -62,6 +68,10 @@ impl fmt::Display for Error {
             Self::Expired => "expired bounded group invitation",
             Self::Revoked => "revoked bounded group invitation",
             Self::WrongDisposition => "invalid bounded group invitation disposition",
+            Self::EmptyRecipients => "bounded group logical send has no recipients",
+            Self::NotMember => "bounded group member is not active in the roster",
+            Self::Closed => "bounded group is closed",
+            Self::RetryExhausted => "bounded group retry budget is exhausted",
         })
     }
 }
@@ -116,6 +126,10 @@ impl Member {
 
     fn sort_key(&self) -> Vec<u8> {
         [self.identity.as_slice(), self.device.as_slice()].concat()
+    }
+
+    pub(crate) fn canonical_sort_key(&self) -> Vec<u8> {
+        self.sort_key()
     }
 }
 
