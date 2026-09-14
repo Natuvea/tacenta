@@ -1841,11 +1841,11 @@ impl<P: CryptoProvider> Client<P> {
     /// so decoding it here would mean naming a provider's type to hand it
     /// straight back. Whether the bytes are a bundle at all is the provider's
     /// question, and it answers it in `establish_session`.
-    async fn fetch_bundle(&mut self, to: &DeviceAddr) -> Result<Vec<u8>> {
-        let DirResponse::Found { bundle, .. } = self.directory.lookup(to).await? else {
+    async fn fetch_bundle(&mut self, to: &DeviceAddr) -> Result<(Vec<u8>, Vec<u8>)> {
+        let DirResponse::Found { identity, bundle } = self.directory.lookup(to).await? else {
             return Err(Error::Relay(RelayRefusal::UnknownRecipient));
         };
-        Ok(bundle)
+        Ok((identity, bundle))
     }
 
     /// Encrypt and send `message` to `to`, opening a session (via a
@@ -1868,7 +1868,7 @@ impl<P: CryptoProvider> Client<P> {
         let mut rng = rand::rngs::OsRng.unwrap_err();
         let peer = peer_address(to)?;
         if !self.sessions.contains(to) {
-            let peer_bundle = match self.fetch_bundle(to).await {
+            let (peer_identity, peer_bundle) = match self.fetch_bundle(to).await {
                 Err(Error::Io(_)) => {
                     self.reconnect_with_patience().await?;
                     self.fetch_bundle(to).await?
@@ -1876,7 +1876,7 @@ impl<P: CryptoProvider> Client<P> {
                 other => other?,
             };
             self.party
-                .establish_session(&peer, &peer_bundle, &mut rng)
+                .establish_session_for(&peer, &peer_bundle, &peer_identity, &mut rng)
                 .await
                 .map_err(crypto)?;
             if self.sessions.insert(to.clone()) {

@@ -167,6 +167,18 @@ impl CryptoProvider for CountingProvider {
         self.0.establish_session(peer, bundle, csprng).await
     }
 
+    async fn establish_session_for<R: rand::Rng + rand::CryptoRng>(
+        &mut self,
+        peer: &Address,
+        bundle: &[u8],
+        expected_identity: &[u8],
+        csprng: &mut R,
+    ) -> Result<(), Self::Error> {
+        self.0
+            .establish_session_for(peer, bundle, expected_identity, csprng)
+            .await
+    }
+
     async fn encrypt<R: rand::Rng + rand::CryptoRng>(
         &mut self,
         peer: &Address,
