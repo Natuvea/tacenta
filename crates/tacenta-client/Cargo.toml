@@ -10,6 +10,7 @@ license.workspace = true
 # This is what the platform bindings (UniFFI/wasm) will export.
 [dependencies]
 tacenta-core = { workspace = true }
+tacenta-group = { workspace = true }
 tacenta-relay = { workspace = true }
 tacenta-directory = { workspace = true }
 tacenta-accounts = { workspace = true }

@@ -67,6 +67,8 @@ mod dial;
 // provide the provider-state effect required for a real durable commit.
 #[allow(dead_code)]
 mod durable;
+#[allow(dead_code)]
+mod group_operations;
 // GC-03's port is intentionally not wired into live DM operations until the
 // provider outcome contract supplies the state effect that must be persisted.
 #[allow(dead_code)]
