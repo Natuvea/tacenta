@@ -6,10 +6,14 @@
 //! the immutable recipient record before the durable coordinator can hand it
 //! off.
 
-use tacenta_core::crypto::{CryptoStateEffect, groups::payload_commitment};
+use tacenta_core::crypto::{
+    CryptoStateEffect,
+    groups::{payload_commitment, roster_commitment},
+};
 use tacenta_group::{
     ApplicationContext, Error as GroupError, GroupReceiver, LogicalSend, Member,
-    ReceiveDisposition, ReceiveRefusal, RecipientProgress,
+    ReceiveDisposition, ReceiveRefusal, RecipientProgress, Roster, RosterDisposition,
+    RosterRefusal, RosterView,
 };
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
@@ -117,6 +121,52 @@ pub(crate) fn commit_receive_disposition<S: OperationStore>(
     Ok(disposition)
 }
 
+/// Accepts or refuses one core-bound roster successor and records the control
+/// disposition before exposing its membership effect. An accepted successor
+/// stops incomplete sends from its older group revisions in the same commit.
+pub(crate) fn commit_roster_successor<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    authenticated_authority: &Member,
+    candidate: Roster,
+    logical_sends: &mut [LogicalSend],
+) -> Result<RosterDisposition, GroupOperationError> {
+    let preimage = candidate
+        .encode()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let commitment = roster_commitment(&preimage);
+    let mut candidate_view = view.clone();
+    let disposition =
+        candidate_view.accept_successor(authenticated_authority, candidate.clone(), commitment);
+    let mut candidate_sends = logical_sends.to_vec();
+    if disposition == RosterDisposition::Accepted {
+        for send in &mut candidate_sends {
+            if send.id.group_id == candidate.group_id {
+                send.cancel_for_newer_roster(candidate.revision);
+            }
+        }
+    }
+
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot.group_controls.push(encode_roster_record(
+        &preimage,
+        &commitment,
+        disposition,
+    )?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *view = candidate_view;
+    logical_sends.clone_from_slice(&candidate_sends);
+    Ok(disposition)
+}
+
 fn encode_prepared_record(
     context: &[u8],
     commitment: &[u8; 32],
@@ -194,17 +244,59 @@ fn encode_receive_record(
     Ok(record)
 }
 
+fn encode_roster_record(
+    preimage: &[u8],
+    commitment: &[u8; 32],
+    disposition: RosterDisposition,
+) -> Result<Vec<u8>, GroupOperationError> {
+    fn put_lp(out: &mut Vec<u8>, value: &[u8]) -> Result<(), GroupOperationError> {
+        let length = u32::try_from(value.len()).map_err(|_| GroupOperationError::Policy)?;
+        out.extend_from_slice(&length.to_be_bytes());
+        out.extend_from_slice(value);
+        Ok(())
+    }
+    fn refusal_code(refusal: RosterRefusal) -> u8 {
+        match refusal {
+            RosterRefusal::WrongAuthority => 0,
+            RosterRefusal::WrongGroup => 1,
+            RosterRefusal::InvalidGenesis => 2,
+            RosterRefusal::StaleRevision => 3,
+            RosterRefusal::MissingPredecessor => 4,
+            RosterRefusal::Conflict => 5,
+            RosterRefusal::AuthorityTransfer => 6,
+            RosterRefusal::PolicyChange => 7,
+            RosterRefusal::Reopened => 8,
+            RosterRefusal::MissingAuthorityMember => 9,
+        }
+    }
+
+    let mut record = Vec::new();
+    record.extend_from_slice(b"TCGC");
+    put_lp(&mut record, preimage)?;
+    record.extend_from_slice(commitment);
+    match disposition {
+        RosterDisposition::Accepted => record.push(0),
+        RosterDisposition::Duplicate => record.push(1),
+        RosterDisposition::Rejected(refusal) => {
+            record.push(2);
+            record.push(refusal_code(refusal));
+        }
+    }
+    Ok(record)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         GroupOperationError, bind_prepared_ciphertext, commit_prepared_ciphertext,
-        commit_receive_disposition,
+        commit_receive_disposition, commit_roster_successor,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::CryptoStateEffect;
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupReceiver, LogicalSend, Member,
-        POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal, Roster,
+        POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal, RecipientDisposition, Roster,
+        RosterDisposition, RosterView,
     };
 
     fn alice() -> Member {
@@ -261,6 +353,19 @@ mod tests {
             bob(),
             3,
             b"hello".to_vec(),
+        )
+        .unwrap()
+    }
+
+    fn roster(revision: u64, predecessor: [u8; DIGEST_LEN], members: Vec<Member>) -> Roster {
+        Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            revision,
+            predecessor,
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            members,
         )
         .unwrap()
     }
@@ -415,5 +520,87 @@ mod tests {
         assert_eq!(snapshot, before_snapshot);
         assert_eq!(receiver, before_receiver);
         assert_eq!(store.recover().unwrap(), None);
+    }
+
+    #[test]
+    fn accepted_roster_successor_cancels_old_handoffs_in_its_same_commit() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let mut view = RosterView::accept_genesis(
+            &alice(),
+            genesis,
+            tacenta_core::crypto::groups::roster_commitment(
+                &roster(0, [0; DIGEST_LEN], vec![alice()]).encode().unwrap(),
+            ),
+        )
+        .unwrap();
+        let r1 = roster(1, *view.digest(), vec![alice(), bob()]);
+        let r1_commitment = tacenta_core::crypto::groups::roster_commitment(&r1.encode().unwrap());
+        assert_eq!(
+            view.accept_successor(&alice(), r1, r1_commitment),
+            RosterDisposition::Accepted
+        );
+        let r2 = roster(2, *view.digest(), vec![alice()]);
+        let mut send = logical_send();
+        send.record_prepared(&bob(), [3; DIGEST_LEN], vec![8])
+            .unwrap();
+        send.reserve_handoff(&bob()).unwrap();
+        let mut sends = vec![send];
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+
+        assert_eq!(
+            commit_roster_successor(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &alice(),
+                r2,
+                &mut sends,
+            ),
+            Ok(RosterDisposition::Accepted)
+        );
+        assert_eq!(snapshot.generation, 5);
+        assert_eq!(&snapshot.group_controls[0][..4], b"TCGC");
+        assert_eq!(
+            sends[0].recipients()[0].disposition,
+            RecipientDisposition::CancelledAfterHandoff
+        );
+        assert_eq!(store.recover().unwrap(), Some(snapshot));
+    }
+
+    #[test]
+    fn uncertain_roster_commit_keeps_the_active_view_and_handoff_live() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment =
+            tacenta_core::crypto::groups::roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+        let candidate = roster(1, *view.digest(), vec![alice(), bob()]);
+        let mut sends = vec![logical_send()];
+        let before_view = view.clone();
+        let before_sends = sends.clone();
+        let mut snapshot = OperationSnapshot::empty(4);
+        let before_snapshot = snapshot.clone();
+        let mut store = Store {
+            outcome: CommitOutcome::Unknown,
+            committed: None,
+        };
+
+        assert_eq!(
+            commit_roster_successor(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &alice(),
+                candidate,
+                &mut sends,
+            ),
+            Err(GroupOperationError::Frozen)
+        );
+        assert_eq!(view, before_view);
+        assert_eq!(sends, before_sends);
+        assert_eq!(snapshot, before_snapshot);
     }
 }

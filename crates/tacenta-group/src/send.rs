@@ -42,6 +42,7 @@ pub enum RecipientDisposition {
     HandedOff,
     RelayAccepted,
     Cancelled,
+    CancelledAfterHandoff,
     ExhaustedUnknown,
 }
 
@@ -160,6 +161,7 @@ impl LogicalSend {
             }
             RecipientDisposition::RelayAccepted
             | RecipientDisposition::Cancelled
+            | RecipientDisposition::CancelledAfterHandoff
             | RecipientDisposition::ExhaustedUnknown => Err(Error::WrongDisposition),
         }
     }
@@ -172,7 +174,9 @@ impl LogicalSend {
         match progress.disposition {
             RecipientDisposition::Prepared | RecipientDisposition::HandedOff => {}
             RecipientDisposition::Pending => return Err(Error::WrongDisposition),
-            RecipientDisposition::RelayAccepted | RecipientDisposition::Cancelled => {
+            RecipientDisposition::RelayAccepted
+            | RecipientDisposition::Cancelled
+            | RecipientDisposition::CancelledAfterHandoff => {
                 return Err(Error::WrongDisposition);
             }
             RecipientDisposition::ExhaustedUnknown => return Err(Error::RetryExhausted),
@@ -207,26 +211,54 @@ impl LogicalSend {
             }
             RecipientDisposition::Pending
             | RecipientDisposition::Cancelled
+            | RecipientDisposition::CancelledAfterHandoff
             | RecipientDisposition::ExhaustedUnknown
             | RecipientDisposition::RelayAccepted => Err(Error::WrongDisposition),
         }
     }
 
-    /// Applies a locally accepted removal: only work that has not crossed the
-    /// transport handoff boundary is cancelled.  Ciphertext and state for
-    /// earlier handoffs remain attributable through their progress record.
-    pub fn cancel_unsent_for(&mut self, removed: &Member) -> Result<&RecipientProgress, Error> {
+    /// Cancels a recipient after its application context becomes obsolete.
+    /// Handoff evidence remains, but a newer roster blocks another automatic
+    /// retry of an old context.
+    pub fn cancel_for_roster_change(
+        &mut self,
+        removed: &Member,
+    ) -> Result<&RecipientProgress, Error> {
         let progress = self.progress_mut(removed)?;
         match progress.disposition {
             RecipientDisposition::Pending | RecipientDisposition::Prepared => {
                 progress.disposition = RecipientDisposition::Cancelled;
             }
-            RecipientDisposition::HandedOff
-            | RecipientDisposition::RelayAccepted
+            RecipientDisposition::HandedOff => {
+                progress.disposition = RecipientDisposition::CancelledAfterHandoff;
+            }
+            RecipientDisposition::RelayAccepted
             | RecipientDisposition::Cancelled
+            | RecipientDisposition::CancelledAfterHandoff
             | RecipientDisposition::ExhaustedUnknown => {}
         }
         Ok(progress)
+    }
+
+    /// Stops all incomplete recipients after a locally accepted newer revision.
+    pub fn cancel_for_newer_roster(&mut self, revision: u64) {
+        if self.id.revision >= revision {
+            return;
+        }
+        for progress in &mut self.recipients {
+            match progress.disposition {
+                RecipientDisposition::Pending | RecipientDisposition::Prepared => {
+                    progress.disposition = RecipientDisposition::Cancelled;
+                }
+                RecipientDisposition::HandedOff => {
+                    progress.disposition = RecipientDisposition::CancelledAfterHandoff;
+                }
+                RecipientDisposition::RelayAccepted
+                | RecipientDisposition::Cancelled
+                | RecipientDisposition::CancelledAfterHandoff
+                | RecipientDisposition::ExhaustedUnknown => {}
+            }
+        }
     }
 
     fn progress(&self, recipient: &Member) -> Result<&RecipientProgress, Error> {
@@ -370,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn removal_cancels_only_unsent_recipient_work() {
+    fn roster_change_cancels_old_unsent_work_and_blocks_handoff_retries() {
         let mut logical_send = send();
         logical_send
             .record_prepared(&bob(), [1; DIGEST_LEN], vec![1])
@@ -380,14 +412,39 @@ mod tests {
             .unwrap();
         logical_send.reserve_handoff(&bob()).unwrap();
         assert_eq!(
-            logical_send.cancel_unsent_for(&bob()).unwrap().disposition,
-            RecipientDisposition::HandedOff
+            logical_send
+                .cancel_for_roster_change(&bob())
+                .unwrap()
+                .disposition,
+            RecipientDisposition::CancelledAfterHandoff
+        );
+        assert_eq!(
+            logical_send.reserve_handoff(&bob()),
+            Err(Error::WrongDisposition)
         );
         assert_eq!(
             logical_send
-                .cancel_unsent_for(&carol())
+                .cancel_for_roster_change(&carol())
                 .unwrap()
                 .disposition,
+            RecipientDisposition::Cancelled
+        );
+    }
+
+    #[test]
+    fn newer_roster_cancels_every_incomplete_old_revision_recipient() {
+        let mut logical_send = send();
+        logical_send
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1])
+            .unwrap();
+        logical_send.reserve_handoff(&bob()).unwrap();
+        logical_send.cancel_for_newer_roster(3);
+        assert_eq!(
+            logical_send.recipients()[0].disposition,
+            RecipientDisposition::CancelledAfterHandoff
+        );
+        assert_eq!(
+            logical_send.recipients()[1].disposition,
             RecipientDisposition::Cancelled
         );
     }
