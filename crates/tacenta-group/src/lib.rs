@@ -8,6 +8,10 @@
 use core::fmt;
 use std::collections::BTreeSet;
 
+mod invitation;
+
+pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus};
+
 /// The first bounded profile uses 16 opaque group-ID bytes.
 pub const GROUP_ID_LEN: usize = 16;
 /// Roster and context commitments in the first profile are 32 bytes.
@@ -33,6 +37,13 @@ pub enum Error {
     ReservedRevision,
     TooManyMembers,
     PayloadTooLarge,
+    Unauthorized,
+    Conflict,
+    WrongTarget,
+    StaleSource,
+    Expired,
+    Revoked,
+    WrongDisposition,
 }
 
 impl fmt::Display for Error {
@@ -44,6 +55,13 @@ impl fmt::Display for Error {
             Self::ReservedRevision => "reserved bounded group revision",
             Self::TooManyMembers => "too many bounded group members",
             Self::PayloadTooLarge => "bounded group payload is too large",
+            Self::Unauthorized => "unauthorized bounded group action",
+            Self::Conflict => "conflicting bounded group record",
+            Self::WrongTarget => "bounded group invitation targets another member",
+            Self::StaleSource => "stale bounded group invitation source",
+            Self::Expired => "expired bounded group invitation",
+            Self::Revoked => "revoked bounded group invitation",
+            Self::WrongDisposition => "invalid bounded group invitation disposition",
         })
     }
 }
@@ -206,10 +224,10 @@ impl Roster {
         let mut previous: Option<&Member> = None;
         let mut identities = BTreeSet::new();
         for member in &self.members {
-            if let Some(previous) = previous {
-                if previous.sort_key() >= member.sort_key() {
-                    return Err(Error::NonCanonical);
-                }
+            if let Some(previous) = previous
+                && previous.sort_key() >= member.sort_key()
+            {
+                return Err(Error::NonCanonical);
             }
             if !identities.insert(member.identity.as_slice()) {
                 return Err(Error::NonCanonical);
