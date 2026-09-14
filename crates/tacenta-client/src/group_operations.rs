@@ -792,6 +792,8 @@ mod tests {
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
         commit_roster_successor_with_receiver, recover_group_outbox, recover_group_receiver,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    use crate::operation_store::FileOperationStore;
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use tacenta_core::crypto::{Address, CryptoStateEffect, groups::roster_commitment};
     use tacenta_group::{
@@ -1119,6 +1121,79 @@ mod tests {
         );
 
         assert_eq!(recover_group_receiver(&snapshot), Ok(receiver));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_snapshot_restores_group_send_and_receive_state_together() {
+        let path = std::env::temp_dir().join(format!(
+            "tacenta-group-operation-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut store = FileOperationStore::new(&path);
+        let mut snapshot = OperationSnapshot::empty(0);
+        let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
+        let send = logical_send();
+        let id = send.id.clone();
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+        commit_outbox_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            &id,
+            &bob(),
+            vec![7, 8],
+            vec![4, 5, 6],
+        )
+        .unwrap();
+        commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &bob())
+            .unwrap();
+
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let digest = roster_commitment(&roster.encode().unwrap());
+        let mut receiver = GroupReceiver::new(roster, digest, bob());
+        let context = ApplicationContext::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            digest,
+            alice(),
+            bob(),
+            3,
+            b"hello".to_vec(),
+        )
+        .unwrap();
+        commit_receive_disposition(
+            &mut store,
+            &mut snapshot,
+            &mut receiver,
+            &context,
+            &alice(),
+            vec![4, 5, 6],
+            CryptoStateEffect::Advanced,
+        )
+        .unwrap();
+
+        let recovered_snapshot = store.recover().unwrap().unwrap();
+        assert_eq!(recovered_snapshot, snapshot);
+        assert_eq!(
+            recover_group_outbox(&recovered_snapshot, GroupId::new(*b"bounded-group-id")),
+            Ok(outbox)
+        );
+        assert_eq!(recover_group_receiver(&recovered_snapshot), Ok(receiver));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
