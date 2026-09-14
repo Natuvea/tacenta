@@ -97,7 +97,7 @@ impl GroupOutbox {
             return Err(Error::Conflict);
         }
         if let Some(position) = self.sends.iter().position(|known| known.id == send.id) {
-            if self.sends[position] == send {
+            if self.sends[position].same_immutable_fields(&send) {
                 return Ok(&self.sends[position]);
             }
             return Err(Error::Conflict);
@@ -175,6 +175,18 @@ impl LogicalSend {
                     | RecipientDisposition::ExhaustedUnknown
             )
         })
+    }
+
+    fn same_immutable_fields(&self, candidate: &Self) -> bool {
+        self.id == candidate.id
+            && self.roster_digest == candidate.roster_digest
+            && self.payload == candidate.payload
+            && self.recipients.len() == candidate.recipients.len()
+            && self
+                .recipients
+                .iter()
+                .zip(&candidate.recipients)
+                .all(|(left, right)| left.recipient == right.recipient)
     }
 
     /// Produces the exact canonical plaintext that must be encrypted for this
@@ -529,6 +541,23 @@ mod tests {
         }
         assert_eq!(outbox.sends().len(), 16);
         assert_eq!(outbox.record(send_at(16)), Err(Error::OutboxFull));
+    }
+
+    #[test]
+    fn outbox_retry_uses_the_committed_record_after_recipient_progresses() {
+        let mut outbox = GroupOutbox::new(group());
+        let original = send_at(4);
+        outbox.record(original.clone()).unwrap();
+        outbox.sends[0]
+            .record_prepared(&bob(), [1; DIGEST_LEN], vec![1, 2, 3])
+            .unwrap();
+
+        let recovered = outbox.record(original).unwrap();
+        assert_eq!(
+            recovered.recipients()[0].disposition,
+            RecipientDisposition::Prepared
+        );
+        assert_eq!(recovered.recipients()[0].ciphertext, Some(vec![1, 2, 3]));
     }
 
     #[test]
