@@ -68,6 +68,8 @@ mod dial;
 #[allow(dead_code)]
 mod durable;
 #[allow(dead_code)]
+mod group_control_outbox;
+#[allow(dead_code)]
 mod group_operations;
 // GC-03's port is intentionally not wired into live DM operations until the
 // provider outcome contract supplies the state effect that must be persisted.
