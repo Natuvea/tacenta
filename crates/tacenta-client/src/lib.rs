@@ -644,7 +644,7 @@ mod tests {
         });
         let roster = Roster::new(
             group_id,
-            0,
+            1,
             [0; DIGEST_LEN],
             alice_member.clone(),
             POLICY_VERSION_V1,
@@ -766,7 +766,7 @@ mod tests {
         });
         let roster = Roster::new(
             group_id,
-            0,
+            1,
             [0; DIGEST_LEN],
             alice_member.clone(),
             POLICY_VERSION_V1,

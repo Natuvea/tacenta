@@ -283,15 +283,13 @@ mod tests {
         let mut view =
             RosterView::accept_genesis(&alice(), initial.clone(), [1; DIGEST_LEN]).unwrap();
         assert_eq!(
-            view.accept_successor(&alice(), initial, [1; DIGEST_LEN]),
+            view.accept_successor(&alice(), initial.clone(), [1; DIGEST_LEN]),
             RosterDisposition::Duplicate
         );
+        let mut conflict = initial;
+        conflict.closed = true;
         assert_eq!(
-            view.accept_successor(
-                &alice(),
-                roster(0, [0; DIGEST_LEN], vec![alice(), bob()]),
-                [1; DIGEST_LEN],
-            ),
+            view.accept_successor(&alice(), conflict, [1; DIGEST_LEN]),
             RosterDisposition::Rejected(RosterRefusal::Conflict)
         );
     }

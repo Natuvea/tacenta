@@ -56,6 +56,7 @@ pub enum Error {
     NonCanonical,
     UnsupportedPolicy,
     ReservedRevision,
+    InvalidGenesis,
     TooManyMembers,
     PayloadTooLarge,
     IdentityTooLarge,
@@ -83,6 +84,7 @@ impl fmt::Display for Error {
             Self::NonCanonical => "non-canonical bounded group value",
             Self::UnsupportedPolicy => "unsupported bounded group policy",
             Self::ReservedRevision => "reserved bounded group revision",
+            Self::InvalidGenesis => "invalid bounded group genesis",
             Self::TooManyMembers => "too many bounded group members",
             Self::PayloadTooLarge => "bounded group payload is too large",
             Self::IdentityTooLarge => "bounded group identity is too large",
@@ -273,6 +275,13 @@ impl Roster {
         }
         if self.policy_version != POLICY_VERSION_V1 {
             return Err(Error::UnsupportedPolicy);
+        }
+        if self.revision == 0
+            && (self.predecessor_digest != [0; DIGEST_LEN]
+                || self.closed
+                || self.members.as_slice() != [self.authority.clone()])
+        {
+            return Err(Error::InvalidGenesis);
         }
         if self.members.len() > MAX_MEMBERS {
             return Err(Error::TooManyMembers);
@@ -502,7 +511,7 @@ mod tests {
     fn roster() -> Roster {
         Roster::new(
             group(),
-            0,
+            1,
             [0; DIGEST_LEN],
             alice(),
             POLICY_VERSION_V1,
@@ -520,10 +529,38 @@ mod tests {
     }
 
     #[test]
+    fn roster_refuses_multi_member_or_closed_genesis() {
+        assert_eq!(
+            Roster::new(
+                group(),
+                0,
+                [0; DIGEST_LEN],
+                alice(),
+                POLICY_VERSION_V1,
+                false,
+                vec![alice(), bob()],
+            ),
+            Err(Error::InvalidGenesis)
+        );
+        assert_eq!(
+            Roster::new(
+                group(),
+                0,
+                [0; DIGEST_LEN],
+                alice(),
+                POLICY_VERSION_V1,
+                true,
+                vec![alice()],
+            ),
+            Err(Error::InvalidGenesis)
+        );
+    }
+
+    #[test]
     fn roster_refuses_an_unsorted_or_second_device_identity() {
         let unsorted = Roster::new(
             group(),
-            0,
+            1,
             [0; DIGEST_LEN],
             alice(),
             POLICY_VERSION_V1,
@@ -534,7 +571,7 @@ mod tests {
 
         let second_device = Roster::new(
             group(),
-            0,
+            1,
             [0; DIGEST_LEN],
             alice(),
             POLICY_VERSION_V1,
@@ -548,7 +585,7 @@ mod tests {
         // rely only on adjacent roster entries.
         let separated_second_device = Roster::new(
             group(),
-            0,
+            1,
             [0; DIGEST_LEN],
             Member::new(vec![b'a'], vec![0]),
             POLICY_VERSION_V1,
