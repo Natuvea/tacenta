@@ -776,6 +776,44 @@ mod tests {
                 }
             ))
         );
+        let stale_sender = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                1,
+                r1_digest,
+                bob_member.clone(),
+                carol_member.clone(),
+                0,
+                b"stale sender withheld removal".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        bob.send_as(&carol_route, &stale_sender, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = carol.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_view,
+                &mut carol_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: bob_member.identity(),
+                    peer: &peer_address(&bob_route).unwrap(),
+                    provider_state: carol.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+            ))
+        );
+
         let r2_digest = tacenta_core::crypto::groups::roster_commitment(&r2.encode().unwrap());
         let after_removal = GroupPayload::Application(
             ApplicationContext::new(
