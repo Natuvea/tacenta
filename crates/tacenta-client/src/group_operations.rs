@@ -108,6 +108,26 @@ fn recipient_can_receive_roster_control(
         || successor.members.iter().any(|member| member == recipient)
 }
 
+fn recipient_can_observe_invitation_successor(
+    book: Option<&InvitationBook>,
+    successor: &Roster,
+    recipient: &Member,
+    now: u64,
+) -> bool {
+    book.is_some_and(|book| {
+        book.records().iter().any(|invitation| {
+            invitation.group_id == successor.group_id
+                && invitation.target == *recipient
+                && invitation.source_revision <= successor.revision
+                && now < invitation.expires_at
+                && matches!(
+                    invitation.status,
+                    InvitationStatus::Pending | InvitationStatus::AcceptedPendingAdmission
+                )
+        })
+    })
+}
+
 fn recipient_can_receive_installed_roster_control(
     view: &RosterView,
     authenticated_authority: &Member,
@@ -134,6 +154,17 @@ pub(crate) struct AuthorityControlState<'a> {
     pub(crate) outbox: &'a mut ControlOutbox,
     pub(crate) invitation_book: Option<&'a mut InvitationBook>,
     pub(crate) admission: Option<InvitationAdmission>,
+    pub(crate) control_now: u64,
+}
+
+/// State held by an authority after its roster is installed, used to prepare
+/// one additional recipient's exact control ciphertext without another local
+/// roster transition.
+pub(crate) struct InstalledControlState<'a> {
+    pub(crate) view: &'a RosterView,
+    pub(crate) outbox: &'a mut ControlOutbox,
+    pub(crate) invitation_book: Option<&'a InvitationBook>,
+    pub(crate) control_now: u64,
 }
 
 /// The outcome data the live provider path supplies for one decrypted group
@@ -435,7 +466,14 @@ where
     if client.party.identity_key() != authenticated_authority.identity() {
         return Err(GroupLiveError::Policy);
     }
-    if !recipient_can_receive_roster_control(state.view, &successor, recipient) {
+    if !recipient_can_receive_roster_control(state.view, &successor, recipient)
+        && !recipient_can_observe_invitation_successor(
+            state.invitation_book.as_deref(),
+            &successor,
+            recipient,
+            state.control_now,
+        )
+    {
         return Err(GroupLiveError::Policy);
     }
     let preimage = successor.encode().map_err(|_| GroupLiveError::Policy)?;
@@ -489,8 +527,7 @@ pub(crate) async fn prepare_installed_roster_control<P, S>(
     client: &mut Client<P>,
     store: &mut S,
     snapshot: &mut OperationSnapshot,
-    view: &RosterView,
-    outbox: &mut ControlOutbox,
+    state: InstalledControlState<'_>,
     authenticated_authority: &Member,
     recipient_route: (&Member, &tacenta_relay::DeviceAddr),
 ) -> Result<ControlHandoff, GroupLiveError>
@@ -500,7 +537,16 @@ where
 {
     let (recipient, route) = recipient_route;
     if client.party.identity_key() != authenticated_authority.identity()
-        || !recipient_can_receive_installed_roster_control(view, authenticated_authority, recipient)
+        || (!recipient_can_receive_installed_roster_control(
+            state.view,
+            authenticated_authority,
+            recipient,
+        ) && !recipient_can_observe_invitation_successor(
+            state.invitation_book,
+            state.view.roster(),
+            recipient,
+            state.control_now,
+        ))
     {
         return Err(GroupLiveError::Policy);
     }
@@ -508,10 +554,10 @@ where
         client,
         store,
         snapshot,
-        outbox,
+        state.outbox,
         recipient,
         route,
-        view.roster().clone(),
+        state.view.roster().clone(),
     )
     .await
 }
@@ -1829,10 +1875,10 @@ mod tests {
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
-        live_client_error, recipient_can_receive_installed_roster_control,
-        recipient_can_receive_roster_control, recover_group_control_outbox,
-        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
-        recover_group_roster_view,
+        live_client_error, recipient_can_observe_invitation_successor,
+        recipient_can_receive_installed_roster_control, recipient_can_receive_roster_control,
+        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
+        recover_group_receiver, recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -2638,6 +2684,54 @@ mod tests {
             &view,
             &alice(),
             &stranger
+        ));
+    }
+
+    #[test]
+    fn unexpired_invitees_may_observe_successor_controls_without_membership() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let observer = Member::new(b"observer-key".to_vec(), vec![1]);
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_digest = roster_commitment(&genesis.encode().unwrap());
+        let successor = roster(1, genesis_digest, vec![alice(), bob()]);
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            observer.clone(),
+            0,
+            genesis_digest,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut book = InvitationBook::new(group_id);
+        book.create(&alice(), &alice(), &[alice()], invitation, 0)
+            .unwrap();
+
+        assert!(!recipient_can_receive_roster_control(
+            &RosterView::accept_genesis(&alice(), genesis, genesis_digest).unwrap(),
+            &successor,
+            &observer,
+        ));
+        assert!(recipient_can_observe_invitation_successor(
+            Some(&book),
+            &successor,
+            &observer,
+            9,
+        ));
+        assert!(!recipient_can_observe_invitation_successor(
+            Some(&book),
+            &successor,
+            &observer,
+            10,
+        ));
+        book.revoke(InvitationId::new([7; 16]), &alice(), &alice(), 1)
+            .unwrap();
+        assert!(!recipient_can_observe_invitation_successor(
+            Some(&book),
+            &successor,
+            &observer,
+            1,
         ));
     }
 
