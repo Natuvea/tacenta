@@ -262,4 +262,39 @@ mod tests {
         let state = outbox.encode_state().unwrap();
         assert_eq!(Outbox::decode_state(&state), Ok(outbox));
     }
+
+    #[test]
+    fn exhausted_control_handoff_stays_terminal_after_its_final_checkpoint() {
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let payload = GroupPayload::Roster(roster).encode().unwrap();
+        let mut outbox = Outbox::default();
+        outbox
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let handoff = outbox.reserve(&bob(), &payload).unwrap();
+            assert_eq!(handoff.attempts_reserved, attempt);
+            assert_eq!(handoff.disposition, Disposition::HandedOff);
+        }
+        let exhausted = outbox.reserve(&bob(), &payload).unwrap();
+        assert_eq!(exhausted.attempts_reserved, MAX_ATTEMPTS);
+        assert_eq!(exhausted.disposition, Disposition::ExhaustedUnknown);
+        assert_eq!(
+            outbox.reserve(&bob(), &payload),
+            Err(GroupError::WrongDisposition)
+        );
+
+        let state = outbox.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(outbox));
+    }
 }
