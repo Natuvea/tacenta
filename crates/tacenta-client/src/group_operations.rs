@@ -2122,6 +2122,53 @@ mod tests {
     }
 
     #[test]
+    fn unknown_authority_control_checkpoint_keeps_local_roster_and_handoff_unchanged() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view =
+            RosterView::accept_genesis(&alice(), genesis.clone(), genesis_commitment).unwrap();
+        let mut receiver = GroupReceiver::new(genesis, genesis_commitment, alice());
+        let successor = roster(1, *view.digest(), vec![alice(), bob()]);
+        let payload = GroupPayload::Roster(successor.clone()).encode().unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Unknown,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = ControlOutbox::default();
+        let before_view = view.clone();
+        let before_receiver = receiver.clone();
+        let before_snapshot = snapshot.clone();
+        let before_outbox = outbox.clone();
+
+        assert_eq!(
+            commit_roster_transition(
+                &mut store,
+                &mut snapshot,
+                RosterCommitState {
+                    view: &mut view,
+                    receiver: Some(&mut receiver),
+                    provider: Some((vec![4, 5, 6], CryptoStateEffect::Advanced)),
+                    control_outbox: Some(&mut outbox),
+                    prepared_control: Some(PreparedControl {
+                        recipient: bob(),
+                        payload,
+                        ciphertext: vec![7, 8, 9],
+                    }),
+                },
+                &alice(),
+                successor,
+                &mut [],
+            ),
+            Err(GroupOperationError::Frozen)
+        );
+        assert_eq!(view, before_view);
+        assert_eq!(receiver, before_receiver);
+        assert_eq!(snapshot, before_snapshot);
+        assert_eq!(outbox, before_outbox);
+    }
+
+    #[test]
     fn roster_controls_are_only_prepared_for_current_or_successor_members() {
         let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
         let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
