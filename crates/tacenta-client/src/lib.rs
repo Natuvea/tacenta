@@ -320,7 +320,8 @@ mod tests {
     use super::*;
     use crate::group_operations::{
         GroupReceiveInput, commit_group_plaintext, commit_logical_intent,
-        dispatch_outbox_group_handoff, prepare_outbox_group_recipient,
+        commit_outbox_handoff_reservation, dispatch_outbox_group_handoff,
+        prepare_outbox_group_recipient, recover_group_outbox,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
@@ -507,6 +508,201 @@ mod tests {
                     authenticated_identity: alice_member.identity(),
                     peer: &peer_address(&alice_route).unwrap(),
                     provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Accepted { event_id: 0 })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_three_client_group_retries_the_committed_ciphertext_after_sender_restart() {
+        let (directory, relay) = start_server().await;
+        let alice_config = Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 1,
+        };
+        let mut alice = DefaultClient::connect(&alice_config).await.unwrap();
+        let mut bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let mut carol = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+carol".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let alice_route = alice.address().clone();
+        let bob_route = bob.address().clone();
+        let carol_route = carol.address().clone();
+        let alice_member = Member::new(alice.party.identity_key(), vec![1]);
+        let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let carol_member = Member::new(carol.party.identity_key(), vec![1]);
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let mut members = vec![
+            alice_member.clone(),
+            bob_member.clone(),
+            carol_member.clone(),
+        ];
+        members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let roster = Roster::new(
+            group_id,
+            0,
+            [0; DIGEST_LEN],
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            members,
+        )
+        .unwrap();
+        let roster_digest =
+            tacenta_core::crypto::groups::roster_commitment(&roster.encode().unwrap());
+        let mut recipients = vec![bob_member.clone(), carol_member.clone()];
+        recipients.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let send = LogicalSend::new(
+            &roster,
+            roster_digest,
+            alice_member.clone(),
+            0,
+            recipients,
+            b"restart-safe group message".to_vec(),
+        )
+        .unwrap();
+        let id = send.id.clone();
+        let mut sender_store = GroupStore { snapshot: None };
+        let mut sender_snapshot = OperationSnapshot::empty(0);
+        let mut outbox = GroupOutbox::new(group_id);
+        commit_logical_intent(&mut sender_store, &mut sender_snapshot, &mut outbox, send).unwrap();
+        prepare_outbox_group_recipient(
+            &mut alice,
+            &mut sender_store,
+            &mut sender_snapshot,
+            &mut outbox,
+            &id,
+            &bob_member,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+        dispatch_outbox_group_handoff(
+            &mut alice,
+            &mut sender_store,
+            &mut sender_snapshot,
+            &mut outbox,
+            &id,
+            &bob_member,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+        prepare_outbox_group_recipient(
+            &mut alice,
+            &mut sender_store,
+            &mut sender_snapshot,
+            &mut outbox,
+            &id,
+            &carol_member,
+            &carol_route,
+        )
+        .await
+        .unwrap();
+        commit_outbox_handoff_reservation(
+            &mut sender_store,
+            &mut sender_snapshot,
+            &mut outbox,
+            &id,
+            &carol_member,
+        )
+        .unwrap();
+
+        let bob_inbound = bob.receive().await.unwrap();
+        assert_eq!(bob_inbound[0].kind, MessageKind::Group);
+        let mut bob_receiver =
+            GroupReceiver::new(roster.clone(), roster_digest, bob_member.clone());
+        let mut bob_store = GroupStore { snapshot: None };
+        let mut bob_snapshot = OperationSnapshot::empty(0);
+        assert_eq!(
+            commit_group_plaintext(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_receiver,
+                GroupReceiveInput {
+                    plaintext: &bob_inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Accepted { event_id: 0 })
+        );
+
+        let persisted = sender_snapshot.clone();
+        drop(alice);
+        let mut restarted =
+            DefaultClient::connect_with_state(&alice_config, &persisted.provider_state)
+                .await
+                .unwrap();
+        let mut resumed_snapshot = persisted;
+        let mut resumed_outbox = recover_group_outbox(&resumed_snapshot, group_id).unwrap();
+        let mut resumed_store = GroupStore {
+            snapshot: Some(resumed_snapshot.clone()),
+        };
+        dispatch_outbox_group_handoff(
+            &mut restarted,
+            &mut resumed_store,
+            &mut resumed_snapshot,
+            &mut resumed_outbox,
+            &id,
+            &carol_member,
+            &carol_route,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resumed_outbox
+                .send(&id)
+                .unwrap()
+                .recipients()
+                .iter()
+                .find(|progress| progress.recipient == carol_member)
+                .unwrap()
+                .attempts_reserved,
+            2
+        );
+
+        let carol_inbound = carol.receive().await.unwrap();
+        assert_eq!(carol_inbound[0].kind, MessageKind::Group);
+        let mut carol_receiver = GroupReceiver::new(roster, roster_digest, carol_member);
+        let mut carol_store = GroupStore { snapshot: None };
+        let mut carol_snapshot = OperationSnapshot::empty(0);
+        assert_eq!(
+            commit_group_plaintext(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_receiver,
+                GroupReceiveInput {
+                    plaintext: &carol_inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: carol.export_state().await.unwrap(),
                     provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
                 },
             ),
