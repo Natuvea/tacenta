@@ -12,9 +12,9 @@ use tacenta_core::crypto::{
 };
 use tacenta_group::{
     ApplicationContext, Error as GroupError, GroupOutbox, GroupPayload, GroupReceiver,
-    InvitationBook, LogicalMessageId, LogicalSend, Member, OutboxDisposition, ReceiveDisposition,
-    ReceiveRefusal, RecipientProgress, RevalidatedReceive, Roster, RosterDisposition,
-    RosterRefusal, RosterView,
+    InvitationBook, InvitationBootstrap, InvitationStatus, LogicalMessageId, LogicalSend, Member,
+    OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress, RevalidatedReceive,
+    Roster, RosterDisposition, RosterRefusal, RosterView,
 };
 
 use crate::group_control_outbox::{
@@ -511,6 +511,19 @@ pub(crate) fn commit_group_invitation_transition<S, T>(
 where
     S: OperationStore,
 {
+    commit_group_invitation_transition_with_provider(store, snapshot, book, None, transition)
+}
+
+fn commit_group_invitation_transition_with_provider<S, T>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    book: &mut InvitationBook,
+    provider: Option<(Vec<u8>, CryptoStateEffect)>,
+    transition: impl FnOnce(&mut InvitationBook) -> Result<T, GroupError>,
+) -> Result<T, GroupOperationError>
+where
+    S: OperationStore,
+{
     let mut candidate_book = book.clone();
     let result = transition(&mut candidate_book).map_err(|_| GroupOperationError::Policy)?;
     let state = candidate_book
@@ -521,16 +534,168 @@ where
         .generation
         .checked_add(1)
         .ok_or(GroupOperationError::Frozen)?;
-    append_group_control_records(
-        &mut candidate_snapshot,
-        [encode_invitation_book_record(&state)?],
-    );
+    let mut records = vec![encode_invitation_book_record(&state)?];
+    if let Some((provider_state, provider_effect)) = provider {
+        candidate_snapshot.provider_state = provider_state;
+        records.push(encode_control_effect_record(provider_effect));
+    }
+    append_group_control_records(&mut candidate_snapshot, records);
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }
     *snapshot = candidate_snapshot;
     *book = candidate_book;
     Ok(result)
+}
+
+/// Records an authenticated invitation bootstrap before exposing the source
+/// roster to the caller. The caller obtains the returned source roster only
+/// after this group-scoped lifecycle checkpoint commits.
+pub(crate) fn commit_group_invitation_bootstrap<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    book: &mut InvitationBook,
+    local_member: &Member,
+    now: u64,
+    input: GroupReceiveInput<'_>,
+) -> Result<InvitationBootstrap, GroupOperationError> {
+    let bootstrap = match GroupPayload::decode(input.plaintext) {
+        Ok(GroupPayload::InvitationBootstrap(bootstrap)) => bootstrap,
+        _ => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            return Err(GroupOperationError::Policy);
+        }
+    };
+    let authenticated_peer = Member::new(
+        input.authenticated_identity.to_vec(),
+        vec![input.peer.device],
+    );
+    let source_digest = roster_commitment(
+        &bootstrap
+            .source_roster
+            .encode()
+            .map_err(|_| GroupOperationError::Policy)?,
+    );
+    if bootstrap.validate_source_digest(&source_digest).is_err()
+        || bootstrap.source_roster.closed
+        || bootstrap.source_roster.authority != authenticated_peer
+        || &bootstrap.invitation.target != local_member
+    {
+        commit_malformed_group_payload(
+            store,
+            snapshot,
+            input.plaintext,
+            input.provider_state,
+            input.provider_effect,
+        )?;
+        return Err(GroupOperationError::Policy);
+    }
+    let result = commit_group_invitation_transition_with_provider(
+        store,
+        snapshot,
+        book,
+        Some((input.provider_state.clone(), input.provider_effect)),
+        |candidate| {
+            candidate
+                .create(
+                    &authenticated_peer,
+                    &bootstrap.source_roster.authority,
+                    &bootstrap.source_roster.members,
+                    bootstrap.invitation.clone(),
+                    now,
+                )
+                .map(|_| bootstrap.clone())
+        },
+    );
+    match result {
+        Ok(bootstrap) => Ok(bootstrap),
+        Err(GroupOperationError::Policy) => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            Err(GroupOperationError::Policy)
+        }
+        Err(GroupOperationError::Frozen) => Err(GroupOperationError::Frozen),
+    }
+}
+
+/// Persists a pairwise-authenticated target acceptance before returning its
+/// invitation disposition to the authority-side coordinator.
+pub(crate) fn commit_group_invitation_acceptance<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    book: &mut InvitationBook,
+    now: u64,
+    input: GroupReceiveInput<'_>,
+) -> Result<InvitationStatus, GroupOperationError> {
+    let acceptance = match GroupPayload::decode(input.plaintext) {
+        Ok(GroupPayload::InvitationAcceptance(acceptance)) => acceptance,
+        _ => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            return Err(GroupOperationError::Policy);
+        }
+    };
+    if acceptance.group_id != book.group_id() {
+        commit_malformed_group_payload(
+            store,
+            snapshot,
+            input.plaintext,
+            input.provider_state,
+            input.provider_effect,
+        )?;
+        return Err(GroupOperationError::Policy);
+    }
+    let authenticated_target = Member::new(
+        input.authenticated_identity.to_vec(),
+        vec![input.peer.device],
+    );
+    let result = commit_group_invitation_transition_with_provider(
+        store,
+        snapshot,
+        book,
+        Some((input.provider_state.clone(), input.provider_effect)),
+        |candidate| {
+            candidate
+                .accept(
+                    acceptance.invitation_id,
+                    &authenticated_target,
+                    acceptance.source_revision,
+                    &acceptance.source_roster_digest,
+                    now,
+                )
+                .map(|record| record.status)
+        },
+    );
+    match result {
+        Ok(status) => Ok(status),
+        Err(GroupOperationError::Policy) => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            Err(GroupOperationError::Policy)
+        }
+        Err(GroupOperationError::Frozen) => Err(GroupOperationError::Frozen),
+    }
 }
 
 /// Records a prepared ciphertext and its core-bound application context in the
@@ -1561,6 +1726,7 @@ mod tests {
         ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,
         GroupReceiveInput, MAX_GROUP_CONTROL_RECORDS, PreparedControl, RosterCommit,
         RosterCommitState, bind_prepared_ciphertext, commit_group_control_outbox_transition,
+        commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
         commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
         commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
@@ -1578,9 +1744,10 @@ mod tests {
     use tacenta_core::crypto::{Address, CryptoStateEffect, groups::roster_commitment};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
-        Invitation, InvitationBook, InvitationId, InvitationStatus, LogicalSend, Member,
-        OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal,
-        RecipientDisposition, Roster, RosterDisposition, RosterView,
+        Invitation, InvitationAcceptance, InvitationBook, InvitationBootstrap, InvitationId,
+        InvitationStatus, LogicalSend, Member, OutboxDisposition, POLICY_VERSION_V1,
+        ReceiveDisposition, ReceiveRefusal, RecipientDisposition, Roster, RosterDisposition,
+        RosterView,
     };
 
     fn alice() -> Member {
@@ -1996,6 +2163,76 @@ mod tests {
 
         assert_eq!(disposition, InvitationStatus::Pending);
         assert_eq!(&snapshot.group_controls[0][..4], b"TCGB");
+        assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
+    }
+
+    #[test]
+    fn invitation_bootstrap_and_acceptance_persist_authenticated_provider_state() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let source = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let source_digest = roster_commitment(&source.encode().unwrap());
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob(),
+            0,
+            source_digest,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let bootstrap = InvitationBootstrap::new(invitation, source.clone()).unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut book = InvitationBook::new(group_id);
+
+        assert_eq!(
+            commit_group_invitation_bootstrap(
+                &mut store,
+                &mut snapshot,
+                &mut book,
+                &bob(),
+                1,
+                GroupReceiveInput {
+                    plaintext: &GroupPayload::InvitationBootstrap(bootstrap.clone())
+                        .encode()
+                        .unwrap(),
+                    authenticated_identity: alice().identity(),
+                    peer: &Address::new("alice", 1),
+                    provider_state: vec![4, 5],
+                    provider_effect: CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(bootstrap)
+        );
+        assert_eq!(snapshot.provider_state, vec![4, 5]);
+        assert_eq!(book.records()[0].status, InvitationStatus::Pending);
+
+        let acceptance =
+            InvitationAcceptance::new(group_id, InvitationId::new([7; 16]), 0, source_digest)
+                .unwrap();
+        assert_eq!(
+            commit_group_invitation_acceptance(
+                &mut store,
+                &mut snapshot,
+                &mut book,
+                2,
+                GroupReceiveInput {
+                    plaintext: &GroupPayload::InvitationAcceptance(acceptance)
+                        .encode()
+                        .unwrap(),
+                    authenticated_identity: bob().identity(),
+                    peer: &Address::new("bob", 1),
+                    provider_state: vec![6, 7],
+                    provider_effect: CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(InvitationStatus::AcceptedPendingAdmission)
+        );
+        assert_eq!(snapshot.provider_state, vec![6, 7]);
         assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
     }
 
