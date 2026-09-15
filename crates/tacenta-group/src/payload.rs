@@ -1,12 +1,16 @@
 //! The authenticated inner payload carried by a `group` relay envelope.
 
-use crate::{ApplicationContext, Error, InvitationAcceptance, InvitationBootstrap, Roster};
+use crate::{
+    ApplicationContext, Error, InvitationAcceptance, InvitationBootstrap, InvitationRevocation,
+    Roster,
+};
 
 const GROUP_PAYLOAD_DOMAIN: &[u8] = b"Tacenta Group Payload v1";
 const APPLICATION_TAG: u8 = 1;
 const ROSTER_TAG: u8 = 2;
 const INVITATION_BOOTSTRAP_TAG: u8 = 3;
 const INVITATION_ACCEPTANCE_TAG: u8 = 4;
+const INVITATION_REVOCATION_TAG: u8 = 5;
 const MAX_GROUP_PAYLOAD_LEN: usize = 8_192;
 
 /// A bounded group relay payload. The outer relay envelope says this is group
@@ -18,6 +22,7 @@ pub enum GroupPayload {
     Roster(Roster),
     InvitationBootstrap(InvitationBootstrap),
     InvitationAcceptance(InvitationAcceptance),
+    InvitationRevocation(InvitationRevocation),
 }
 
 impl GroupPayload {
@@ -28,6 +33,9 @@ impl GroupPayload {
             Self::InvitationBootstrap(bootstrap) => (INVITATION_BOOTSTRAP_TAG, bootstrap.encode()?),
             Self::InvitationAcceptance(acceptance) => {
                 (INVITATION_ACCEPTANCE_TAG, acceptance.encode()?)
+            }
+            Self::InvitationRevocation(revocation) => {
+                (INVITATION_REVOCATION_TAG, revocation.encode()?)
             }
         };
         let length = u32::try_from(value.len()).map_err(|_| Error::Malformed)?;
@@ -66,6 +74,9 @@ impl GroupPayload {
             INVITATION_ACCEPTANCE_TAG => Ok(Self::InvitationAcceptance(
                 InvitationAcceptance::decode(value)?,
             )),
+            INVITATION_REVOCATION_TAG => Ok(Self::InvitationRevocation(
+                InvitationRevocation::decode(value)?,
+            )),
             _ => Err(Error::Malformed),
         }
     }
@@ -75,7 +86,8 @@ impl GroupPayload {
 mod tests {
     use super::*;
     use crate::{
-        DIGEST_LEN, GroupId, InvitationAcceptance, InvitationId, Member, POLICY_VERSION_V1,
+        DIGEST_LEN, GroupId, InvitationAcceptance, InvitationId, InvitationRevocation, Member,
+        POLICY_VERSION_V1,
     };
 
     fn alice() -> Member {
@@ -132,6 +144,19 @@ mod tests {
         let acceptance_bytes = acceptance.encode().unwrap();
         assert_ne!(acceptance_bytes, control_bytes);
         assert_eq!(GroupPayload::decode(&acceptance_bytes), Ok(acceptance));
+
+        let revocation = GroupPayload::InvitationRevocation(
+            InvitationRevocation::new(
+                GroupId::new(*b"bounded-group-id"),
+                InvitationId::new([9; 16]),
+                0,
+                [7; DIGEST_LEN],
+            )
+            .unwrap(),
+        );
+        let revocation_bytes = revocation.encode().unwrap();
+        assert_ne!(revocation_bytes, acceptance_bytes);
+        assert_eq!(GroupPayload::decode(&revocation_bytes), Ok(revocation));
     }
 
     #[test]

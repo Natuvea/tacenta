@@ -16,7 +16,7 @@ mod send;
 
 pub use invitation::{
     Invitation, InvitationAcceptance, InvitationBook, InvitationBootstrap, InvitationId,
-    InvitationStatus,
+    InvitationRevocation, InvitationStatus,
 };
 pub use payload::GroupPayload;
 pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};

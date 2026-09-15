@@ -52,6 +52,7 @@ impl Outbox {
                 Ok(GroupPayload::Roster(_))
                     | Ok(GroupPayload::InvitationBootstrap(_))
                     | Ok(GroupPayload::InvitationAcceptance(_))
+                    | Ok(GroupPayload::InvitationRevocation(_))
             )
         {
             return Err(GroupError::OutboxFull);

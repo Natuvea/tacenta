@@ -391,7 +391,9 @@ where
 {
     if !matches!(
         payload,
-        GroupPayload::InvitationBootstrap(_) | GroupPayload::InvitationAcceptance(_)
+        GroupPayload::InvitationBootstrap(_)
+            | GroupPayload::InvitationAcceptance(_)
+            | GroupPayload::InvitationRevocation(_)
     ) {
         return Err(GroupLiveError::Policy);
     }
@@ -1167,6 +1169,7 @@ pub(crate) fn commit_group_plaintext<S: OperationStore>(
         Ok(GroupPayload::Roster(_))
         | Ok(GroupPayload::InvitationBootstrap(_))
         | Ok(GroupPayload::InvitationAcceptance(_))
+        | Ok(GroupPayload::InvitationRevocation(_))
         | Err(_) => {
             commit_malformed_group_payload(
                 store,
@@ -1251,7 +1254,9 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
             logical_sends,
         )
         .map(GroupPayloadDisposition::Roster),
-        GroupPayload::InvitationBootstrap(_) | GroupPayload::InvitationAcceptance(_) => {
+        GroupPayload::InvitationBootstrap(_)
+        | GroupPayload::InvitationAcceptance(_)
+        | GroupPayload::InvitationRevocation(_) => {
             commit_malformed_group_payload(
                 store,
                 snapshot,
@@ -1282,6 +1287,7 @@ pub(crate) fn commit_group_roster_plaintext<S: OperationStore>(
         Ok(GroupPayload::Application(_))
         | Ok(GroupPayload::InvitationBootstrap(_))
         | Ok(GroupPayload::InvitationAcceptance(_))
+        | Ok(GroupPayload::InvitationRevocation(_))
         | Err(_) => {
             commit_malformed_group_payload(
                 store,

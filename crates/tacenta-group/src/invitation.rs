@@ -5,6 +5,7 @@ use crate::{DIGEST_LEN, Error, GroupId, Member, POLICY_VERSION_V1, RESERVED_REVI
 const INVITATION_BOOK_STATE_DOMAIN: &[u8] = b"Tacenta Group Invitation Book State v1";
 const INVITATION_BOOTSTRAP_DOMAIN: &[u8] = b"Tacenta Group Invitation Bootstrap v1";
 const INVITATION_ACCEPTANCE_DOMAIN: &[u8] = b"Tacenta Group Invitation Acceptance v1";
+const INVITATION_REVOCATION_DOMAIN: &[u8] = b"Tacenta Group Invitation Revocation v1";
 const MAX_INVITATION_RECORDS: usize = 32;
 
 fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Result<&'a [u8], Error> {
@@ -243,6 +244,69 @@ impl InvitationAcceptance {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut cursor = bytes;
         take_exact(&mut cursor, INVITATION_ACCEPTANCE_DOMAIN)?;
+        let group_id = GroupId::try_from(take(&mut cursor, crate::GROUP_ID_LEN)?)?;
+        let invitation_id = InvitationId::try_from(take(&mut cursor, 16)?)?;
+        let source_revision = take_u64(&mut cursor)?;
+        let source_roster_digest: [u8; DIGEST_LEN] = take(&mut cursor, DIGEST_LEN)?
+            .try_into()
+            .map_err(|_| Error::Malformed)?;
+        if !cursor.is_empty() {
+            return Err(Error::Malformed);
+        }
+        Self::new(
+            group_id,
+            invitation_id,
+            source_revision,
+            source_roster_digest,
+        )
+    }
+}
+
+/// The authority's pairwise-authenticated terminal revocation of one bootstrap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitationRevocation {
+    pub group_id: GroupId,
+    pub invitation_id: InvitationId,
+    pub source_revision: u64,
+    pub source_roster_digest: [u8; DIGEST_LEN],
+}
+
+impl InvitationRevocation {
+    pub fn new(
+        group_id: GroupId,
+        invitation_id: InvitationId,
+        source_revision: u64,
+        source_roster_digest: [u8; DIGEST_LEN],
+    ) -> Result<Self, Error> {
+        if source_revision == RESERVED_REVISION {
+            return Err(Error::ReservedRevision);
+        }
+        Ok(Self {
+            group_id,
+            invitation_id,
+            source_revision,
+            source_roster_digest,
+        })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let canonical = Self::new(
+            self.group_id,
+            self.invitation_id,
+            self.source_revision,
+            self.source_roster_digest,
+        )?;
+        let mut out = INVITATION_REVOCATION_DOMAIN.to_vec();
+        out.extend_from_slice(canonical.group_id.as_bytes());
+        out.extend_from_slice(canonical.invitation_id.as_bytes());
+        out.extend_from_slice(&canonical.source_revision.to_be_bytes());
+        out.extend_from_slice(&canonical.source_roster_digest);
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut cursor = bytes;
+        take_exact(&mut cursor, INVITATION_REVOCATION_DOMAIN)?;
         let group_id = GroupId::try_from(take(&mut cursor, crate::GROUP_ID_LEN)?)?;
         let invitation_id = InvitationId::try_from(take(&mut cursor, 16)?)?;
         let source_revision = take_u64(&mut cursor)?;
