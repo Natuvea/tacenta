@@ -919,6 +919,24 @@ mod tests {
         .unwrap();
         assert_eq!(bootstrap.source_roster, genesis);
         assert_eq!(bob_book.records()[0].status, InvitationStatus::Pending);
+        assert_eq!(
+            commit_group_invitation_transition(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_book,
+                |book| {
+                    book.accept(
+                        InvitationId::new([7; 16]),
+                        &bob_member,
+                        0,
+                        &genesis_digest,
+                        1,
+                    )
+                    .map(|record| record.status)
+                },
+            ),
+            Ok(InvitationStatus::AcceptedPendingAdmission)
+        );
 
         let acceptance = GroupPayload::InvitationAcceptance(
             InvitationAcceptance::new(group_id, InvitationId::new([7; 16]), 0, genesis_digest)
