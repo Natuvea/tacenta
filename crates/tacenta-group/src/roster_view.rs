@@ -2,6 +2,8 @@
 
 use crate::{DIGEST_LEN, Member, Roster};
 
+const ROSTER_VIEW_STATE_DOMAIN: &[u8] = b"Tacenta Group Roster View State v1";
+
 /// Why a candidate roster cannot replace the accepted view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RosterRefusal {
@@ -60,6 +62,70 @@ impl RosterView {
 
     pub fn digest(&self) -> &[u8; DIGEST_LEN] {
         &self.digest
+    }
+
+    /// Encodes the currently accepted, core-bound roster checkpoint.
+    pub fn encode_state(&self) -> Result<Vec<u8>, crate::Error> {
+        let roster = self.roster.encode()?;
+        let mut out = ROSTER_VIEW_STATE_DOMAIN.to_vec();
+        out.extend_from_slice(
+            &u32::try_from(roster.len())
+                .map_err(|_| crate::Error::Malformed)?
+                .to_be_bytes(),
+        );
+        out.extend_from_slice(&roster);
+        out.extend_from_slice(&self.digest);
+        Ok(out)
+    }
+
+    /// Restores an accepted checkpoint. `pinned_authority` comes from the
+    /// authority channel that bootstrapped this group, not from the checkpoint.
+    pub fn decode_state(
+        bytes: &[u8],
+        pinned_authority: &Member,
+        roster_commitment: impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+    ) -> Result<Self, RosterRefusal> {
+        if !bytes.starts_with(ROSTER_VIEW_STATE_DOMAIN) {
+            return Err(RosterRefusal::InvalidGenesis);
+        }
+        let mut cursor = &bytes[ROSTER_VIEW_STATE_DOMAIN.len()..];
+        let (length, rest) = cursor
+            .split_at_checked(4)
+            .ok_or(RosterRefusal::InvalidGenesis)?;
+        cursor = rest;
+        let length = usize::try_from(u32::from_be_bytes(
+            length
+                .try_into()
+                .map_err(|_| RosterRefusal::InvalidGenesis)?,
+        ))
+        .map_err(|_| RosterRefusal::InvalidGenesis)?;
+        let (roster_bytes, digest) = cursor
+            .split_at_checked(length)
+            .ok_or(RosterRefusal::InvalidGenesis)?;
+        if digest.len() != DIGEST_LEN {
+            return Err(RosterRefusal::InvalidGenesis);
+        }
+        let roster = Roster::decode(roster_bytes).map_err(|_| RosterRefusal::InvalidGenesis)?;
+        let digest: [u8; DIGEST_LEN] = digest
+            .try_into()
+            .map_err(|_| RosterRefusal::InvalidGenesis)?;
+        if &roster.authority != pinned_authority {
+            return Err(RosterRefusal::WrongAuthority);
+        }
+        if digest != roster_commitment(roster_bytes) {
+            return Err(RosterRefusal::Conflict);
+        }
+        if roster.revision == 0 {
+            return Self::accept_genesis(pinned_authority, roster, digest);
+        }
+        if !roster
+            .members
+            .iter()
+            .any(|member| member == pinned_authority)
+        {
+            return Err(RosterRefusal::MissingAuthorityMember);
+        }
+        Ok(Self { roster, digest })
     }
 
     /// Whether this accepted view grants the complete identity/device binding
@@ -227,6 +293,33 @@ mod tests {
                 [1; DIGEST_LEN],
             ),
             RosterDisposition::Rejected(RosterRefusal::Conflict)
+        );
+    }
+
+    #[test]
+    fn a_core_bound_roster_checkpoint_restores_with_the_pinned_authority() {
+        let mut view = RosterView::accept_genesis(
+            &alice(),
+            roster(0, [0; DIGEST_LEN], vec![alice()]),
+            [1; DIGEST_LEN],
+        )
+        .unwrap();
+        assert_eq!(
+            view.accept_successor(
+                &alice(),
+                roster(1, [1; DIGEST_LEN], vec![alice(), bob()]),
+                [2; DIGEST_LEN],
+            ),
+            RosterDisposition::Accepted
+        );
+        let encoded = view.encode_state().unwrap();
+        assert_eq!(
+            RosterView::decode_state(&encoded, &alice(), |_| [2; DIGEST_LEN]),
+            Ok(view.clone())
+        );
+        assert_eq!(
+            RosterView::decode_state(&encoded, &bob(), |_| [2; DIGEST_LEN]),
+            Err(RosterRefusal::WrongAuthority)
         );
     }
 }

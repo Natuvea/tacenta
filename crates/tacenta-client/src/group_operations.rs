@@ -116,6 +116,25 @@ pub(crate) fn recover_group_receiver(
     .map_err(|_| GroupOperationError::Policy)
 }
 
+/// Restores the latest core-verified roster checkpoint from the durable control
+/// transcript. The authority comes from the bootstrap channel, never a record.
+pub(crate) fn recover_group_roster_view(
+    snapshot: &OperationSnapshot,
+    pinned_authority: &Member,
+) -> Result<RosterView, GroupOperationError> {
+    let Some(record) = snapshot
+        .group_controls
+        .iter()
+        .rev()
+        .find(|record| record.starts_with(b"TCGV"))
+    else {
+        return Err(GroupOperationError::Policy);
+    };
+    let state = decode_roster_view_record(record)?;
+    RosterView::decode_state(state, pinned_authority, roster_commitment)
+        .map_err(|_| GroupOperationError::Policy)
+}
+
 /// Records a prepared ciphertext and its core-bound application context in the
 /// combined operation snapshot. The logical record changes only after the
 /// store reports `Committed`; no transport caller receives ciphertext from a
@@ -545,6 +564,13 @@ fn commit_roster_transition<S: OperationStore>(
         &commitment,
         disposition,
     )?);
+    candidate_snapshot
+        .group_controls
+        .push(encode_roster_view_record(
+            &candidate_view
+                .encode_state()
+                .map_err(|_| GroupOperationError::Policy)?,
+        )?);
     let mut candidate_receiver = receiver.as_deref().cloned();
     let revalidated = if disposition == RosterDisposition::Accepted {
         if let Some(receiver) = &mut candidate_receiver {
@@ -783,6 +809,33 @@ fn encode_roster_record(
     Ok(record)
 }
 
+fn encode_roster_view_record(state: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
+    let length = u32::try_from(state.len()).map_err(|_| GroupOperationError::Policy)?;
+    let mut record = Vec::with_capacity(8 + state.len());
+    record.extend_from_slice(b"TCGV");
+    record.extend_from_slice(&length.to_be_bytes());
+    record.extend_from_slice(state);
+    Ok(record)
+}
+
+fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError> {
+    if !record.starts_with(b"TCGV") {
+        return Err(GroupOperationError::Policy);
+    }
+    let bytes = record.get(4..).ok_or(GroupOperationError::Policy)?;
+    let (length, state) = bytes
+        .split_at_checked(4)
+        .ok_or(GroupOperationError::Policy)?;
+    let length = usize::try_from(u32::from_be_bytes(
+        length.try_into().map_err(|_| GroupOperationError::Policy)?,
+    ))
+    .map_err(|_| GroupOperationError::Policy)?;
+    if state.len() != length {
+        return Err(GroupOperationError::Policy);
+    }
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -791,6 +844,7 @@ mod tests {
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
         commit_roster_successor_with_receiver, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     #[cfg(not(target_arch = "wasm32"))]
     use crate::operation_store::FileOperationStore;
@@ -1121,6 +1175,48 @@ mod tests {
         );
 
         assert_eq!(recover_group_receiver(&snapshot), Ok(receiver));
+    }
+
+    #[test]
+    fn core_bound_roster_checkpoint_recovers_the_latest_accepted_view() {
+        let genesis = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            0,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice()],
+        )
+        .unwrap();
+        let genesis_digest = roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_digest).unwrap();
+        let next = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            genesis_digest,
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        commit_roster_successor(
+            &mut store,
+            &mut snapshot,
+            &mut view,
+            &alice(),
+            next,
+            &mut [],
+        )
+        .unwrap();
+
+        assert_eq!(recover_group_roster_view(&snapshot, &alice()), Ok(view));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
