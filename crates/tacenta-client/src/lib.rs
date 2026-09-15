@@ -1243,6 +1243,14 @@ mod tests {
         })
         .await
         .unwrap();
+        let bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
         let mut carol = DefaultClient::connect(&Config {
             directory,
             relay,
@@ -1252,10 +1260,11 @@ mod tests {
         .await
         .unwrap();
         let alice_route = alice.address().clone();
+        let bob_route = bob.address().clone();
         let carol_route = carol.address().clone();
         let alice_member = Member::new(alice.party.identity_key(), vec![1]);
         let alice_identity = alice_member.identity().to_vec();
-        let bob_member = Member::new(b"bob-key".to_vec(), vec![1]);
+        let bob_member = Member::new(bob.party.identity_key(), vec![1]);
         let carol_member = Member::new(carol.party.identity_key(), vec![1]);
         let group_id = GroupId::new(*b"bounded-group-id");
         let genesis = Roster::new(
@@ -1352,7 +1361,7 @@ mod tests {
         let mut authority_receiver =
             GroupReceiver::new(genesis.clone(), genesis_digest, alice_member.clone());
         let mut authority_sends = Vec::new();
-        let mut successor_members = vec![alice_member.clone(), bob_member];
+        let mut successor_members = vec![alice_member.clone(), bob_member.clone()];
         successor_members.sort_by(|left, right| {
             left.identity()
                 .cmp(right.identity())
@@ -1368,7 +1377,7 @@ mod tests {
             successor_members,
         )
         .unwrap();
-        let observer_control = prepare_authority_roster_control(
+        let member_control = prepare_authority_roster_control(
             &mut alice,
             &mut authority_store,
             &mut authority_snapshot,
@@ -1382,8 +1391,34 @@ mod tests {
                 control_now: 1,
             },
             &alice_member,
-            (&carol_member, &carol_route),
+            (&bob_member, &bob_route),
             successor,
+        )
+        .await
+        .unwrap();
+        let observer_control = prepare_installed_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            InstalledControlState {
+                view: &authority_view,
+                outbox: &mut authority_outbox,
+                invitation_book: Some(&authority_book),
+                control_now: 1,
+            },
+            &alice_member,
+            (&carol_member, &carol_route),
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &member_control.handoff.payload,
+            &bob_route,
         )
         .await
         .unwrap();
@@ -1393,7 +1428,7 @@ mod tests {
             &mut authority_snapshot,
             &mut authority_outbox,
             &carol_member,
-            &observer_control.handoff.payload,
+            &observer_control.payload,
             &carol_route,
         )
         .await
