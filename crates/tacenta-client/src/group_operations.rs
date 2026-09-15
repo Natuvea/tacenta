@@ -20,6 +20,8 @@ use tacenta_group::{
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
 use crate::{Client, ErrorKind};
 
+const MAX_GROUP_CONTROL_RECORDS: usize = 64;
+
 /// A group preparation cannot cross its durable boundary.  The caller freezes
 /// the affected operation and recovers its snapshot before it tries again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,9 +217,10 @@ where
         .generation
         .checked_add(1)
         .ok_or(GroupOperationError::Frozen)?;
-    candidate_snapshot
-        .group_controls
-        .push(encode_invitation_book_record(&state)?);
+    append_group_control_records(
+        &mut candidate_snapshot,
+        [encode_invitation_book_record(&state)?],
+    );
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }
@@ -823,26 +826,19 @@ fn commit_roster_transition<S: OperationStore>(
         .generation
         .checked_add(1)
         .ok_or(GroupOperationError::Frozen)?;
-    candidate_snapshot.group_controls.push(encode_roster_record(
-        &preimage,
-        &commitment,
-        disposition,
-    )?);
+    let mut control_records = vec![encode_roster_record(&preimage, &commitment, disposition)?];
     if let Some((provider_state, _)) = &state.provider {
         candidate_snapshot.provider_state = provider_state.clone();
     }
     if let Some((_, provider_effect)) = state.provider {
-        candidate_snapshot
-            .group_controls
-            .push(encode_control_effect_record(provider_effect));
+        control_records.push(encode_control_effect_record(provider_effect));
     }
-    candidate_snapshot
-        .group_controls
-        .push(encode_roster_view_record(
-            &candidate_view
-                .encode_state()
-                .map_err(|_| GroupOperationError::Policy)?,
-        )?);
+    control_records.push(encode_roster_view_record(
+        &candidate_view
+            .encode_state()
+            .map_err(|_| GroupOperationError::Policy)?,
+    )?);
+    append_group_control_records(&mut candidate_snapshot, control_records);
     let mut candidate_receiver = state.receiver.as_deref().cloned();
     let revalidated = if disposition == RosterDisposition::Accepted {
         if let Some(receiver) = &mut candidate_receiver {
@@ -907,6 +903,33 @@ fn encode_prepared_record(
     record.extend_from_slice(commitment);
     put_lp(&mut record, ciphertext)?;
     Ok(record)
+}
+
+fn append_group_control_records(
+    snapshot: &mut OperationSnapshot,
+    records: impl IntoIterator<Item = Vec<u8>>,
+) {
+    snapshot.group_controls.extend(records);
+    while snapshot.group_controls.len() > MAX_GROUP_CONTROL_RECORDS {
+        let latest_roster_view = snapshot
+            .group_controls
+            .iter()
+            .rposition(|record| record.starts_with(b"TCGV"));
+        let latest_invitation_book = snapshot
+            .group_controls
+            .iter()
+            .rposition(|record| record.starts_with(b"TCGB"));
+        let eviction = snapshot
+            .group_controls
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| {
+                (Some(index) != latest_roster_view && Some(index) != latest_invitation_book)
+                    .then_some(index)
+            })
+            .expect("the retained checkpoints fit inside the control record bound");
+        snapshot.group_controls.remove(eviction);
+    }
 }
 
 fn encode_intent_record(intent: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
@@ -1148,9 +1171,9 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 mod tests {
     use super::{
         GroupLiveError, GroupOperationError, GroupPayloadDisposition, GroupReceiveInput,
-        RosterCommit, bind_prepared_ciphertext, commit_group_invitation_transition,
-        commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
-        commit_logical_intent, commit_outbox_handoff_reservation,
+        MAX_GROUP_CONTROL_RECORDS, RosterCommit, bind_prepared_ciphertext,
+        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
+        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
         commit_roster_successor_with_receiver, live_client_error, recover_group_invitation_book,
@@ -1615,6 +1638,86 @@ mod tests {
         );
         assert!(book.records().is_empty());
         assert_eq!(snapshot, before_snapshot);
+    }
+
+    #[test]
+    fn control_transcript_evicts_old_checkpoints_without_losing_the_latest_book() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob(),
+            0,
+            [0; DIGEST_LEN],
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut book = InvitationBook::new(group_id);
+
+        for _ in 0..=MAX_GROUP_CONTROL_RECORDS {
+            commit_group_invitation_transition(&mut store, &mut snapshot, &mut book, |candidate| {
+                candidate
+                    .create(&alice(), &alice(), &[alice()], invitation.clone(), 0)
+                    .map(|record| record.status)
+            })
+            .unwrap();
+        }
+
+        assert_eq!(snapshot.group_controls.len(), MAX_GROUP_CONTROL_RECORDS);
+        assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
+    }
+
+    #[test]
+    fn roster_compaction_retains_an_older_invitation_checkpoint() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob(),
+            0,
+            [0; DIGEST_LEN],
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut book = InvitationBook::new(group_id);
+        commit_group_invitation_transition(&mut store, &mut snapshot, &mut book, |candidate| {
+            candidate
+                .create(&alice(), &alice(), &[alice()], invitation, 0)
+                .map(|record| record.status)
+        })
+        .unwrap();
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+
+        for revision in 1..=MAX_GROUP_CONTROL_RECORDS as u64 {
+            let candidate = roster(revision, *view.digest(), vec![alice()]);
+            commit_roster_successor(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &alice(),
+                candidate,
+                &mut [],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(snapshot.group_controls.len(), MAX_GROUP_CONTROL_RECORDS);
+        assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
+        assert_eq!(recover_group_roster_view(&snapshot, &alice()), Ok(view));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
