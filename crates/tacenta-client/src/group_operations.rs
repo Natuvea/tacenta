@@ -343,6 +343,44 @@ fn commit_prepared_control_handoff<S: OperationStore>(
     Ok(handoff)
 }
 
+/// Encrypts and durably checkpoints one invitation bootstrap or acceptance
+/// control before its pairwise relay handoff.
+pub(crate) async fn prepare_outbound_invitation_control<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut ControlOutbox,
+    recipient: &Member,
+    route: &tacenta_relay::DeviceAddr,
+    payload: GroupPayload,
+) -> Result<ControlHandoff, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    if !matches!(
+        payload,
+        GroupPayload::InvitationBootstrap(_) | GroupPayload::InvitationAcceptance(_)
+    ) {
+        return Err(GroupLiveError::Policy);
+    }
+    let payload = payload.encode().map_err(|_| GroupLiveError::Policy)?;
+    let (ciphertext, provider_state) = client
+        .prepare_group_ciphertext(route, recipient.identity(), &payload)
+        .await
+        .map_err(|error| live_client_error(error.kind()))?;
+    commit_prepared_control_handoff(
+        store,
+        snapshot,
+        outbox,
+        recipient.clone(),
+        payload,
+        ciphertext,
+        provider_state,
+    )
+    .map_err(Into::into)
+}
+
 /// Encrypts one canonical roster successor for an authenticated recipient and
 /// persists its exact ciphertext with the advanced provider state before any
 /// relay request can occur.

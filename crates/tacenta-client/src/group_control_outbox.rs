@@ -47,7 +47,12 @@ impl Outbox {
             };
         }
         if self.handoffs.len() == MAX_HANDOFFS
-            || !matches!(GroupPayload::decode(&payload), Ok(GroupPayload::Roster(_)))
+            || !matches!(
+                GroupPayload::decode(&payload),
+                Ok(GroupPayload::Roster(_))
+                    | Ok(GroupPayload::InvitationBootstrap(_))
+                    | Ok(GroupPayload::InvitationAcceptance(_))
+            )
         {
             return Err(GroupError::OutboxFull);
         }
@@ -229,7 +234,9 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacenta_group::{DIGEST_LEN, GroupId, POLICY_VERSION_V1, Roster};
+    use tacenta_group::{
+        DIGEST_LEN, GroupId, InvitationAcceptance, InvitationId, POLICY_VERSION_V1, Roster,
+    };
 
     fn alice() -> Member {
         Member::new(b"alice".to_vec(), vec![1])
@@ -296,5 +303,32 @@ mod tests {
 
         let state = outbox.encode_state().unwrap();
         assert_eq!(Outbox::decode_state(&state), Ok(outbox));
+    }
+
+    #[test]
+    fn invitation_acceptance_uses_the_same_exact_ciphertext_handoff() {
+        let payload = GroupPayload::InvitationAcceptance(
+            InvitationAcceptance::new(
+                GroupId::new(*b"bounded-group-id"),
+                InvitationId::new([7; 16]),
+                0,
+                [0; DIGEST_LEN],
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        let mut outbox = Outbox::default();
+        outbox
+            .record_prepared(alice(), payload.clone(), vec![7, 8])
+            .unwrap();
+        assert_eq!(
+            outbox.reserve(&alice(), &payload).unwrap().ciphertext,
+            vec![7, 8]
+        );
+        assert_eq!(
+            Outbox::decode_state(&outbox.encode_state().unwrap()),
+            Ok(outbox)
+        );
     }
 }
