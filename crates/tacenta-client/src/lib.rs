@@ -325,9 +325,9 @@ mod tests {
         AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput, commit_group_payload,
         commit_group_plaintext, commit_logical_intent, commit_outbox_handoff_reservation,
         dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
-        prepare_authority_roster_control, prepare_outbox_group_recipient,
-        recover_group_control_outbox, recover_group_outbox, recover_group_receiver,
-        recover_group_roster_view,
+        prepare_authority_roster_control, prepare_installed_roster_control,
+        prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_outbox,
+        recover_group_receiver, recover_group_roster_view,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
@@ -416,11 +416,21 @@ mod tests {
         })
         .await
         .unwrap();
+        let mut carol = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+carol".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
         let alice_route = alice.address().clone();
         let bob_route = bob.address().clone();
+        let carol_route = carol.address().clone();
         let alice_member = Member::new(alice.party.identity_key(), vec![1]);
         let alice_identity = alice_member.identity().to_vec();
         let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let carol_member = Member::new(carol.party.identity_key(), vec![1]);
         let group_id = GroupId::new(*b"bounded-group-id");
         let genesis = Roster::new(
             group_id,
@@ -437,6 +447,12 @@ mod tests {
         let mut view =
             RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
         let mut receiver = GroupReceiver::new(genesis, genesis_digest, bob_member.clone());
+        let mut carol_view = view.clone();
+        let mut carol_receiver = GroupReceiver::new(
+            carol_view.roster().clone(),
+            *carol_view.digest(),
+            carol_member.clone(),
+        );
         let mut authority_view = view.clone();
         let mut authority_receiver = GroupReceiver::new(
             authority_view.roster().clone(),
@@ -449,7 +465,13 @@ mod tests {
         let mut authority_snapshot = OperationSnapshot::empty(0);
         let mut store = GroupStore { snapshot: None };
         let mut snapshot = OperationSnapshot::empty(0);
-        let mut members = vec![alice_member.clone(), bob_member.clone()];
+        let mut carol_store = GroupStore { snapshot: None };
+        let mut carol_snapshot = OperationSnapshot::empty(0);
+        let mut members = vec![
+            alice_member.clone(),
+            bob_member.clone(),
+            carol_member.clone(),
+        ];
         members.sort_by(|left, right| {
             left.identity()
                 .cmp(right.identity())
@@ -515,6 +537,28 @@ mod tests {
         )
         .await
         .unwrap();
+        let r1_carol = prepare_installed_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &authority_view,
+            &mut authority_outbox,
+            &alice_member,
+            (&carol_member, &carol_route),
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &carol_member,
+            &r1_carol.payload,
+            &carol_route,
+        )
+        .await
+        .unwrap();
         let inbound = bob.receive().await.unwrap();
         assert_eq!(inbound[0].kind, MessageKind::Group);
         assert_eq!(
@@ -529,6 +573,30 @@ mod tests {
                     authenticated_identity: &alice_identity,
                     peer: &peer_address(&alice_route).unwrap(),
                     provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(
+                crate::group_operations::RosterCommit {
+                    disposition: RosterDisposition::Accepted,
+                    revalidated: Vec::new(),
+                }
+            ))
+        );
+        let inbound = carol.receive().await.unwrap();
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(
+            commit_group_payload(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_view,
+                &mut carol_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: carol.export_state().await.unwrap(),
                     provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
                 },
             ),
@@ -578,6 +646,12 @@ mod tests {
                 ReceiveDisposition::Accepted { event_id: 0 }
             ))
         );
+        let mut remaining_members = vec![alice_member.clone(), carol_member.clone()];
+        remaining_members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
         let r2 = Roster::new(
             group_id,
             2,
@@ -585,7 +659,7 @@ mod tests {
             alice_member.clone(),
             POLICY_VERSION_V1,
             false,
-            vec![alice_member.clone()],
+            remaining_members,
         )
         .unwrap();
         let r2_control = prepare_authority_roster_control(
@@ -605,6 +679,17 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r2_control.roster.disposition, RosterDisposition::Accepted);
+        let r2_carol = prepare_installed_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &authority_view,
+            &mut authority_outbox,
+            &alice_member,
+            (&carol_member, &carol_route),
+        )
+        .await
+        .unwrap();
         dispatch_outbound_roster_control(
             &mut alice,
             &mut authority_store,
@@ -613,6 +698,17 @@ mod tests {
             &r2_control.handoff.recipient,
             &r2_control.handoff.payload,
             &bob_route,
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &carol_member,
+            &r2_carol.payload,
+            &carol_route,
         )
         .await
         .unwrap();
@@ -629,6 +725,29 @@ mod tests {
                     authenticated_identity: &alice_identity,
                     peer: &peer_address(&alice_route).unwrap(),
                     provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(
+                crate::group_operations::RosterCommit {
+                    disposition: RosterDisposition::Accepted,
+                    revalidated: Vec::new(),
+                }
+            ))
+        );
+        let inbound = carol.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_view,
+                &mut carol_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: carol.export_state().await.unwrap(),
                     provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
                 },
             ),

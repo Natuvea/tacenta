@@ -99,6 +99,19 @@ fn recipient_can_receive_roster_control(
         || successor.members.iter().any(|member| member == recipient)
 }
 
+fn recipient_can_receive_installed_roster_control(
+    view: &RosterView,
+    authenticated_authority: &Member,
+    recipient: &Member,
+) -> bool {
+    &view.roster().authority == authenticated_authority
+        && view
+            .roster()
+            .members
+            .iter()
+            .any(|member| member == recipient)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AuthorityRosterControlCommit {
     pub(crate) roster: RosterCommit,
@@ -417,6 +430,39 @@ where
         .handoff(recipient, &payload)
         .map_err(|_| GroupLiveError::Frozen)?;
     Ok(AuthorityRosterControlCommit { roster, handoff })
+}
+
+/// Prepares another exact ciphertext for the authority's already-installed
+/// roster. This supports fan-out without allowing a second local transition.
+pub(crate) async fn prepare_installed_roster_control<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &RosterView,
+    outbox: &mut ControlOutbox,
+    authenticated_authority: &Member,
+    recipient_route: (&Member, &tacenta_relay::DeviceAddr),
+) -> Result<ControlHandoff, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let (recipient, route) = recipient_route;
+    if client.party.identity_key() != authenticated_authority.identity()
+        || !recipient_can_receive_installed_roster_control(view, authenticated_authority, recipient)
+    {
+        return Err(GroupLiveError::Policy);
+    }
+    prepare_outbound_roster_control(
+        client,
+        store,
+        snapshot,
+        outbox,
+        recipient,
+        route,
+        view.roster().clone(),
+    )
+    .await
 }
 
 /// Reserves and sends an already committed roster-control ciphertext. A
@@ -1502,7 +1548,8 @@ mod tests {
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
-        live_client_error, recipient_can_receive_roster_control, recover_group_control_outbox,
+        live_client_error, recipient_can_receive_installed_roster_control,
+        recipient_can_receive_roster_control, recover_group_control_outbox,
         recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
         recover_group_roster_view,
     };
@@ -2104,6 +2151,16 @@ mod tests {
         ));
         assert!(!recipient_can_receive_roster_control(
             &view, &removal, &stranger
+        ));
+        assert!(recipient_can_receive_installed_roster_control(
+            &view,
+            &alice(),
+            &bob()
+        ));
+        assert!(!recipient_can_receive_installed_roster_control(
+            &view,
+            &alice(),
+            &stranger
         ));
     }
 
