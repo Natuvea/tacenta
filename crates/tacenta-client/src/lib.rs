@@ -319,15 +319,16 @@ fn take_u32(bytes: &mut &[u8]) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::group_operations::{
-        GroupReceiveInput, commit_group_plaintext, commit_logical_intent,
-        commit_outbox_handoff_reservation, dispatch_outbox_group_handoff,
+        GroupPayloadDisposition, GroupReceiveInput, commit_group_payload, commit_group_plaintext,
+        commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbox_group_handoff,
         prepare_outbox_group_recipient, recover_group_outbox,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
     use tacenta_group::{
-        DIGEST_LEN, GroupId, GroupOutbox, GroupReceiver, LogicalSend, Member, OutboxDisposition,
-        POLICY_VERSION_V1, ReceiveDisposition, Roster,
+        ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
+        LogicalSend, Member, OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition,
+        ReceiveRefusal, Roster, RosterDisposition, RosterView,
     };
     use tacenta_server::{Config as ServerConfig, Server};
 
@@ -389,6 +390,211 @@ mod tests {
         assert_eq!(inbound.len(), 1);
         assert_eq!(inbound[0].kind, MessageKind::Group);
         assert_eq!(inbound[0].plaintext, b"canonical group context");
+    }
+
+    #[tokio::test]
+    async fn a_live_roster_update_admits_then_removes_a_group_recipient() {
+        let (directory, relay) = start_server().await;
+        let mut alice = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let mut bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let alice_route = alice.address().clone();
+        let bob_route = bob.address().clone();
+        let alice_member = Member::new(alice.party.identity_key(), vec![1]);
+        let alice_identity = alice_member.identity().to_vec();
+        let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let genesis = Roster::new(
+            group_id,
+            0,
+            [0; DIGEST_LEN],
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice_member.clone()],
+        )
+        .unwrap();
+        let genesis_digest =
+            tacenta_core::crypto::groups::roster_commitment(&genesis.encode().unwrap());
+        let mut view =
+            RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
+        let mut receiver = GroupReceiver::new(genesis, genesis_digest, bob_member.clone());
+        let mut store = GroupStore { snapshot: None };
+        let mut snapshot = OperationSnapshot::empty(0);
+        let mut members = vec![alice_member.clone(), bob_member.clone()];
+        members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let r1 = Roster::new(
+            group_id,
+            1,
+            genesis_digest,
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            members,
+        )
+        .unwrap();
+        let r1_payload = GroupPayload::Roster(r1.clone()).encode().unwrap();
+        alice
+            .send_as(&bob_route, &r1_payload, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(
+            commit_group_payload(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &mut receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(
+                crate::group_operations::RosterCommit {
+                    disposition: RosterDisposition::Accepted,
+                    revalidated: Vec::new(),
+                }
+            ))
+        );
+        let r1_digest = tacenta_core::crypto::groups::roster_commitment(&r1.encode().unwrap());
+        let application = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                1,
+                r1_digest,
+                alice_member.clone(),
+                bob_member.clone(),
+                0,
+                b"before removal".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        alice
+            .send_as(&bob_route, &application, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &mut receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Accepted { event_id: 0 }
+            ))
+        );
+        let r2 = Roster::new(
+            group_id,
+            2,
+            r1_digest,
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice_member.clone()],
+        )
+        .unwrap();
+        let r2_payload = GroupPayload::Roster(r2.clone()).encode().unwrap();
+        alice
+            .send_as(&bob_route, &r2_payload, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &mut receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(
+                crate::group_operations::RosterCommit {
+                    disposition: RosterDisposition::Accepted,
+                    revalidated: Vec::new(),
+                }
+            ))
+        );
+        let r2_digest = tacenta_core::crypto::groups::roster_commitment(&r2.encode().unwrap());
+        let after_removal = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                2,
+                r2_digest,
+                alice_member,
+                bob_member,
+                1,
+                b"after removal".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        alice
+            .send_as(&bob_route, &after_removal, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &mut receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+            ))
+        );
     }
 
     struct GroupStore {
