@@ -17,6 +17,7 @@ use tacenta_group::{
 };
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
+use crate::{Client, ErrorKind};
 
 /// A group preparation cannot cross its durable boundary.  The caller freezes
 /// the affected operation and recovers its snapshot before it tries again.
@@ -24,6 +25,24 @@ use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
 pub(crate) enum GroupOperationError {
     Policy,
     Frozen,
+}
+
+/// The live group coordinator distinguishes an unchanged transport handoff
+/// from an operation that must freeze after a durable or provider boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GroupLiveError {
+    Policy,
+    Frozen,
+    Transport,
+}
+
+impl From<GroupOperationError> for GroupLiveError {
+    fn from(error: GroupOperationError) -> Self {
+        match error {
+            GroupOperationError::Policy => Self::Policy,
+            GroupOperationError::Frozen => Self::Frozen,
+        }
+    }
 }
 
 /// The durable result of a roster transition and its deferred-item replay.
@@ -231,6 +250,48 @@ pub(crate) fn commit_outbox_prepared_ciphertext<S: OperationStore>(
     Ok(progress)
 }
 
+/// Produces one recipient's exact group ciphertext with the live provider,
+/// then commits it and the exported provider state to the outbox. A provider
+/// failure after encryption is frozen rather than retried with new bytes.
+pub(crate) async fn prepare_outbox_group_recipient<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut GroupOutbox,
+    id: &LogicalMessageId,
+    recipient: &Member,
+    route: &tacenta_relay::DeviceAddr,
+) -> Result<RecipientProgress, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let context = outbox
+        .send(id)
+        .map_err(|_| GroupLiveError::Policy)?
+        .application_context(recipient)
+        .map_err(|_| GroupLiveError::Policy)?
+        .encode()
+        .map_err(|_| GroupLiveError::Policy)?;
+    let (ciphertext, provider_state) = client
+        .prepare_group_ciphertext(route, recipient.identity(), &context)
+        .await
+        .map_err(|error| match error.kind() {
+            ErrorKind::Network | ErrorKind::RateLimited => GroupLiveError::Transport,
+            _ => GroupLiveError::Frozen,
+        })?;
+    commit_outbox_prepared_ciphertext(
+        store,
+        snapshot,
+        outbox,
+        id,
+        recipient,
+        ciphertext,
+        provider_state,
+    )
+    .map_err(Into::into)
+}
+
 /// Reserves an exact prepared ciphertext attempt before returning it to a
 /// transport caller. The caller may dispatch only the returned committed
 /// record; a failed or uncertain commit exposes no handoff-eligible value.
@@ -380,6 +441,35 @@ pub(crate) fn commit_outbox_relay_acceptance<S: OperationStore>(
     *snapshot = candidate_snapshot;
     *outbox = candidate_outbox;
     Ok(progress)
+}
+
+/// Dispatches the exact ciphertext from an already committed handoff and only
+/// then records the relay observation. A transport error leaves the outbox in
+/// its prior handed-off state for an exact-byte retry.
+pub(crate) async fn dispatch_outbox_group_handoff<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut GroupOutbox,
+    id: &LogicalMessageId,
+    recipient: &Member,
+    route: &tacenta_relay::DeviceAddr,
+) -> Result<RecipientProgress, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let handoff = commit_outbox_handoff_reservation(store, snapshot, outbox, id, recipient)
+        .map_err(GroupLiveError::from)?;
+    let ciphertext = handoff
+        .ciphertext
+        .as_deref()
+        .ok_or(GroupLiveError::Policy)?;
+    client
+        .dispatch_group_ciphertext(route, ciphertext)
+        .await
+        .map_err(|_| GroupLiveError::Transport)?;
+    commit_outbox_relay_acceptance(store, snapshot, outbox, id, recipient).map_err(Into::into)
 }
 
 /// Records an authenticated group's disposition with the provider transition

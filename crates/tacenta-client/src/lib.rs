@@ -318,7 +318,16 @@ fn take_u32(bytes: &mut &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::group_operations::{
+        GroupReceiveInput, commit_group_plaintext, commit_logical_intent,
+        dispatch_outbox_group_handoff, prepare_outbox_group_recipient,
+    };
+    use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
+    use tacenta_group::{
+        DIGEST_LEN, GroupId, GroupOutbox, GroupReceiver, LogicalSend, Member, OutboxDisposition,
+        POLICY_VERSION_V1, ReceiveDisposition, Roster,
+    };
     use tacenta_server::{Config as ServerConfig, Server};
 
     fn contact(handle: &str, device: u32) -> Contact {
@@ -379,6 +388,130 @@ mod tests {
         assert_eq!(inbound.len(), 1);
         assert_eq!(inbound[0].kind, MessageKind::Group);
         assert_eq!(inbound[0].plaintext, b"canonical group context");
+    }
+
+    struct GroupStore {
+        snapshot: Option<OperationSnapshot>,
+    }
+
+    impl OperationStore for GroupStore {
+        fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+            self.snapshot = Some(snapshot.clone());
+            CommitOutcome::Committed
+        }
+
+        fn recover(&mut self) -> std::result::Result<Option<OperationSnapshot>, ()> {
+            Ok(self.snapshot.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_live_group_handoff_commits_before_group_delivery() {
+        let (directory, relay) = start_server().await;
+        let mut alice = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let mut bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let alice_route = alice.address().clone();
+        let bob_route = bob.address().clone();
+        let alice_member = Member::new(alice.party.identity_key(), vec![1]);
+        let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let mut members = vec![alice_member.clone(), bob_member.clone()];
+        members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let roster = Roster::new(
+            group_id,
+            0,
+            [0; DIGEST_LEN],
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            members,
+        )
+        .unwrap();
+        let roster_digest =
+            tacenta_core::crypto::groups::roster_commitment(&roster.encode().unwrap());
+        let send = LogicalSend::new(
+            &roster,
+            roster_digest,
+            alice_member.clone(),
+            0,
+            vec![bob_member.clone()],
+            b"live group message".to_vec(),
+        )
+        .unwrap();
+        let id = send.id.clone();
+        let mut sender_store = GroupStore { snapshot: None };
+        let mut sender_snapshot = OperationSnapshot::empty(0);
+        let mut outbox = GroupOutbox::new(group_id);
+        assert_eq!(
+            commit_logical_intent(&mut sender_store, &mut sender_snapshot, &mut outbox, send),
+            Ok(OutboxDisposition::Inserted)
+        );
+        prepare_outbox_group_recipient(
+            &mut alice,
+            &mut sender_store,
+            &mut sender_snapshot,
+            &mut outbox,
+            &id,
+            &bob_member,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+        dispatch_outbox_group_handoff(
+            &mut alice,
+            &mut sender_store,
+            &mut sender_snapshot,
+            &mut outbox,
+            &id,
+            &bob_member,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+        assert_eq!(&sender_snapshot.outbox[0][..4], b"TCGI");
+        assert_eq!(&sender_snapshot.outbox[1][..4], b"TCGP");
+        assert_eq!(&sender_snapshot.outbox[2][..4], b"TCGH");
+        assert_eq!(&sender_snapshot.outbox[3][..4], b"TCGA");
+
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        let mut receiver = GroupReceiver::new(roster, roster_digest, bob_member);
+        let mut receiver_store = GroupStore { snapshot: None };
+        let mut receiver_snapshot = OperationSnapshot::empty(0);
+        assert_eq!(
+            commit_group_plaintext(
+                &mut receiver_store,
+                &mut receiver_snapshot,
+                &mut receiver,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Accepted { event_id: 0 })
+        );
     }
 
     #[test]
@@ -1988,6 +2121,82 @@ impl<P: CryptoProvider> Client<P> {
             envelope: Envelope {
                 kind,
                 payload: framed,
+            },
+        }));
+        self.dispatch_prepared_send(&prepared).await
+    }
+
+    /// Encrypts one canonical group context exactly once for its bound
+    /// recipient, then exports the advanced client state for the group
+    /// operation snapshot. It deliberately does not dispatch: the caller must
+    /// commit its `TCGP` record before it can reserve a handoff.
+    pub(crate) async fn prepare_group_ciphertext(
+        &mut self,
+        to: &DeviceAddr,
+        expected_identity: &[u8],
+        context: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        if context.len() > MAX_MESSAGE_BYTES {
+            return Err(Error::InvalidArgument(
+                "group context exceeds the relay's per-message size limit",
+            ));
+        }
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let peer = peer_address(to)?;
+        if !self.sessions.contains(to) {
+            let (peer_identity, peer_bundle) = match self.fetch_bundle(to).await {
+                Err(Error::Io(_)) => {
+                    self.reconnect_with_patience().await?;
+                    self.fetch_bundle(to).await?
+                }
+                other => other?,
+            };
+            if peer_identity != expected_identity {
+                return Err(Error::Crypto(
+                    "directory identity did not match the group recipient".into(),
+                ));
+            }
+            self.party
+                .establish_session_for(&peer, &peer_bundle, expected_identity, &mut rng)
+                .await
+                .map_err(crypto)?;
+            if self.sessions.insert(to.clone()) {
+                self.state_generation += 1;
+            }
+        }
+        let operation = self
+            .party
+            .encrypt_with_outcome(&peer, context, &mut rng)
+            .await;
+        if operation.authenticated_peer.as_deref() != Some(expected_identity) {
+            return Err(Error::Crypto(
+                "provider identity did not match the group recipient".into(),
+            ));
+        }
+        let ciphertext = operation.result.map_err(crypto)?;
+        self.commit_ratchet_advance()?;
+        let provider_state = self.export_state().await?;
+        Ok((ciphertext, provider_state))
+    }
+
+    /// Dispatches only ciphertext that a group operation already committed and
+    /// reserved. It cannot re-enter pairwise encryption or change the bytes
+    /// selected for a retry.
+    pub(crate) async fn dispatch_group_ciphertext(
+        &mut self,
+        to: &DeviceAddr,
+        ciphertext: &[u8],
+    ) -> Result<()> {
+        if ciphertext.len() > MAX_MESSAGE_BYTES {
+            return Err(Error::InvalidArgument(
+                "group ciphertext exceeds the relay's per-message size limit",
+            ));
+        }
+        let prepared = PreparedSend::new(encode_request(&Request::Send {
+            to: to.clone(),
+            envelope: Envelope {
+                kind: Kind::Group,
+                payload: ciphertext.to_vec(),
             },
         }));
         self.dispatch_prepared_send(&prepared).await
