@@ -8,8 +8,9 @@ binding, encrypts the recipient's canonical context once, exports the advanced
 client provider state, and commits the exact ciphertext plus state through the
 outbox preparation boundary. It reserves the committed handoff before placing
 those exact ciphertext bytes in a `group` relay envelope. After the relay
-accepts, it commits `relay_accepted`; a transport failure leaves the durable
-handoff retryable.
+accepts, it commits `relay_accepted`; only a transient transport or relay
+backpressure result leaves the durable handoff retryable. A permanent relay
+refusal freezes the operation rather than misclassifying it as a retry.
 
 Any failure after pairwise encryption but before the preparation snapshot
 commits freezes the group operation. It must recover the selected durable
