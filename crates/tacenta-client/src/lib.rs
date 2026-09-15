@@ -325,7 +325,9 @@ mod tests {
         AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput, commit_group_payload,
         commit_group_plaintext, commit_logical_intent, commit_outbox_handoff_reservation,
         dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
-        prepare_authority_roster_control, prepare_outbox_group_recipient, recover_group_outbox,
+        prepare_authority_roster_control, prepare_outbox_group_recipient,
+        recover_group_control_outbox, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
@@ -399,14 +401,13 @@ mod tests {
     #[tokio::test]
     async fn a_live_roster_update_admits_then_removes_a_group_recipient() {
         let (directory, relay) = start_server().await;
-        let mut alice = DefaultClient::connect(&Config {
+        let alice_config = Config {
             directory,
             relay,
             user: "+alice".into(),
             device: 1,
-        })
-        .await
-        .unwrap();
+        };
+        let mut alice = DefaultClient::connect(&alice_config).await.unwrap();
         let mut bob = DefaultClient::connect(&Config {
             directory,
             relay,
@@ -481,13 +482,35 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r1_control.roster.disposition, RosterDisposition::Accepted);
+        let r1_payload = r1_control.handoff.payload.clone();
+        let r1_ciphertext = r1_control.handoff.ciphertext.clone();
+        let persisted_authority = authority_snapshot.clone();
+        drop(alice);
+        let mut alice =
+            DefaultClient::connect_with_state(&alice_config, &persisted_authority.provider_state)
+                .await
+                .unwrap();
+        authority_snapshot = persisted_authority;
+        authority_view = recover_group_roster_view(&authority_snapshot, &alice_member).unwrap();
+        authority_receiver = recover_group_receiver(&authority_snapshot).unwrap();
+        authority_outbox = recover_group_control_outbox(&authority_snapshot).unwrap();
+        authority_store = GroupStore {
+            snapshot: Some(authority_snapshot.clone()),
+        };
+        assert_eq!(
+            authority_outbox
+                .handoff(&bob_member, &r1_payload)
+                .unwrap()
+                .ciphertext,
+            r1_ciphertext
+        );
         dispatch_outbound_roster_control(
             &mut alice,
             &mut authority_store,
             &mut authority_snapshot,
             &mut authority_outbox,
-            &r1_control.handoff.recipient,
-            &r1_control.handoff.payload,
+            &bob_member,
+            &r1_payload,
             &bob_route,
         )
         .await
