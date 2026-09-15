@@ -196,6 +196,27 @@ impl RestoreOutcome {
 pub struct Received {
     pub from: DeviceAddr,
     pub plaintext: Vec<u8>,
+    /// The relay envelope class that selected this payload's application
+    /// parser. A group coordinator accepts only [`MessageKind::Group`].
+    pub kind: MessageKind,
+}
+
+/// The authenticated application class of a decrypted relay envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageKind {
+    Direct,
+    Group,
+    Receipt,
+}
+
+impl From<Kind> for MessageKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::Dm => Self::Direct,
+            Kind::Group => Self::Group,
+            Kind::Receipt => Self::Receipt,
+        }
+    }
 }
 
 /// A resolved contact: another user's addressable handle. Produced by
@@ -297,11 +318,67 @@ fn take_u32(bytes: &mut &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use tacenta_server::{Config as ServerConfig, Server};
 
     fn contact(handle: &str, device: u32) -> Contact {
         Contact {
             address: DeviceAddr::new(handle, device),
         }
+    }
+
+    async fn start_server() -> (std::net::SocketAddr, std::net::SocketAddr) {
+        let server = Server::bind(&ServerConfig {
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            directory_port: 0,
+            relay_port: 0,
+            accounts_port: 0,
+            provisioning_port: 0,
+            database_url: None,
+            data_dir: None,
+            tls: None,
+            snapshot_interval: None,
+            relay_max_total_bytes: None,
+            registration_max_per_hour: None,
+            registration_policy: None,
+            max_connections: None,
+        })
+        .await
+        .unwrap();
+        let directory = server.directory_addr().unwrap();
+        let relay = server.relay_addr().unwrap();
+        tokio::spawn(server.serve());
+        (directory, relay)
+    }
+
+    #[tokio::test]
+    async fn a_group_envelope_keeps_its_class_through_real_client_delivery() {
+        let (directory, relay) = start_server().await;
+        let mut alice = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let mut bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+
+        alice
+            .send_as(bob.address(), b"canonical group context", Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(inbound[0].plaintext, b"canonical group context");
     }
 
     #[test]
@@ -1864,6 +1941,13 @@ impl<P: CryptoProvider> Client<P> {
     /// died, the duplicate is dropped by the recipient (a replayed
     /// ciphertext cannot decrypt twice).
     pub async fn send(&mut self, to: &DeviceAddr, message: &[u8]) -> Result<()> {
+        self.send_as(to, message, Kind::Dm).await
+    }
+
+    /// Shared encrypted dispatch path. Group coordination reaches this only
+    /// after it has durably committed a canonical group handoff; direct send
+    /// keeps the existing `Dm` envelope class.
+    async fn send_as(&mut self, to: &DeviceAddr, message: &[u8], kind: Kind) -> Result<()> {
         // Before any ratchet step or store commit: a message the relay would
         // refuse is the caller's mistake, and costs nothing here.
         if message.len() > MAX_MESSAGE_BYTES {
@@ -1902,7 +1986,7 @@ impl<P: CryptoProvider> Client<P> {
         let prepared = PreparedSend::new(encode_request(&Request::Send {
             to: to.clone(),
             envelope: Envelope {
-                kind: Kind::Dm,
+                kind,
                 payload: framed,
             },
         }));
@@ -2050,6 +2134,7 @@ impl<P: CryptoProvider> Client<P> {
             received.push(Received {
                 from: message.from.clone(),
                 plaintext,
+                kind: message.envelope.kind.into(),
             });
         }
 
