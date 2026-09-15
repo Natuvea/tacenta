@@ -21,6 +21,16 @@ application context until the authority atomically commits both the successor
 that includes it and `admitted { revision }` in the invitation book. Revoked or
 expired invitations cannot receive further bootstrap control.
 
+For each successor control, the authority may use the usual current-or-successor
+member rule. It may also send that exact successor to a non-member observer only
+when its durable invitation book contains an unexpired `pending` or
+`accepted_pending_admission` record for the recipient in the same group, and the
+successor revision is no earlier than that record's source revision. This is a
+recipient authorization rule, not membership: the observer still obtains no
+application permission until a successor containing its complete member binding
+is durably accepted. The authority evaluates expiry at the same explicit logical
+time used for the related invitation transition.
+
 ## Considered
 
 - Add every invitee directly to the first roster it receives.
