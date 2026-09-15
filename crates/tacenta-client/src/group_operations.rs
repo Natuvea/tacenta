@@ -76,6 +76,28 @@ struct RosterCommitState<'a> {
     view: &'a mut RosterView,
     receiver: Option<&'a mut GroupReceiver>,
     provider: Option<(Vec<u8>, CryptoStateEffect)>,
+    control_outbox: Option<&'a mut ControlOutbox>,
+    prepared_control: Option<PreparedControl>,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedControl {
+    recipient: Member,
+    payload: Vec<u8>,
+    ciphertext: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AuthorityRosterControlCommit {
+    pub(crate) roster: RosterCommit,
+    pub(crate) handoff: ControlHandoff,
+}
+
+pub(crate) struct AuthorityControlState<'a> {
+    pub(crate) view: &'a mut RosterView,
+    pub(crate) receiver: &'a mut GroupReceiver,
+    pub(crate) logical_sends: &'a mut [LogicalSend],
+    pub(crate) outbox: &'a mut ControlOutbox,
 }
 
 /// The outcome data the live provider path supplies for one decrypted group
@@ -318,6 +340,68 @@ where
         provider_state,
     )
     .map_err(Into::into)
+}
+
+/// Prepares an authority's roster successor and commits its local membership
+/// effect, provider state, and exact recipient ciphertext in one snapshot.
+pub(crate) async fn prepare_authority_roster_control<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    state: AuthorityControlState<'_>,
+    authenticated_authority: &Member,
+    recipient_route: (&Member, &tacenta_relay::DeviceAddr),
+    successor: Roster,
+) -> Result<AuthorityRosterControlCommit, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let (recipient, route) = recipient_route;
+    if client.party.identity_key() != authenticated_authority.identity() {
+        return Err(GroupLiveError::Policy);
+    }
+    let preimage = successor.encode().map_err(|_| GroupLiveError::Policy)?;
+    let mut preflight = state.view.clone();
+    if preflight.accept_successor(
+        authenticated_authority,
+        successor.clone(),
+        roster_commitment(&preimage),
+    ) != RosterDisposition::Accepted
+    {
+        return Err(GroupLiveError::Policy);
+    }
+    let payload = GroupPayload::Roster(successor.clone())
+        .encode()
+        .map_err(|_| GroupLiveError::Policy)?;
+    let (ciphertext, provider_state) = client
+        .prepare_group_ciphertext(route, recipient.identity(), &payload)
+        .await
+        .map_err(|error| live_client_error(error.kind()))?;
+    let roster = commit_roster_transition(
+        store,
+        snapshot,
+        RosterCommitState {
+            view: &mut *state.view,
+            receiver: Some(&mut *state.receiver),
+            provider: Some((provider_state, CryptoStateEffect::Advanced)),
+            control_outbox: Some(&mut *state.outbox),
+            prepared_control: Some(PreparedControl {
+                recipient: recipient.clone(),
+                payload: payload.clone(),
+                ciphertext,
+            }),
+        },
+        authenticated_authority,
+        successor,
+        &mut *state.logical_sends,
+    )
+    .map_err(GroupLiveError::from)?;
+    let handoff = state
+        .outbox
+        .handoff(recipient, &payload)
+        .map_err(|_| GroupLiveError::Frozen)?;
+    Ok(AuthorityRosterControlCommit { roster, handoff })
 }
 
 /// Reserves and sends an already committed roster-control ciphertext. A
@@ -831,6 +915,8 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
                 view,
                 receiver: Some(receiver),
                 provider: Some((input.provider_state, input.provider_effect)),
+                control_outbox: None,
+                prepared_control: None,
             },
             &authenticated_peer,
             candidate,
@@ -875,6 +961,8 @@ pub(crate) fn commit_group_roster_plaintext<S: OperationStore>(
             view,
             receiver: Some(receiver),
             provider: Some((input.provider_state, input.provider_effect)),
+            control_outbox: None,
+            prepared_control: None,
         },
         &authenticated_authority,
         candidate,
@@ -923,6 +1011,8 @@ pub(crate) fn commit_roster_successor<S: OperationStore>(
             view,
             receiver: None,
             provider: None,
+            control_outbox: None,
+            prepared_control: None,
         },
         authenticated_authority,
         candidate,
@@ -949,6 +1039,8 @@ pub(crate) fn commit_roster_successor_with_receiver<S: OperationStore>(
             view,
             receiver: Some(receiver),
             provider: None,
+            control_outbox: None,
+            prepared_control: None,
         },
         authenticated_authority,
         candidate,
@@ -988,6 +1080,27 @@ fn commit_roster_transition<S: OperationStore>(
     let mut control_records = vec![encode_roster_record(&preimage, &commitment, disposition)?];
     if let Some((provider_state, _)) = &state.provider {
         candidate_snapshot.provider_state = provider_state.clone();
+    }
+    let mut candidate_control_outbox = state.control_outbox.as_deref().cloned();
+    if let Some(prepared) = &state.prepared_control {
+        if disposition != RosterDisposition::Accepted {
+            return Err(GroupOperationError::Policy);
+        }
+        let outbox = candidate_control_outbox
+            .as_mut()
+            .ok_or(GroupOperationError::Policy)?;
+        outbox
+            .record_prepared(
+                prepared.recipient.clone(),
+                prepared.payload.clone(),
+                prepared.ciphertext.clone(),
+            )
+            .map_err(|_| GroupOperationError::Policy)?;
+        control_records.push(encode_control_outbox_record(
+            &outbox
+                .encode_state()
+                .map_err(|_| GroupOperationError::Policy)?,
+        )?);
     }
     if let Some((_, provider_effect)) = state.provider {
         control_records.push(encode_control_effect_record(provider_effect));
@@ -1037,6 +1150,10 @@ fn commit_roster_transition<S: OperationStore>(
     logical_sends.clone_from_slice(&candidate_sends);
     if let (Some(receiver), Some(candidate_receiver)) = (state.receiver, candidate_receiver) {
         *receiver = candidate_receiver;
+    }
+    if let (Some(outbox), Some(candidate_outbox)) = (state.control_outbox, candidate_control_outbox)
+    {
+        *outbox = candidate_outbox;
     }
     Ok(RosterCommit {
         disposition,
@@ -1363,15 +1480,15 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 mod tests {
     use super::{
         ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,
-        GroupReceiveInput, MAX_GROUP_CONTROL_RECORDS, RosterCommit, bind_prepared_ciphertext,
-        commit_group_control_outbox_transition, commit_group_invitation_transition,
-        commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
-        commit_logical_intent, commit_outbox_handoff_reservation,
+        GroupReceiveInput, MAX_GROUP_CONTROL_RECORDS, PreparedControl, RosterCommit,
+        RosterCommitState, bind_prepared_ciphertext, commit_group_control_outbox_transition,
+        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
+        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
-        commit_roster_successor, commit_roster_successor_with_receiver, live_client_error,
-        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
-        recover_group_receiver, recover_group_roster_view,
+        commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
+        live_client_error, recover_group_control_outbox, recover_group_invitation_book,
+        recover_group_outbox, recover_group_receiver, recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -1887,6 +2004,58 @@ mod tests {
         assert_eq!(handoff.ciphertext, vec![7, 8]);
         assert_eq!(snapshot.provider_state, vec![4, 5, 6]);
         assert_eq!(recover_group_control_outbox(&snapshot), Ok(outbox));
+    }
+
+    #[test]
+    fn authority_roster_control_checkpoint_commits_local_roster_and_handoff_together() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+        let first = roster(1, *view.digest(), vec![alice(), bob()]);
+        let first_commitment = roster_commitment(&first.encode().unwrap());
+        assert_eq!(
+            view.accept_successor(&alice(), first.clone(), first_commitment),
+            RosterDisposition::Accepted
+        );
+        let mut receiver = GroupReceiver::new(first, first_commitment, alice());
+        let successor = roster(2, *view.digest(), vec![alice(), bob()]);
+        let payload = GroupPayload::Roster(successor.clone()).encode().unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = ControlOutbox::default();
+
+        let commit = commit_roster_transition(
+            &mut store,
+            &mut snapshot,
+            RosterCommitState {
+                view: &mut view,
+                receiver: Some(&mut receiver),
+                provider: Some((vec![4, 5, 6], CryptoStateEffect::Advanced)),
+                control_outbox: Some(&mut outbox),
+                prepared_control: Some(PreparedControl {
+                    recipient: bob(),
+                    payload: payload.clone(),
+                    ciphertext: vec![7, 8, 9],
+                }),
+            },
+            &alice(),
+            successor,
+            &mut [],
+        )
+        .unwrap();
+
+        assert_eq!(commit.disposition, RosterDisposition::Accepted);
+        assert_eq!(snapshot.provider_state, vec![4, 5, 6]);
+        assert_eq!(recover_group_roster_view(&snapshot, &alice()), Ok(view));
+        assert_eq!(recover_group_receiver(&snapshot), Ok(receiver));
+        assert_eq!(recover_group_control_outbox(&snapshot), Ok(outbox.clone()));
+        assert_eq!(
+            outbox.handoff(&bob(), &payload).unwrap().ciphertext,
+            vec![7, 8, 9]
+        );
     }
 
     #[test]
