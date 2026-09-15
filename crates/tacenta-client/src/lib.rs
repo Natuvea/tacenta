@@ -322,10 +322,12 @@ mod tests {
     use super::*;
     use crate::group_control_outbox::Outbox as ControlOutbox;
     use crate::group_operations::{
-        AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput, commit_group_payload,
-        commit_group_plaintext, commit_logical_intent, commit_outbox_handoff_reservation,
-        dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
-        prepare_authority_roster_control, prepare_installed_roster_control,
+        AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput,
+        commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
+        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
+        commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
+        dispatch_outbox_group_handoff, prepare_authority_roster_control,
+        prepare_installed_roster_control, prepare_outbound_invitation_control,
         prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_outbox,
         recover_group_receiver, recover_group_roster_view,
     };
@@ -333,8 +335,9 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
-        LogicalSend, Member, OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition,
-        ReceiveRefusal, Roster, RosterDisposition, RosterView,
+        Invitation, InvitationAcceptance, InvitationBook, InvitationBootstrap, InvitationId,
+        InvitationStatus, LogicalSend, Member, OutboxDisposition, POLICY_VERSION_V1,
+        ReceiveDisposition, ReceiveRefusal, Roster, RosterDisposition, RosterView,
     };
     use tacenta_server::{Config as ServerConfig, Server};
 
@@ -800,6 +803,167 @@ mod tests {
             Ok(GroupPayloadDisposition::Application(
                 ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
             ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_invitation_bootstrap_and_acceptance_use_durable_control_handoffs() {
+        let (directory, relay) = start_server().await;
+        let mut alice = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let mut bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let alice_route = alice.address().clone();
+        let bob_route = bob.address().clone();
+        let alice_member = Member::new(alice.party.identity_key(), vec![1]);
+        let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let genesis = Roster::new(
+            group_id,
+            0,
+            [0; DIGEST_LEN],
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice_member.clone()],
+        )
+        .unwrap();
+        let genesis_digest =
+            tacenta_core::crypto::groups::roster_commitment(&genesis.encode().unwrap());
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob_member.clone(),
+            0,
+            genesis_digest,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut authority_book = InvitationBook::new(group_id);
+        let mut authority_store = GroupStore { snapshot: None };
+        let mut authority_snapshot = OperationSnapshot::empty(0);
+        commit_group_invitation_transition(
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_book,
+            |book| {
+                book.create(
+                    &alice_member,
+                    &alice_member,
+                    &[alice_member.clone()],
+                    invitation.clone(),
+                    0,
+                )
+                .map(|_| ())
+            },
+        )
+        .unwrap();
+        let bootstrap = GroupPayload::InvitationBootstrap(
+            InvitationBootstrap::new(invitation, genesis.clone()).unwrap(),
+        );
+        let mut authority_outbox = ControlOutbox::default();
+        let bootstrap_handoff = prepare_outbound_invitation_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &bob_route,
+            bootstrap,
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &bootstrap_handoff.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+
+        let inbound = bob.receive().await.unwrap();
+        let mut bob_book = InvitationBook::new(group_id);
+        let mut bob_store = GroupStore { snapshot: None };
+        let mut bob_snapshot = OperationSnapshot::empty(0);
+        let bootstrap = commit_group_invitation_bootstrap(
+            &mut bob_store,
+            &mut bob_snapshot,
+            &mut bob_book,
+            &bob_member,
+            1,
+            GroupReceiveInput {
+                plaintext: &inbound[0].plaintext,
+                authenticated_identity: alice_member.identity(),
+                peer: &peer_address(&alice_route).unwrap(),
+                provider_state: bob.export_state().await.unwrap(),
+                provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+            },
+        )
+        .unwrap();
+        assert_eq!(bootstrap.source_roster, genesis);
+        assert_eq!(bob_book.records()[0].status, InvitationStatus::Pending);
+
+        let acceptance = GroupPayload::InvitationAcceptance(
+            InvitationAcceptance::new(group_id, InvitationId::new([7; 16]), 0, genesis_digest)
+                .unwrap(),
+        );
+        let mut bob_outbox = ControlOutbox::default();
+        let acceptance_handoff = prepare_outbound_invitation_control(
+            &mut bob,
+            &mut bob_store,
+            &mut bob_snapshot,
+            &mut bob_outbox,
+            &alice_member,
+            &alice_route,
+            acceptance,
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut bob,
+            &mut bob_store,
+            &mut bob_snapshot,
+            &mut bob_outbox,
+            &alice_member,
+            &acceptance_handoff.payload,
+            &alice_route,
+        )
+        .await
+        .unwrap();
+
+        let inbound = alice.receive().await.unwrap();
+        assert_eq!(
+            commit_group_invitation_acceptance(
+                &mut authority_store,
+                &mut authority_snapshot,
+                &mut authority_book,
+                2,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: bob_member.identity(),
+                    peer: &peer_address(&bob_route).unwrap(),
+                    provider_state: alice.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(InvitationStatus::AcceptedPendingAdmission)
         );
     }
 
