@@ -87,6 +87,18 @@ struct PreparedControl {
     ciphertext: Vec<u8>,
 }
 
+fn recipient_can_receive_roster_control(
+    view: &RosterView,
+    successor: &Roster,
+    recipient: &Member,
+) -> bool {
+    view.roster()
+        .members
+        .iter()
+        .any(|member| member == recipient)
+        || successor.members.iter().any(|member| member == recipient)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AuthorityRosterControlCommit {
     pub(crate) roster: RosterCommit,
@@ -359,6 +371,9 @@ where
 {
     let (recipient, route) = recipient_route;
     if client.party.identity_key() != authenticated_authority.identity() {
+        return Err(GroupLiveError::Policy);
+    }
+    if !recipient_can_receive_roster_control(state.view, &successor, recipient) {
         return Err(GroupLiveError::Policy);
     }
     let preimage = successor.encode().map_err(|_| GroupLiveError::Policy)?;
@@ -1487,8 +1502,9 @@ mod tests {
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
-        live_client_error, recover_group_control_outbox, recover_group_invitation_book,
-        recover_group_outbox, recover_group_receiver, recover_group_roster_view,
+        live_client_error, recipient_can_receive_roster_control, recover_group_control_outbox,
+        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -2056,6 +2072,39 @@ mod tests {
             outbox.handoff(&bob(), &payload).unwrap().ciphertext,
             vec![7, 8, 9]
         );
+    }
+
+    #[test]
+    fn roster_controls_are_only_prepared_for_current_or_successor_members() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+        let admission = roster(1, *view.digest(), vec![alice(), bob()]);
+        let admission_commitment = roster_commitment(&admission.encode().unwrap());
+
+        assert!(recipient_can_receive_roster_control(
+            &view,
+            &admission,
+            &bob()
+        ));
+        let stranger = Member::new(b"stranger-key".to_vec(), vec![1]);
+        assert!(!recipient_can_receive_roster_control(
+            &view, &admission, &stranger
+        ));
+
+        assert_eq!(
+            view.accept_successor(&alice(), admission, admission_commitment),
+            RosterDisposition::Accepted
+        );
+        let removal = roster(2, *view.digest(), vec![alice()]);
+        assert!(recipient_can_receive_roster_control(
+            &view,
+            &removal,
+            &bob()
+        ));
+        assert!(!recipient_can_receive_roster_control(
+            &view, &removal, &stranger
+        ));
     }
 
     #[test]
