@@ -45,6 +45,13 @@ impl From<GroupOperationError> for GroupLiveError {
     }
 }
 
+fn live_client_error(kind: ErrorKind) -> GroupLiveError {
+    match kind {
+        ErrorKind::Network | ErrorKind::RateLimited => GroupLiveError::Transport,
+        _ => GroupLiveError::Frozen,
+    }
+}
+
 /// The durable result of a roster transition and its deferred-item replay.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RosterCommit {
@@ -276,10 +283,7 @@ where
     let (ciphertext, provider_state) = client
         .prepare_group_ciphertext(route, recipient.identity(), &context)
         .await
-        .map_err(|error| match error.kind() {
-            ErrorKind::Network | ErrorKind::RateLimited => GroupLiveError::Transport,
-            _ => GroupLiveError::Frozen,
-        })?;
+        .map_err(|error| live_client_error(error.kind()))?;
     commit_outbox_prepared_ciphertext(
         store,
         snapshot,
@@ -468,7 +472,7 @@ where
     client
         .dispatch_group_ciphertext(route, ciphertext)
         .await
-        .map_err(|_| GroupLiveError::Transport)?;
+        .map_err(|error| live_client_error(error.kind()))?;
     commit_outbox_relay_acceptance(store, snapshot, outbox, id, recipient).map_err(Into::into)
 }
 
@@ -929,13 +933,14 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext, commit_group_plaintext,
-        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
-        commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
-        commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver, recover_group_outbox, recover_group_receiver,
-        recover_group_roster_view,
+        GroupLiveError, GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext,
+        commit_group_plaintext, commit_handoff_reservation, commit_logical_intent,
+        commit_outbox_handoff_reservation, commit_outbox_prepared_ciphertext,
+        commit_outbox_relay_acceptance, commit_prepared_ciphertext, commit_receive_disposition,
+        commit_roster_successor, commit_roster_successor_with_receiver, live_client_error,
+        recover_group_outbox, recover_group_receiver, recover_group_roster_view,
     };
+    use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
     use crate::operation_store::FileOperationStore;
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
@@ -1027,6 +1032,26 @@ mod tests {
             Some(tacenta_core::crypto::groups::payload_commitment(&context))
         );
         assert_eq!(progress.ciphertext, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn only_transient_live_client_errors_leave_a_group_handoff_retryable() {
+        assert_eq!(
+            live_client_error(ErrorKind::Network),
+            GroupLiveError::Transport
+        );
+        assert_eq!(
+            live_client_error(ErrorKind::RateLimited),
+            GroupLiveError::Transport
+        );
+        assert_eq!(
+            live_client_error(ErrorKind::NotFound),
+            GroupLiveError::Frozen
+        );
+        assert_eq!(
+            live_client_error(ErrorKind::InvalidArgument),
+            GroupLiveError::Frozen
+        );
     }
 
     #[test]
