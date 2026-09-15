@@ -83,11 +83,27 @@ impl Outbox {
         }
         if handoff.attempts_reserved == MAX_ATTEMPTS {
             handoff.disposition = Disposition::ExhaustedUnknown;
-            return Err(GroupError::RetryExhausted);
+            return Ok(handoff.clone());
         }
         handoff.attempts_reserved += 1;
         handoff.disposition = Disposition::HandedOff;
         Ok(handoff.clone())
+    }
+
+    pub(crate) fn handoff(
+        &self,
+        recipient: &Member,
+        payload: &[u8],
+    ) -> Result<Handoff, GroupError> {
+        let commitment = payload_commitment(payload);
+        self.handoffs
+            .iter()
+            .find(|handoff| {
+                handoff.recipient == *recipient
+                    && payload_commitment(&handoff.payload) == commitment
+            })
+            .cloned()
+            .ok_or(GroupError::Malformed)
     }
 
     pub(crate) fn accept(&mut self, recipient: &Member, payload: &[u8]) -> Result<(), GroupError> {

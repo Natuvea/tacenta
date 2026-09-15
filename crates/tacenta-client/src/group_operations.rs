@@ -17,7 +17,9 @@ use tacenta_group::{
     RosterRefusal, RosterView,
 };
 
-use crate::group_control_outbox::Outbox as ControlOutbox;
+use crate::group_control_outbox::{
+    Disposition as ControlDisposition, Handoff as ControlHandoff, Outbox as ControlOutbox,
+};
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
 use crate::{Client, ErrorKind};
 
@@ -244,6 +246,113 @@ where
     *snapshot = candidate_snapshot;
     *outbox = candidate_outbox;
     Ok(result)
+}
+
+fn commit_prepared_control_handoff<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut ControlOutbox,
+    recipient: Member,
+    payload: Vec<u8>,
+    ciphertext: Vec<u8>,
+    provider_state: Vec<u8>,
+) -> Result<ControlHandoff, GroupOperationError> {
+    let mut candidate_outbox = outbox.clone();
+    candidate_outbox
+        .record_prepared(recipient.clone(), payload.clone(), ciphertext)
+        .map_err(|_| GroupOperationError::Policy)?;
+    let state = candidate_outbox
+        .encode_state()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let handoff = candidate_outbox
+        .handoff(&recipient, &payload)
+        .map_err(|_| GroupOperationError::Policy)?;
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot.provider_state = provider_state;
+    append_group_control_records(
+        &mut candidate_snapshot,
+        [encode_control_outbox_record(&state)?],
+    );
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *outbox = candidate_outbox;
+    Ok(handoff)
+}
+
+/// Encrypts one canonical roster successor for an authenticated recipient and
+/// persists its exact ciphertext with the advanced provider state before any
+/// relay request can occur.
+pub(crate) async fn prepare_outbound_roster_control<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut ControlOutbox,
+    recipient: &Member,
+    route: &tacenta_relay::DeviceAddr,
+    successor: Roster,
+) -> Result<ControlHandoff, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let payload = GroupPayload::Roster(successor)
+        .encode()
+        .map_err(|_| GroupLiveError::Policy)?;
+    let (ciphertext, provider_state) = client
+        .prepare_group_ciphertext(route, recipient.identity(), &payload)
+        .await
+        .map_err(|error| live_client_error(error.kind()))?;
+    commit_prepared_control_handoff(
+        store,
+        snapshot,
+        outbox,
+        recipient.clone(),
+        payload,
+        ciphertext,
+        provider_state,
+    )
+    .map_err(Into::into)
+}
+
+/// Reserves and sends an already committed roster-control ciphertext. A
+/// transport failure keeps the reserved exact bytes in the durable checkpoint.
+pub(crate) async fn dispatch_outbound_roster_control<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut ControlOutbox,
+    recipient: &Member,
+    payload: &[u8],
+    route: &tacenta_relay::DeviceAddr,
+) -> Result<ControlHandoff, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let handoff = commit_group_control_outbox_transition(store, snapshot, outbox, |candidate| {
+        candidate.reserve(recipient, payload)
+    })
+    .map_err(GroupLiveError::from)?;
+    if handoff.disposition == ControlDisposition::ExhaustedUnknown {
+        return Err(GroupLiveError::Frozen);
+    }
+    client
+        .dispatch_group_ciphertext(route, &handoff.ciphertext)
+        .await
+        .map_err(|error| live_client_error(error.kind()))?;
+    commit_group_control_outbox_transition(store, snapshot, outbox, |candidate| {
+        candidate.accept(recipient, payload)
+    })
+    .map_err(GroupLiveError::from)?;
+    outbox
+        .handoff(recipient, payload)
+        .map_err(|_| GroupLiveError::Policy)
 }
 
 /// Applies an invitation lifecycle operation to a cloned book and publishes
@@ -1259,10 +1368,10 @@ mod tests {
         commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
         commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
-        commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver, live_client_error, recover_group_control_outbox,
-        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
-        recover_group_roster_view,
+        commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
+        commit_roster_successor, commit_roster_successor_with_receiver, live_client_error,
+        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
+        recover_group_receiver, recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -1751,6 +1860,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reserved.ciphertext, vec![7, 8]);
+        assert_eq!(recover_group_control_outbox(&snapshot), Ok(outbox));
+    }
+
+    #[test]
+    fn prepared_control_commits_provider_state_with_exact_ciphertext() {
+        let payload = GroupPayload::Roster(roster(1, [0; DIGEST_LEN], vec![alice(), bob()]))
+            .encode()
+            .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = ControlOutbox::default();
+        let handoff = commit_prepared_control_handoff(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            bob(),
+            payload,
+            vec![7, 8],
+            vec![4, 5, 6],
+        )
+        .unwrap();
+        assert_eq!(handoff.ciphertext, vec![7, 8]);
+        assert_eq!(snapshot.provider_state, vec![4, 5, 6]);
         assert_eq!(recover_group_control_outbox(&snapshot), Ok(outbox));
     }
 
