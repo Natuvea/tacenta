@@ -320,10 +320,12 @@ fn take_u32(bytes: &mut &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::group_control_outbox::Outbox as ControlOutbox;
     use crate::group_operations::{
-        GroupPayloadDisposition, GroupReceiveInput, commit_group_payload, commit_group_plaintext,
-        commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbox_group_handoff,
-        prepare_outbox_group_recipient, recover_group_outbox,
+        AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput, commit_group_payload,
+        commit_group_plaintext, commit_logical_intent, commit_outbox_handoff_reservation,
+        dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
+        prepare_authority_roster_control, prepare_outbox_group_recipient, recover_group_outbox,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
@@ -434,6 +436,16 @@ mod tests {
         let mut view =
             RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
         let mut receiver = GroupReceiver::new(genesis, genesis_digest, bob_member.clone());
+        let mut authority_view = view.clone();
+        let mut authority_receiver = GroupReceiver::new(
+            authority_view.roster().clone(),
+            *authority_view.digest(),
+            alice_member.clone(),
+        );
+        let mut authority_sends = Vec::new();
+        let mut authority_outbox = ControlOutbox::default();
+        let mut authority_store = GroupStore { snapshot: None };
+        let mut authority_snapshot = OperationSnapshot::empty(0);
         let mut store = GroupStore { snapshot: None };
         let mut snapshot = OperationSnapshot::empty(0);
         let mut members = vec![alice_member.clone(), bob_member.clone()];
@@ -452,11 +464,34 @@ mod tests {
             members,
         )
         .unwrap();
-        let r1_payload = GroupPayload::Roster(r1.clone()).encode().unwrap();
-        alice
-            .send_as(&bob_route, &r1_payload, Kind::Group)
-            .await
-            .unwrap();
+        let r1_control = prepare_authority_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityControlState {
+                view: &mut authority_view,
+                receiver: &mut authority_receiver,
+                logical_sends: &mut authority_sends,
+                outbox: &mut authority_outbox,
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+            r1.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r1_control.roster.disposition, RosterDisposition::Accepted);
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &r1_control.handoff.recipient,
+            &r1_control.handoff.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
         let inbound = bob.receive().await.unwrap();
         assert_eq!(inbound[0].kind, MessageKind::Group);
         assert_eq!(
@@ -530,11 +565,34 @@ mod tests {
             vec![alice_member.clone()],
         )
         .unwrap();
-        let r2_payload = GroupPayload::Roster(r2.clone()).encode().unwrap();
-        alice
-            .send_as(&bob_route, &r2_payload, Kind::Group)
-            .await
-            .unwrap();
+        let r2_control = prepare_authority_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityControlState {
+                view: &mut authority_view,
+                receiver: &mut authority_receiver,
+                logical_sends: &mut authority_sends,
+                outbox: &mut authority_outbox,
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+            r2.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r2_control.roster.disposition, RosterDisposition::Accepted);
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &r2_control.handoff.recipient,
+            &r2_control.handoff.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
         let inbound = bob.receive().await.unwrap();
         assert_eq!(
             commit_group_payload(
