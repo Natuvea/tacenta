@@ -167,6 +167,14 @@ pub(crate) struct InstalledControlState<'a> {
     pub(crate) control_now: u64,
 }
 
+/// Authority-owned state needed to durably revoke one unadmitted invitation
+/// before preparing its exact pairwise control ciphertext.
+pub(crate) struct AuthorityInvitationState<'a> {
+    pub(crate) book: &'a mut InvitationBook,
+    pub(crate) outbox: &'a mut ControlOutbox,
+    pub(crate) now: u64,
+}
+
 /// The outcome data the live provider path supplies for one decrypted group
 /// plaintext. The provider identity and crypto address are kept separate from
 /// relay routing values until the adapter binds them to a `Member`.
@@ -412,6 +420,57 @@ where
         provider_state,
     )
     .map_err(Into::into)
+}
+
+/// Persists the authority's terminal revocation before it can prepare a
+/// recipient-specific control handoff. A failed preparation leaves the durable
+/// revocation in place and sends nothing.
+pub(crate) async fn prepare_authority_invitation_revocation<P, S>(
+    client: &mut Client<P>,
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    state: AuthorityInvitationState<'_>,
+    authority: &Member,
+    recipient_route: (&Member, &tacenta_relay::DeviceAddr),
+    invitation_id: InvitationId,
+) -> Result<ControlHandoff, GroupLiveError>
+where
+    P: tacenta_core::crypto::CryptoProvider,
+    S: OperationStore,
+{
+    let (recipient, route) = recipient_route;
+    if client.party.identity_key() != authority.identity() {
+        return Err(GroupLiveError::Policy);
+    }
+    commit_group_invitation_transition(store, snapshot, state.book, |book| {
+        book.revoke(invitation_id, authority, authority, state.now)
+            .map(|_| ())
+    })
+    .map_err(GroupLiveError::from)?;
+    let invitation = state
+        .book
+        .records()
+        .iter()
+        .find(|record| record.id == invitation_id && &record.target == recipient)
+        .ok_or(GroupLiveError::Policy)?;
+    prepare_outbound_invitation_control(
+        client,
+        store,
+        snapshot,
+        state.outbox,
+        recipient,
+        route,
+        GroupPayload::InvitationRevocation(
+            tacenta_group::InvitationRevocation::new(
+                invitation.group_id,
+                invitation.id,
+                invitation.source_revision,
+                invitation.source_roster_digest,
+            )
+            .map_err(|_| GroupLiveError::Policy)?,
+        ),
+    )
+    .await
 }
 
 /// Encrypts one canonical roster successor for an authenticated recipient and
