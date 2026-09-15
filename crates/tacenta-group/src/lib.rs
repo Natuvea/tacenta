@@ -9,11 +9,13 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 mod invitation;
+mod payload;
 mod receive;
 mod roster_view;
 mod send;
 
 pub use invitation::{Invitation, InvitationBook, InvitationId, InvitationStatus};
+pub use payload::GroupPayload;
 pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};
 pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
 pub use send::{
