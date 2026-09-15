@@ -17,6 +17,7 @@ use tacenta_group::{
     RosterRefusal, RosterView,
 };
 
+use crate::group_control_outbox::Outbox as ControlOutbox;
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
 use crate::{Client, ErrorKind};
 
@@ -194,6 +195,55 @@ pub(crate) fn recover_group_invitation_book(
     };
     InvitationBook::decode_state(decode_invitation_book_record(record)?, group_id)
         .map_err(|_| GroupOperationError::Policy)
+}
+
+/// Restores the latest exact-ciphertext roster-control handoff checkpoint.
+pub(crate) fn recover_group_control_outbox(
+    snapshot: &OperationSnapshot,
+) -> Result<ControlOutbox, GroupOperationError> {
+    let Some(record) = snapshot
+        .group_controls
+        .iter()
+        .rev()
+        .find(|record| record.starts_with(b"TCGO"))
+    else {
+        return Ok(ControlOutbox::default());
+    };
+    ControlOutbox::decode_state(decode_control_outbox_record(record)?)
+        .map_err(|_| GroupOperationError::Policy)
+}
+
+/// Publishes one bounded roster-control handoff transition before exposing its
+/// prepared ciphertext, retry reservation, or relay-acceptance result.
+pub(crate) fn commit_group_control_outbox_transition<S, T>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    outbox: &mut ControlOutbox,
+    transition: impl FnOnce(&mut ControlOutbox) -> Result<T, GroupError>,
+) -> Result<T, GroupOperationError>
+where
+    S: OperationStore,
+{
+    let mut candidate_outbox = outbox.clone();
+    let result = transition(&mut candidate_outbox).map_err(|_| GroupOperationError::Policy)?;
+    let state = candidate_outbox
+        .encode_state()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    append_group_control_records(
+        &mut candidate_snapshot,
+        [encode_control_outbox_record(&state)?],
+    );
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *outbox = candidate_outbox;
+    Ok(result)
 }
 
 /// Applies an invitation lifecycle operation to a cloned book and publishes
@@ -919,12 +969,18 @@ fn append_group_control_records(
             .group_controls
             .iter()
             .rposition(|record| record.starts_with(b"TCGB"));
+        let latest_control_outbox = snapshot
+            .group_controls
+            .iter()
+            .rposition(|record| record.starts_with(b"TCGO"));
         let eviction = snapshot
             .group_controls
             .iter()
             .enumerate()
             .find_map(|(index, _)| {
-                (Some(index) != latest_roster_view && Some(index) != latest_invitation_book)
+                (Some(index) != latest_roster_view
+                    && Some(index) != latest_invitation_book
+                    && Some(index) != latest_control_outbox)
                     .then_some(index)
             })
             .expect("the retained checkpoints fit inside the control record bound");
@@ -1149,6 +1205,33 @@ fn decode_invitation_book_record(record: &[u8]) -> Result<&[u8], GroupOperationE
     Ok(state)
 }
 
+fn encode_control_outbox_record(state: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
+    let length = u32::try_from(state.len()).map_err(|_| GroupOperationError::Policy)?;
+    let mut record = Vec::with_capacity(8 + state.len());
+    record.extend_from_slice(b"TCGO");
+    record.extend_from_slice(&length.to_be_bytes());
+    record.extend_from_slice(state);
+    Ok(record)
+}
+
+fn decode_control_outbox_record(record: &[u8]) -> Result<&[u8], GroupOperationError> {
+    if !record.starts_with(b"TCGO") {
+        return Err(GroupOperationError::Policy);
+    }
+    let bytes = record.get(4..).ok_or(GroupOperationError::Policy)?;
+    let (length, state) = bytes
+        .split_at_checked(4)
+        .ok_or(GroupOperationError::Policy)?;
+    let length = usize::try_from(u32::from_be_bytes(
+        length.try_into().map_err(|_| GroupOperationError::Policy)?,
+    ))
+    .map_err(|_| GroupOperationError::Policy)?;
+    if state.len() != length {
+        return Err(GroupOperationError::Policy);
+    }
+    Ok(state)
+}
+
 fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError> {
     if !record.starts_with(b"TCGV") {
         return Err(GroupOperationError::Policy);
@@ -1170,14 +1253,16 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupLiveError, GroupOperationError, GroupPayloadDisposition, GroupReceiveInput,
-        MAX_GROUP_CONTROL_RECORDS, RosterCommit, bind_prepared_ciphertext,
-        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
-        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
+        ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,
+        GroupReceiveInput, MAX_GROUP_CONTROL_RECORDS, RosterCommit, bind_prepared_ciphertext,
+        commit_group_control_outbox_transition, commit_group_invitation_transition,
+        commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
+        commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver, live_client_error, recover_group_invitation_book,
-        recover_group_outbox, recover_group_receiver, recover_group_roster_view,
+        commit_roster_successor_with_receiver, live_client_error, recover_group_control_outbox,
+        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -1638,6 +1723,35 @@ mod tests {
         );
         assert!(book.records().is_empty());
         assert_eq!(snapshot, before_snapshot);
+    }
+
+    #[test]
+    fn control_handoff_checkpoint_recovers_exact_ciphertext_after_reservation() {
+        let payload = GroupPayload::Roster(roster(1, [0; DIGEST_LEN], vec![alice(), bob()]))
+            .encode()
+            .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = ControlOutbox::default();
+        commit_group_control_outbox_transition(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            |candidate| candidate.record_prepared(bob(), payload.clone(), vec![7, 8]),
+        )
+        .unwrap();
+        let reserved = commit_group_control_outbox_transition(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            |candidate| candidate.reserve(&bob(), &payload),
+        )
+        .unwrap();
+        assert_eq!(reserved.ciphertext, vec![7, 8]);
+        assert_eq!(recover_group_control_outbox(&snapshot), Ok(outbox));
     }
 
     #[test]
