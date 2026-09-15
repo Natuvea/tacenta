@@ -322,7 +322,7 @@ mod tests {
     use super::*;
     use crate::group_control_outbox::Outbox as ControlOutbox;
     use crate::group_operations::{
-        AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput,
+        AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput, InvitationAdmission,
         commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
         commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
         commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
@@ -982,6 +982,94 @@ mod tests {
                 },
             ),
             Ok(InvitationStatus::AcceptedPendingAdmission)
+        );
+
+        let mut authority_view =
+            RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
+        let mut authority_receiver =
+            GroupReceiver::new(genesis.clone(), genesis_digest, alice_member.clone());
+        let mut authority_sends = Vec::new();
+        let mut admitted_members = vec![alice_member.clone(), bob_member.clone()];
+        admitted_members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let admitted_roster = Roster::new(
+            group_id,
+            1,
+            genesis_digest,
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            admitted_members,
+        )
+        .unwrap();
+        let admission = prepare_authority_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityControlState {
+                view: &mut authority_view,
+                receiver: &mut authority_receiver,
+                logical_sends: &mut authority_sends,
+                outbox: &mut authority_outbox,
+                invitation_book: Some(&mut authority_book),
+                admission: Some(InvitationAdmission {
+                    id: InvitationId::new([7; 16]),
+                    target: bob_member.clone(),
+                    now: 3,
+                }),
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+            admitted_roster,
+        )
+        .await
+        .unwrap();
+        assert_eq!(admission.roster.disposition, RosterDisposition::Accepted);
+        assert_eq!(
+            authority_book.records()[0].status,
+            InvitationStatus::Admitted { revision: 1 }
+        );
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &admission.handoff.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+
+        let mut bob_view =
+            RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
+        let mut bob_receiver = GroupReceiver::new(genesis, genesis_digest, bob_member.clone());
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(
+            commit_group_payload(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_view,
+                &mut bob_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(
+                crate::group_operations::RosterCommit {
+                    disposition: RosterDisposition::Accepted,
+                    revalidated: Vec::new(),
+                }
+            ))
         );
     }
 
