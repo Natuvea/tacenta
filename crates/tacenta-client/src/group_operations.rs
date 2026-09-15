@@ -797,6 +797,78 @@ pub(crate) fn commit_group_invitation_acceptance<S: OperationStore>(
     }
 }
 
+/// Persists an authenticated authority revocation before exposing its terminal
+/// invitation disposition to the target-side coordinator.
+pub(crate) fn commit_group_invitation_revocation<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    book: &mut InvitationBook,
+    local_target: &Member,
+    source_authority: &Member,
+    now: u64,
+    input: GroupReceiveInput<'_>,
+) -> Result<InvitationStatus, GroupOperationError> {
+    let revocation = match GroupPayload::decode(input.plaintext) {
+        Ok(GroupPayload::InvitationRevocation(revocation)) => revocation,
+        _ => return commit_invalid_invitation_control(store, snapshot, input),
+    };
+    let authenticated_authority = Member::new(
+        input.authenticated_identity.to_vec(),
+        vec![input.peer.device],
+    );
+    let source_matches = book.records().iter().any(|record| {
+        record.id == revocation.invitation_id
+            && record.group_id == revocation.group_id
+            && &record.target == local_target
+            && record.source_revision == revocation.source_revision
+            && record.source_roster_digest == revocation.source_roster_digest
+    });
+    if revocation.group_id != book.group_id()
+        || &authenticated_authority != source_authority
+        || !source_matches
+    {
+        return commit_invalid_invitation_control(store, snapshot, input);
+    }
+    let result = commit_group_invitation_transition_with_provider(
+        store,
+        snapshot,
+        book,
+        Some((input.provider_state.clone(), input.provider_effect)),
+        |candidate| {
+            candidate
+                .revoke(
+                    revocation.invitation_id,
+                    source_authority,
+                    source_authority,
+                    now,
+                )
+                .map(|record| record.status)
+        },
+    );
+    match result {
+        Ok(status) => Ok(status),
+        Err(GroupOperationError::Policy) => {
+            commit_invalid_invitation_control(store, snapshot, input)
+        }
+        Err(GroupOperationError::Frozen) => Err(GroupOperationError::Frozen),
+    }
+}
+
+fn commit_invalid_invitation_control<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    input: GroupReceiveInput<'_>,
+) -> Result<InvitationStatus, GroupOperationError> {
+    commit_malformed_group_payload(
+        store,
+        snapshot,
+        input.plaintext,
+        input.provider_state,
+        input.provider_effect,
+    )?;
+    Err(GroupOperationError::Policy)
+}
+
 /// Records a prepared ciphertext and its core-bound application context in the
 /// combined operation snapshot. The logical record changes only after the
 /// store reports `Committed`; no transport caller receives ciphertext from a
