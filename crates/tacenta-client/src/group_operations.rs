@@ -12,9 +12,9 @@ use tacenta_core::crypto::{
 };
 use tacenta_group::{
     ApplicationContext, Error as GroupError, GroupOutbox, GroupPayload, GroupReceiver,
-    InvitationBook, InvitationBootstrap, InvitationStatus, LogicalMessageId, LogicalSend, Member,
-    OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress, RevalidatedReceive,
-    Roster, RosterDisposition, RosterRefusal, RosterView,
+    InvitationBook, InvitationBootstrap, InvitationId, InvitationStatus, LogicalMessageId,
+    LogicalSend, Member, OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress,
+    RevalidatedReceive, Roster, RosterDisposition, RosterRefusal, RosterView,
 };
 
 use crate::group_control_outbox::{
@@ -78,6 +78,8 @@ struct RosterCommitState<'a> {
     provider: Option<(Vec<u8>, CryptoStateEffect)>,
     control_outbox: Option<&'a mut ControlOutbox>,
     prepared_control: Option<PreparedControl>,
+    invitation_book: Option<&'a mut InvitationBook>,
+    admission: Option<InvitationAdmission>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +87,13 @@ struct PreparedControl {
     recipient: Member,
     payload: Vec<u8>,
     ciphertext: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InvitationAdmission {
+    pub(crate) id: InvitationId,
+    pub(crate) target: Member,
+    pub(crate) now: u64,
 }
 
 fn recipient_can_receive_roster_control(
@@ -123,6 +132,8 @@ pub(crate) struct AuthorityControlState<'a> {
     pub(crate) receiver: &'a mut GroupReceiver,
     pub(crate) logical_sends: &'a mut [LogicalSend],
     pub(crate) outbox: &'a mut ControlOutbox,
+    pub(crate) invitation_book: Option<&'a mut InvitationBook>,
+    pub(crate) admission: Option<InvitationAdmission>,
 }
 
 /// The outcome data the live provider path supplies for one decrypted group
@@ -419,6 +430,8 @@ where
                 payload: payload.clone(),
                 ciphertext,
             }),
+            invitation_book: state.invitation_book.map(|book| &mut *book),
+            admission: state.admission,
         },
         authenticated_authority,
         successor,
@@ -1146,6 +1159,8 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
                 provider: Some((input.provider_state, input.provider_effect)),
                 control_outbox: None,
                 prepared_control: None,
+                invitation_book: None,
+                admission: None,
             },
             &authenticated_peer,
             candidate,
@@ -1207,6 +1222,8 @@ pub(crate) fn commit_group_roster_plaintext<S: OperationStore>(
             provider: Some((input.provider_state, input.provider_effect)),
             control_outbox: None,
             prepared_control: None,
+            invitation_book: None,
+            admission: None,
         },
         &authenticated_authority,
         candidate,
@@ -1257,6 +1274,8 @@ pub(crate) fn commit_roster_successor<S: OperationStore>(
             provider: None,
             control_outbox: None,
             prepared_control: None,
+            invitation_book: None,
+            admission: None,
         },
         authenticated_authority,
         candidate,
@@ -1285,6 +1304,8 @@ pub(crate) fn commit_roster_successor_with_receiver<S: OperationStore>(
             provider: None,
             control_outbox: None,
             prepared_control: None,
+            invitation_book: None,
+            admission: None,
         },
         authenticated_authority,
         candidate,
@@ -1346,6 +1367,40 @@ fn commit_roster_transition<S: OperationStore>(
                 .map_err(|_| GroupOperationError::Policy)?,
         )?);
     }
+    let mut candidate_invitation_book = state.invitation_book.as_deref().cloned();
+    if let Some(admission) = &state.admission {
+        if disposition != RosterDisposition::Accepted
+            || !candidate
+                .members
+                .iter()
+                .any(|member| member == &admission.target)
+        {
+            return Err(GroupOperationError::Policy);
+        }
+        let book = candidate_invitation_book
+            .as_mut()
+            .ok_or(GroupOperationError::Policy)?;
+        if !book
+            .records()
+            .iter()
+            .any(|record| record.id == admission.id && record.target == admission.target)
+        {
+            return Err(GroupOperationError::Policy);
+        }
+        book.admit(
+            admission.id,
+            authenticated_authority,
+            &candidate.authority,
+            candidate.revision,
+            admission.now,
+        )
+        .map_err(|_| GroupOperationError::Policy)?;
+        control_records.push(encode_invitation_book_record(
+            &book
+                .encode_state()
+                .map_err(|_| GroupOperationError::Policy)?,
+        )?);
+    }
     if let Some((_, provider_effect)) = state.provider {
         control_records.push(encode_control_effect_record(provider_effect));
     }
@@ -1398,6 +1453,9 @@ fn commit_roster_transition<S: OperationStore>(
     if let (Some(outbox), Some(candidate_outbox)) = (state.control_outbox, candidate_control_outbox)
     {
         *outbox = candidate_outbox;
+    }
+    if let (Some(book), Some(candidate_book)) = (state.invitation_book, candidate_invitation_book) {
+        *book = candidate_book;
     }
     Ok(RosterCommit {
         disposition,
@@ -1724,11 +1782,12 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 mod tests {
     use super::{
         ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,
-        GroupReceiveInput, MAX_GROUP_CONTROL_RECORDS, PreparedControl, RosterCommit,
-        RosterCommitState, bind_prepared_ciphertext, commit_group_control_outbox_transition,
-        commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
-        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
-        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
+        GroupReceiveInput, InvitationAdmission, MAX_GROUP_CONTROL_RECORDS, PreparedControl,
+        RosterCommit, RosterCommitState, bind_prepared_ciphertext,
+        commit_group_control_outbox_transition, commit_group_invitation_acceptance,
+        commit_group_invitation_bootstrap, commit_group_invitation_transition,
+        commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
+        commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
@@ -2358,6 +2417,8 @@ mod tests {
                     payload: payload.clone(),
                     ciphertext: vec![7, 8, 9],
                 }),
+                invitation_book: None,
+                admission: None,
             },
             &alice(),
             successor,
@@ -2373,6 +2434,80 @@ mod tests {
         assert_eq!(
             outbox.handoff(&bob(), &payload).unwrap().ciphertext,
             vec![7, 8, 9]
+        );
+    }
+
+    #[test]
+    fn authority_admission_commits_the_roster_handoff_and_invitation_together() {
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view =
+            RosterView::accept_genesis(&alice(), genesis.clone(), genesis_commitment).unwrap();
+        let mut receiver = GroupReceiver::new(genesis, genesis_commitment, alice());
+        let successor = roster(1, *view.digest(), vec![alice(), bob()]);
+        let payload = GroupPayload::Roster(successor.clone()).encode().unwrap();
+        let mut book = InvitationBook::new(successor.group_id);
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            successor.group_id,
+            bob(),
+            0,
+            genesis_commitment,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        book.create(&alice(), &alice(), &[alice()], invitation, 0)
+            .unwrap();
+        book.accept(
+            InvitationId::new([7; 16]),
+            &bob(),
+            0,
+            &genesis_commitment,
+            1,
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = ControlOutbox::default();
+
+        let commit = commit_roster_transition(
+            &mut store,
+            &mut snapshot,
+            RosterCommitState {
+                view: &mut view,
+                receiver: Some(&mut receiver),
+                provider: Some((vec![4, 5, 6], CryptoStateEffect::Advanced)),
+                control_outbox: Some(&mut outbox),
+                prepared_control: Some(PreparedControl {
+                    recipient: bob(),
+                    payload,
+                    ciphertext: vec![7, 8, 9],
+                }),
+                invitation_book: Some(&mut book),
+                admission: Some(InvitationAdmission {
+                    id: InvitationId::new([7; 16]),
+                    target: bob(),
+                    now: 2,
+                }),
+            },
+            &alice(),
+            successor,
+            &mut [],
+        )
+        .unwrap();
+
+        assert_eq!(commit.disposition, RosterDisposition::Accepted);
+        assert_eq!(
+            book.records()[0].status,
+            InvitationStatus::Admitted { revision: 1 }
+        );
+        assert_eq!(
+            recover_group_invitation_book(&snapshot, book.group_id()),
+            Ok(book)
         );
     }
 
@@ -2410,6 +2545,8 @@ mod tests {
                         payload,
                         ciphertext: vec![7, 8, 9],
                     }),
+                    invitation_book: None,
+                    admission: None,
                 },
                 &alice(),
                 successor,
