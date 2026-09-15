@@ -1464,8 +1464,8 @@ mod tests {
                 group_id,
                 1,
                 successor_digest,
-                alice_member,
-                carol_member,
+                alice_member.clone(),
+                carol_member.clone(),
                 0,
                 b"pending invitee cannot receive this".to_vec(),
             )
@@ -1495,6 +1495,186 @@ mod tests {
             ),
             Ok(GroupPayloadDisposition::Application(
                 ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+            ))
+        );
+
+        assert_eq!(
+            commit_group_invitation_transition(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_book,
+                |book| {
+                    book.accept(
+                        InvitationId::new([9; 16]),
+                        &carol_member,
+                        0,
+                        &genesis_digest,
+                        2,
+                    )
+                    .map(|record| record.status)
+                },
+            ),
+            Ok(InvitationStatus::AcceptedPendingAdmission)
+        );
+        let mut carol_outbox = ControlOutbox::default();
+        let acceptance = prepare_outbound_invitation_control(
+            &mut carol,
+            &mut carol_store,
+            &mut carol_snapshot,
+            &mut carol_outbox,
+            &alice_member,
+            &alice_route,
+            GroupPayload::InvitationAcceptance(
+                InvitationAcceptance::new(group_id, InvitationId::new([9; 16]), 0, genesis_digest)
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut carol,
+            &mut carol_store,
+            &mut carol_snapshot,
+            &mut carol_outbox,
+            &alice_member,
+            &acceptance.payload,
+            &alice_route,
+        )
+        .await
+        .unwrap();
+        let inbound = alice.receive().await.unwrap();
+        assert_eq!(
+            commit_group_invitation_acceptance(
+                &mut authority_store,
+                &mut authority_snapshot,
+                &mut authority_book,
+                3,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: carol_member.identity(),
+                    peer: &peer_address(&carol_route).unwrap(),
+                    provider_state: alice.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(InvitationStatus::AcceptedPendingAdmission)
+        );
+
+        let r1_digest = *authority_view.digest();
+        let mut admitted_members = authority_view.roster().members.clone();
+        admitted_members.push(carol_member.clone());
+        admitted_members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let admission_roster = Roster::new(
+            group_id,
+            2,
+            r1_digest,
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            admitted_members,
+        )
+        .unwrap();
+        let admission = prepare_authority_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityControlState {
+                view: &mut authority_view,
+                receiver: &mut authority_receiver,
+                logical_sends: &mut authority_sends,
+                outbox: &mut authority_outbox,
+                invitation_book: Some(&mut authority_book),
+                admission: Some(InvitationAdmission {
+                    id: InvitationId::new([9; 16]),
+                    target: carol_member.clone(),
+                    now: 4,
+                }),
+                control_now: 4,
+            },
+            &alice_member,
+            (&carol_member, &carol_route),
+            admission_roster,
+        )
+        .await
+        .unwrap();
+        assert_eq!(admission.roster.disposition, RosterDisposition::Accepted);
+        assert_eq!(
+            authority_book.records()[0].status,
+            InvitationStatus::Admitted { revision: 2 }
+        );
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &carol_member,
+            &admission.handoff.payload,
+            &carol_route,
+        )
+        .await
+        .unwrap();
+        let inbound = carol.receive().await.unwrap();
+        assert!(matches!(
+            commit_group_payload(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_view,
+                &mut carol_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: carol.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(_))
+        ));
+        assert!(carol_view.roster().members.contains(&carol_member));
+
+        let admission_digest =
+            tacenta_core::crypto::groups::roster_commitment(&carol_view.roster().encode().unwrap());
+        let admitted_application = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                2,
+                admission_digest,
+                alice_member,
+                carol_member,
+                1,
+                b"admitted invitee receives this".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        alice
+            .send_as(&carol_route, &admitted_application, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = carol.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut carol_store,
+                &mut carol_snapshot,
+                &mut carol_view,
+                &mut carol_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: carol.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Accepted { event_id: 0 }
             ))
         );
     }
