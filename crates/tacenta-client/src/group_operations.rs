@@ -1947,9 +1947,9 @@ mod tests {
         GroupReceiveInput, InvitationAdmission, MAX_GROUP_CONTROL_RECORDS, PreparedControl,
         RosterCommit, RosterCommitState, bind_prepared_ciphertext,
         commit_group_control_outbox_transition, commit_group_invitation_acceptance,
-        commit_group_invitation_bootstrap, commit_group_invitation_transition,
-        commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
-        commit_logical_intent, commit_outbox_handoff_reservation,
+        commit_group_invitation_bootstrap, commit_group_invitation_revocation,
+        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
+        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
@@ -1966,9 +1966,9 @@ mod tests {
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
         Invitation, InvitationAcceptance, InvitationBook, InvitationBootstrap, InvitationId,
-        InvitationStatus, LogicalSend, Member, OutboxDisposition, POLICY_VERSION_V1,
-        ReceiveDisposition, ReceiveRefusal, RecipientDisposition, Roster, RosterDisposition,
-        RosterView,
+        InvitationRevocation, InvitationStatus, LogicalSend, Member, OutboxDisposition,
+        POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal, RecipientDisposition, Roster,
+        RosterDisposition, RosterView,
     };
 
     fn alice() -> Member {
@@ -2385,6 +2385,55 @@ mod tests {
         assert_eq!(disposition, InvitationStatus::Pending);
         assert_eq!(&snapshot.group_controls[0][..4], b"TCGB");
         assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
+    }
+
+    #[test]
+    fn invitation_revocation_persists_the_authenticated_terminal_state() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let invitation = Invitation::new(
+            InvitationId::new([8; 16]),
+            group_id,
+            bob(),
+            0,
+            [7; DIGEST_LEN],
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut book = InvitationBook::new(group_id);
+        book.create(&alice(), &alice(), &[alice()], invitation, 0)
+            .unwrap();
+        let revocation =
+            InvitationRevocation::new(group_id, InvitationId::new([8; 16]), 0, [7; DIGEST_LEN])
+                .unwrap();
+
+        assert_eq!(
+            commit_group_invitation_revocation(
+                &mut store,
+                &mut snapshot,
+                &mut book,
+                &bob(),
+                &alice(),
+                1,
+                GroupReceiveInput {
+                    plaintext: &GroupPayload::InvitationRevocation(revocation)
+                        .encode()
+                        .unwrap(),
+                    authenticated_identity: alice().identity(),
+                    peer: &Address::new("alice", 1),
+                    provider_state: vec![8, 9],
+                    provider_effect: CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(InvitationStatus::Revoked)
+        );
+        assert_eq!(snapshot.provider_state, vec![8, 9]);
+        assert_eq!(book.records()[0].status, InvitationStatus::Revoked);
     }
 
     #[test]
