@@ -829,6 +829,7 @@ mod tests {
         let bob_route = bob.address().clone();
         let alice_member = Member::new(alice.party.identity_key(), vec![1]);
         let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let alice_identity = alice_member.identity().to_vec();
         let group_id = GroupId::new(*b"bounded-group-id");
         let genesis = Roster::new(
             group_id,
@@ -1069,6 +1070,152 @@ mod tests {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
                 }
+            ))
+        );
+
+        let admitted_digest =
+            tacenta_core::crypto::groups::roster_commitment(&bob_view.roster().encode().unwrap());
+        let admitted_application = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                1,
+                admitted_digest,
+                alice_member.clone(),
+                bob_member.clone(),
+                0,
+                b"after invitation admission".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        alice
+            .send_as(&bob_route, &admitted_application, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_view,
+                &mut bob_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Accepted { event_id: 0 }
+            ))
+        );
+
+        let removal_roster = Roster::new(
+            group_id,
+            2,
+            admitted_digest,
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice_member.clone()],
+        )
+        .unwrap();
+        let removal = prepare_authority_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityControlState {
+                view: &mut authority_view,
+                receiver: &mut authority_receiver,
+                logical_sends: &mut authority_sends,
+                outbox: &mut authority_outbox,
+                invitation_book: None,
+                admission: None,
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+            removal_roster,
+        )
+        .await
+        .unwrap();
+        assert_eq!(removal.roster.disposition, RosterDisposition::Accepted);
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &removal.handoff.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_view,
+                &mut bob_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(
+                crate::group_operations::RosterCommit {
+                    disposition: RosterDisposition::Accepted,
+                    revalidated: Vec::new(),
+                }
+            ))
+        );
+
+        let removal_digest =
+            tacenta_core::crypto::groups::roster_commitment(&bob_view.roster().encode().unwrap());
+        let post_removal_application = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                2,
+                removal_digest,
+                alice_member,
+                bob_member,
+                1,
+                b"after invitation removal".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        alice
+            .send_as(&bob_route, &post_removal_application, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_payload(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_view,
+                &mut bob_receiver,
+                &mut [],
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: &alice_identity,
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
             ))
         );
     }
