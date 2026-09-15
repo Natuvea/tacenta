@@ -60,6 +60,13 @@ pub(crate) struct RosterCommit {
     pub(crate) revalidated: Vec<RevalidatedReceive>,
 }
 
+/// The durable effect selected by the canonical inner group payload tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GroupPayloadDisposition {
+    Application(ReceiveDisposition),
+    Roster(RosterCommit),
+}
+
 struct RosterCommitState<'a> {
     view: &'a mut RosterView,
     receiver: Option<&'a mut GroupReceiver>,
@@ -614,6 +621,63 @@ pub(crate) fn commit_group_plaintext<S: OperationStore>(
     )
 }
 
+/// Parses the authenticated canonical inner payload once and commits exactly
+/// the state machine selected by its tag. Callers pass only payloads decrypted
+/// from a relay envelope already classified as [`MessageKind::Group`].
+pub(crate) fn commit_group_payload<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: &mut GroupReceiver,
+    logical_sends: &mut [LogicalSend],
+    input: GroupReceiveInput<'_>,
+) -> Result<GroupPayloadDisposition, GroupOperationError> {
+    let payload = match GroupPayload::decode(input.plaintext) {
+        Ok(payload) => payload,
+        Err(_) => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            return Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Rejected(ReceiveRefusal::Malformed),
+            ));
+        }
+    };
+    let authenticated_peer = Member::new(
+        input.authenticated_identity.to_vec(),
+        vec![input.peer.device],
+    );
+    match payload {
+        GroupPayload::Application(context) => commit_receive_disposition(
+            store,
+            snapshot,
+            receiver,
+            &context,
+            &authenticated_peer,
+            input.provider_state,
+            input.provider_effect,
+        )
+        .map(GroupPayloadDisposition::Application),
+        GroupPayload::Roster(candidate) => commit_roster_transition(
+            store,
+            snapshot,
+            RosterCommitState {
+                view,
+                receiver: Some(receiver),
+                provider: Some((input.provider_state, input.provider_effect)),
+            },
+            &authenticated_peer,
+            candidate,
+            logical_sends,
+        )
+        .map(GroupPayloadDisposition::Roster),
+    }
+}
+
 /// Binds pairwise-authenticated provider identity and device data to the
 /// pinned authority, then commits a roster-control payload with the provider
 /// transition that authenticated it. Application payloads are not controls.
@@ -1083,9 +1147,10 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 #[cfg(test)]
 mod tests {
     use super::{
-        GroupLiveError, GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext,
-        commit_group_invitation_transition, commit_group_plaintext, commit_group_roster_plaintext,
-        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
+        GroupLiveError, GroupOperationError, GroupPayloadDisposition, GroupReceiveInput,
+        RosterCommit, bind_prepared_ciphertext, commit_group_invitation_transition,
+        commit_group_payload, commit_group_plaintext, commit_handoff_reservation,
+        commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
         commit_roster_successor_with_receiver, live_client_error, recover_group_invitation_book,
@@ -2058,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_bound_roster_commit_persists_provider_state_and_effect() {
+    fn canonical_group_payload_routes_roster_to_a_provider_bound_commit() {
         let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
         let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
         let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
@@ -2078,7 +2143,7 @@ mod tests {
         let mut sends = Vec::new();
 
         let payload = GroupPayload::Roster(candidate).encode().unwrap();
-        let result = commit_group_roster_plaintext(
+        let result = commit_group_payload(
             &mut store,
             &mut snapshot,
             &mut view,
@@ -2094,7 +2159,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result.disposition, RosterDisposition::Accepted);
+        assert_eq!(
+            result,
+            GroupPayloadDisposition::Roster(RosterCommit {
+                disposition: RosterDisposition::Accepted,
+                revalidated: Vec::new(),
+            })
+        );
         assert_eq!(snapshot.provider_state, vec![4, 5, 6]);
         assert!(
             snapshot
