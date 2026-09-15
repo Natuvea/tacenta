@@ -902,7 +902,10 @@ pub(crate) fn commit_group_plaintext<S: OperationStore>(
 ) -> Result<ReceiveDisposition, GroupOperationError> {
     let context = match GroupPayload::decode(input.plaintext) {
         Ok(GroupPayload::Application(context)) => context,
-        Ok(GroupPayload::Roster(_)) | Err(_) => {
+        Ok(GroupPayload::Roster(_))
+        | Ok(GroupPayload::InvitationBootstrap(_))
+        | Ok(GroupPayload::InvitationAcceptance(_))
+        | Err(_) => {
             commit_malformed_group_payload(
                 store,
                 snapshot,
@@ -984,6 +987,18 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
             logical_sends,
         )
         .map(GroupPayloadDisposition::Roster),
+        GroupPayload::InvitationBootstrap(_) | GroupPayload::InvitationAcceptance(_) => {
+            commit_malformed_group_payload(
+                store,
+                snapshot,
+                input.plaintext,
+                input.provider_state,
+                input.provider_effect,
+            )?;
+            Ok(GroupPayloadDisposition::Application(
+                ReceiveDisposition::Rejected(ReceiveRefusal::Malformed),
+            ))
+        }
     }
 }
 
@@ -1000,7 +1015,10 @@ pub(crate) fn commit_group_roster_plaintext<S: OperationStore>(
 ) -> Result<RosterCommit, GroupOperationError> {
     let candidate = match GroupPayload::decode(input.plaintext) {
         Ok(GroupPayload::Roster(candidate)) => candidate,
-        Ok(GroupPayload::Application(_)) | Err(_) => {
+        Ok(GroupPayload::Application(_))
+        | Ok(GroupPayload::InvitationBootstrap(_))
+        | Ok(GroupPayload::InvitationAcceptance(_))
+        | Err(_) => {
             commit_malformed_group_payload(
                 store,
                 snapshot,

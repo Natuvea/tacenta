@@ -1,9 +1,66 @@
 //! Product policy for the bounded invitation lifecycle.
 
-use crate::{DIGEST_LEN, Error, GroupId, Member, POLICY_VERSION_V1, RESERVED_REVISION};
+use crate::{DIGEST_LEN, Error, GroupId, Member, POLICY_VERSION_V1, RESERVED_REVISION, Roster};
 
 const INVITATION_BOOK_STATE_DOMAIN: &[u8] = b"Tacenta Group Invitation Book State v1";
+const INVITATION_BOOTSTRAP_DOMAIN: &[u8] = b"Tacenta Group Invitation Bootstrap v1";
+const INVITATION_ACCEPTANCE_DOMAIN: &[u8] = b"Tacenta Group Invitation Acceptance v1";
 const MAX_INVITATION_RECORDS: usize = 32;
+
+fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Result<&'a [u8], Error> {
+    let (head, tail) = cursor.split_at_checked(count).ok_or(Error::Malformed)?;
+    *cursor = tail;
+    Ok(head)
+}
+
+fn take_exact(cursor: &mut &[u8], expected: &[u8]) -> Result<(), Error> {
+    if take(cursor, expected.len())? != expected {
+        return Err(Error::Malformed);
+    }
+    Ok(())
+}
+
+fn take_u32(cursor: &mut &[u8]) -> Result<u32, Error> {
+    Ok(u32::from_be_bytes(
+        take(cursor, 4)?.try_into().map_err(|_| Error::Malformed)?,
+    ))
+}
+
+fn take_u64(cursor: &mut &[u8]) -> Result<u64, Error> {
+    Ok(u64::from_be_bytes(
+        take(cursor, 8)?.try_into().map_err(|_| Error::Malformed)?,
+    ))
+}
+
+fn take_lp(cursor: &mut &[u8]) -> Result<Vec<u8>, Error> {
+    let length: [u8; 2] = take(cursor, 2)?.try_into().map_err(|_| Error::Malformed)?;
+    Ok(take(cursor, usize::from(u16::from_be_bytes(length)))?.to_vec())
+}
+
+fn take_u32_lp(cursor: &mut &[u8]) -> Result<Vec<u8>, Error> {
+    let length = usize::try_from(take_u32(cursor)?).map_err(|_| Error::Malformed)?;
+    Ok(take(cursor, length)?.to_vec())
+}
+
+fn put_lp(out: &mut Vec<u8>, value: &[u8]) -> Result<(), Error> {
+    out.extend_from_slice(
+        &u16::try_from(value.len())
+            .map_err(|_| Error::Malformed)?
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(value);
+    Ok(())
+}
+
+fn put_u32_lp(out: &mut Vec<u8>, value: &[u8]) -> Result<(), Error> {
+    out.extend_from_slice(
+        &u32::try_from(value.len())
+            .map_err(|_| Error::Malformed)?
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(value);
+    Ok(())
+}
 
 /// A fixed-width opaque invitation identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -58,6 +115,150 @@ pub struct Invitation {
     pub policy_version: u32,
     pub expires_at: u64,
     pub status: InvitationStatus,
+}
+
+/// The authority-authenticated invitation and source roster an observer needs
+/// before it can accept later roster controls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitationBootstrap {
+    pub invitation: Invitation,
+    pub source_roster: Roster,
+}
+
+impl InvitationBootstrap {
+    pub fn new(invitation: Invitation, source_roster: Roster) -> Result<Self, Error> {
+        if invitation.status != InvitationStatus::Pending
+            || invitation.group_id != source_roster.group_id
+            || invitation.source_revision != source_roster.revision
+            || invitation.policy_version != source_roster.policy_version
+        {
+            return Err(Error::Conflict);
+        }
+        source_roster.encode()?;
+        Ok(Self {
+            invitation,
+            source_roster,
+        })
+    }
+
+    /// The product adapter supplies the core commitment of `source_roster`.
+    /// This crate deliberately keeps that cryptographic helper outside its
+    /// product-policy boundary.
+    pub fn validate_source_digest(&self, source_digest: &[u8; DIGEST_LEN]) -> Result<(), Error> {
+        if source_digest != &self.invitation.source_roster_digest {
+            return Err(Error::StaleSource);
+        }
+        Ok(())
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let canonical = Self::new(self.invitation.clone(), self.source_roster.clone())?;
+        let roster = canonical.source_roster.encode()?;
+        let mut out = INVITATION_BOOTSTRAP_DOMAIN.to_vec();
+        out.extend_from_slice(canonical.invitation.id.as_bytes());
+        out.extend_from_slice(canonical.invitation.group_id.as_bytes());
+        put_lp(&mut out, canonical.invitation.target.identity())?;
+        put_lp(&mut out, canonical.invitation.target.device())?;
+        out.extend_from_slice(&canonical.invitation.source_revision.to_be_bytes());
+        out.extend_from_slice(&canonical.invitation.source_roster_digest);
+        out.extend_from_slice(&canonical.invitation.policy_version.to_be_bytes());
+        out.extend_from_slice(&canonical.invitation.expires_at.to_be_bytes());
+        put_u32_lp(&mut out, &roster)?;
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut cursor = bytes;
+        take_exact(&mut cursor, INVITATION_BOOTSTRAP_DOMAIN)?;
+        let id = InvitationId::try_from(take(&mut cursor, 16)?)?;
+        let group_id = GroupId::try_from(take(&mut cursor, crate::GROUP_ID_LEN)?)?;
+        let target = Member::new(take_lp(&mut cursor)?, take_lp(&mut cursor)?);
+        let source_revision = take_u64(&mut cursor)?;
+        let source_roster_digest: [u8; DIGEST_LEN] = take(&mut cursor, DIGEST_LEN)?
+            .try_into()
+            .map_err(|_| Error::Malformed)?;
+        let policy_version = take_u32(&mut cursor)?;
+        let expires_at = take_u64(&mut cursor)?;
+        let roster = Roster::decode(&take_u32_lp(&mut cursor)?)?;
+        if !cursor.is_empty() {
+            return Err(Error::Malformed);
+        }
+        Self::new(
+            Invitation::new(
+                id,
+                group_id,
+                target,
+                source_revision,
+                source_roster_digest,
+                policy_version,
+                expires_at,
+            )?,
+            roster,
+        )
+    }
+}
+
+/// The target's pairwise-authenticated acknowledgement of one bootstrap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvitationAcceptance {
+    pub group_id: GroupId,
+    pub invitation_id: InvitationId,
+    pub source_revision: u64,
+    pub source_roster_digest: [u8; DIGEST_LEN],
+}
+
+impl InvitationAcceptance {
+    pub fn new(
+        group_id: GroupId,
+        invitation_id: InvitationId,
+        source_revision: u64,
+        source_roster_digest: [u8; DIGEST_LEN],
+    ) -> Result<Self, Error> {
+        if source_revision == RESERVED_REVISION {
+            return Err(Error::ReservedRevision);
+        }
+        Ok(Self {
+            group_id,
+            invitation_id,
+            source_revision,
+            source_roster_digest,
+        })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let canonical = Self::new(
+            self.group_id,
+            self.invitation_id,
+            self.source_revision,
+            self.source_roster_digest,
+        )?;
+        let mut out = INVITATION_ACCEPTANCE_DOMAIN.to_vec();
+        out.extend_from_slice(canonical.group_id.as_bytes());
+        out.extend_from_slice(canonical.invitation_id.as_bytes());
+        out.extend_from_slice(&canonical.source_revision.to_be_bytes());
+        out.extend_from_slice(&canonical.source_roster_digest);
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut cursor = bytes;
+        take_exact(&mut cursor, INVITATION_ACCEPTANCE_DOMAIN)?;
+        let group_id = GroupId::try_from(take(&mut cursor, crate::GROUP_ID_LEN)?)?;
+        let invitation_id = InvitationId::try_from(take(&mut cursor, 16)?)?;
+        let source_revision = take_u64(&mut cursor)?;
+        let source_roster_digest: [u8; DIGEST_LEN] = take(&mut cursor, DIGEST_LEN)?
+            .try_into()
+            .map_err(|_| Error::Malformed)?;
+        if !cursor.is_empty() {
+            return Err(Error::Malformed);
+        }
+        Self::new(
+            group_id,
+            invitation_id,
+            source_revision,
+            source_roster_digest,
+        )
+    }
 }
 
 impl Invitation {
@@ -439,6 +640,46 @@ mod tests {
             10,
         )
         .unwrap()
+    }
+
+    fn source_roster() -> Roster {
+        Roster::new(
+            group(),
+            0,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn bootstrap_and_acceptance_codecs_bind_one_exact_invitation_source() {
+        let bootstrap = InvitationBootstrap::new(invitation(7), source_roster()).unwrap();
+        let bytes = bootstrap.encode().unwrap();
+        assert_eq!(InvitationBootstrap::decode(&bytes), Ok(bootstrap.clone()));
+        assert_eq!(bootstrap.validate_source_digest(&[0; DIGEST_LEN]), Ok(()));
+        assert_eq!(
+            bootstrap.validate_source_digest(&[1; DIGEST_LEN]),
+            Err(Error::StaleSource)
+        );
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            InvitationBootstrap::decode(&trailing),
+            Err(Error::Malformed)
+        );
+
+        let acceptance =
+            InvitationAcceptance::new(group(), InvitationId::new([7; 16]), 0, [0; DIGEST_LEN])
+                .unwrap();
+        let acceptance_bytes = acceptance.encode().unwrap();
+        assert_eq!(
+            InvitationAcceptance::decode(&acceptance_bytes),
+            Ok(acceptance)
+        );
     }
 
     #[test]
