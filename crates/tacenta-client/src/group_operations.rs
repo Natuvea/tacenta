@@ -12,8 +12,9 @@ use tacenta_core::crypto::{
 };
 use tacenta_group::{
     ApplicationContext, Error as GroupError, GroupOutbox, GroupPayload, GroupReceiver,
-    LogicalMessageId, LogicalSend, Member, OutboxDisposition, ReceiveDisposition, ReceiveRefusal,
-    RecipientProgress, RevalidatedReceive, Roster, RosterDisposition, RosterRefusal, RosterView,
+    InvitationBook, LogicalMessageId, LogicalSend, Member, OutboxDisposition, ReceiveDisposition,
+    ReceiveRefusal, RecipientProgress, RevalidatedReceive, Roster, RosterDisposition,
+    RosterRefusal, RosterView,
 };
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
@@ -165,6 +166,57 @@ pub(crate) fn recover_group_roster_view(
     let state = decode_roster_view_record(record)?;
     RosterView::decode_state(state, pinned_authority, roster_commitment)
         .map_err(|_| GroupOperationError::Policy)
+}
+
+/// Restores the latest bounded invitation lifecycle checkpoint for one group.
+/// A group ID comes from the caller's selected coordinator, never from the
+/// retained bytes alone.
+pub(crate) fn recover_group_invitation_book(
+    snapshot: &OperationSnapshot,
+    group_id: tacenta_group::GroupId,
+) -> Result<InvitationBook, GroupOperationError> {
+    let Some(record) = snapshot
+        .group_controls
+        .iter()
+        .rev()
+        .find(|record| record.starts_with(b"TCGB"))
+    else {
+        return Err(GroupOperationError::Policy);
+    };
+    InvitationBook::decode_state(decode_invitation_book_record(record)?, group_id)
+        .map_err(|_| GroupOperationError::Policy)
+}
+
+/// Applies an invitation lifecycle operation to a cloned book and publishes
+/// its canonical checkpoint before exposing the resulting disposition.
+pub(crate) fn commit_group_invitation_transition<S, T>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    book: &mut InvitationBook,
+    transition: impl FnOnce(&mut InvitationBook) -> Result<T, GroupError>,
+) -> Result<T, GroupOperationError>
+where
+    S: OperationStore,
+{
+    let mut candidate_book = book.clone();
+    let result = transition(&mut candidate_book).map_err(|_| GroupOperationError::Policy)?;
+    let state = candidate_book
+        .encode_state()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    candidate_snapshot
+        .group_controls
+        .push(encode_invitation_book_record(&state)?);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *book = candidate_book;
+    Ok(result)
 }
 
 /// Records a prepared ciphertext and its core-bound application context in the
@@ -983,6 +1035,33 @@ fn encode_roster_view_record(state: &[u8]) -> Result<Vec<u8>, GroupOperationErro
     Ok(record)
 }
 
+fn encode_invitation_book_record(state: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
+    let length = u32::try_from(state.len()).map_err(|_| GroupOperationError::Policy)?;
+    let mut record = Vec::with_capacity(8 + state.len());
+    record.extend_from_slice(b"TCGB");
+    record.extend_from_slice(&length.to_be_bytes());
+    record.extend_from_slice(state);
+    Ok(record)
+}
+
+fn decode_invitation_book_record(record: &[u8]) -> Result<&[u8], GroupOperationError> {
+    if !record.starts_with(b"TCGB") {
+        return Err(GroupOperationError::Policy);
+    }
+    let bytes = record.get(4..).ok_or(GroupOperationError::Policy)?;
+    let (length, state) = bytes
+        .split_at_checked(4)
+        .ok_or(GroupOperationError::Policy)?;
+    let length = usize::try_from(u32::from_be_bytes(
+        length.try_into().map_err(|_| GroupOperationError::Policy)?,
+    ))
+    .map_err(|_| GroupOperationError::Policy)?;
+    if state.len() != length {
+        return Err(GroupOperationError::Policy);
+    }
+    Ok(state)
+}
+
 fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError> {
     if !record.starts_with(b"TCGV") {
         return Err(GroupOperationError::Policy);
@@ -1005,12 +1084,12 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 mod tests {
     use super::{
         GroupLiveError, GroupOperationError, GroupReceiveInput, bind_prepared_ciphertext,
-        commit_group_plaintext, commit_group_roster_plaintext, commit_handoff_reservation,
-        commit_logical_intent, commit_outbox_handoff_reservation,
+        commit_group_invitation_transition, commit_group_plaintext, commit_group_roster_plaintext,
+        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
         commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
         commit_prepared_ciphertext, commit_receive_disposition, commit_roster_successor,
-        commit_roster_successor_with_receiver, live_client_error, recover_group_outbox,
-        recover_group_receiver, recover_group_roster_view,
+        commit_roster_successor_with_receiver, live_client_error, recover_group_invitation_book,
+        recover_group_outbox, recover_group_receiver, recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -1019,8 +1098,9 @@ mod tests {
     use tacenta_core::crypto::{Address, CryptoStateEffect, groups::roster_commitment};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
-        LogicalSend, Member, OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition,
-        ReceiveRefusal, RecipientDisposition, Roster, RosterDisposition, RosterView,
+        Invitation, InvitationBook, InvitationId, InvitationStatus, LogicalSend, Member,
+        OutboxDisposition, POLICY_VERSION_V1, ReceiveDisposition, ReceiveRefusal,
+        RecipientDisposition, Roster, RosterDisposition, RosterView,
     };
 
     fn alice() -> Member {
@@ -1406,6 +1486,72 @@ mod tests {
         assert_eq!(recover_group_roster_view(&snapshot, &alice()), Ok(view));
     }
 
+    #[test]
+    fn invitation_transition_commits_a_recoverable_book_before_returning() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob(),
+            0,
+            [0; DIGEST_LEN],
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut book = InvitationBook::new(group_id);
+
+        let disposition =
+            commit_group_invitation_transition(&mut store, &mut snapshot, &mut book, |candidate| {
+                candidate
+                    .create(&alice(), &alice(), &[alice()], invitation, 0)
+                    .map(|record| record.status)
+            })
+            .unwrap();
+
+        assert_eq!(disposition, InvitationStatus::Pending);
+        assert_eq!(&snapshot.group_controls[0][..4], b"TCGB");
+        assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
+    }
+
+    #[test]
+    fn unknown_invitation_checkpoint_does_not_expose_lifecycle_state() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob(),
+            0,
+            [0; DIGEST_LEN],
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut store = Store {
+            outcome: CommitOutcome::Unknown,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let before_snapshot = snapshot.clone();
+        let mut book = InvitationBook::new(group_id);
+
+        assert_eq!(
+            commit_group_invitation_transition(&mut store, &mut snapshot, &mut book, |candidate| {
+                candidate
+                    .create(&alice(), &alice(), &[alice()], invitation, 0)
+                    .map(|record| record.status)
+            },),
+            Err(GroupOperationError::Frozen)
+        );
+        assert!(book.records().is_empty());
+        assert_eq!(snapshot, before_snapshot);
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_snapshot_restores_group_send_and_receive_state_together() {
@@ -1469,6 +1615,30 @@ mod tests {
         )
         .unwrap();
 
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let mut invitations = InvitationBook::new(group_id);
+        let invitation = Invitation::new(
+            InvitationId::new([7; 16]),
+            group_id,
+            bob(),
+            1,
+            digest,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        commit_group_invitation_transition(
+            &mut store,
+            &mut snapshot,
+            &mut invitations,
+            |candidate| {
+                candidate
+                    .create(&alice(), &alice(), &[alice()], invitation, 0)
+                    .map(|record| record.status)
+            },
+        )
+        .unwrap();
+
         let recovered_snapshot = store.recover().unwrap().unwrap();
         assert_eq!(recovered_snapshot, snapshot);
         assert_eq!(
@@ -1476,6 +1646,10 @@ mod tests {
             Ok(outbox)
         );
         assert_eq!(recover_group_receiver(&recovered_snapshot), Ok(receiver));
+        assert_eq!(
+            recover_group_invitation_book(&recovered_snapshot, group_id),
+            Ok(invitations)
+        );
         let _ = std::fs::remove_file(path);
     }
 
