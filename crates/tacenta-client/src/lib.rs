@@ -328,8 +328,9 @@ mod tests {
         commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
         dispatch_outbox_group_handoff, prepare_authority_roster_control,
         prepare_installed_roster_control, prepare_outbound_invitation_control,
-        prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_outbox,
-        recover_group_receiver, recover_group_roster_view,
+        prepare_outbox_group_recipient, recover_group_control_outbox,
+        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
@@ -1235,14 +1236,13 @@ mod tests {
     #[tokio::test]
     async fn a_pending_invitee_observes_live_successors_without_application_membership() {
         let (directory, relay) = start_server().await;
-        let mut alice = DefaultClient::connect(&Config {
+        let alice_config = Config {
             directory,
             relay,
             user: "+alice".into(),
             device: 1,
-        })
-        .await
-        .unwrap();
+        };
+        let mut alice = DefaultClient::connect(&alice_config).await.unwrap();
         let bob = DefaultClient::connect(&Config {
             directory,
             relay,
@@ -1396,6 +1396,29 @@ mod tests {
         )
         .await
         .unwrap();
+        let member_payload = member_control.handoff.payload.clone();
+        let member_ciphertext = member_control.handoff.ciphertext.clone();
+        let persisted_authority = authority_snapshot.clone();
+        drop(alice);
+        let mut alice =
+            DefaultClient::connect_with_state(&alice_config, &persisted_authority.provider_state)
+                .await
+                .unwrap();
+        authority_snapshot = persisted_authority;
+        authority_view = recover_group_roster_view(&authority_snapshot, &alice_member).unwrap();
+        authority_receiver = recover_group_receiver(&authority_snapshot).unwrap();
+        authority_outbox = recover_group_control_outbox(&authority_snapshot).unwrap();
+        authority_book = recover_group_invitation_book(&authority_snapshot, group_id).unwrap();
+        authority_store = GroupStore {
+            snapshot: Some(authority_snapshot.clone()),
+        };
+        assert_eq!(
+            authority_outbox
+                .handoff(&bob_member, &member_payload)
+                .unwrap()
+                .ciphertext,
+            member_ciphertext
+        );
         let observer_control = prepare_installed_roster_control(
             &mut alice,
             &mut authority_store,
@@ -1417,7 +1440,7 @@ mod tests {
             &mut authority_snapshot,
             &mut authority_outbox,
             &bob_member,
-            &member_control.handoff.payload,
+            &member_payload,
             &bob_route,
         )
         .await
