@@ -3597,6 +3597,16 @@ mod tests {
     }
 
     #[test]
+    fn group_outbox_recovery_refuses_a_malformed_cancellation_checkpoint() {
+        let mut snapshot = OperationSnapshot::empty(4);
+        snapshot.group_controls.push(b"TCGX\x00".to_vec());
+        assert_eq!(
+            recover_group_outbox(&snapshot, GroupId::new(*b"bounded-group-id")),
+            Err(GroupOperationError::Policy)
+        );
+    }
+
+    #[test]
     fn received_roster_successor_cancels_live_group_outbox_work() {
         let group_id = GroupId::new(*b"bounded-group-id");
         let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
