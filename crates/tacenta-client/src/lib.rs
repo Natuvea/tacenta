@@ -1432,7 +1432,11 @@ mod tests {
                     logical_sends: &mut authority_sends,
                     outbox: &mut authority_outbox,
                     invitation_book: Some(&mut authority_book),
-                    admission: None,
+                    admission: Some(InvitationAdmission {
+                        id: invitation_id,
+                        target: bob_member.clone(),
+                        now: 2,
+                    }),
                     control_now: 2,
                 },
                 &alice_member,

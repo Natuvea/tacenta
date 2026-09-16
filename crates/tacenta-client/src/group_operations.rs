@@ -128,17 +128,18 @@ fn recipient_can_observe_invitation_successor(
     })
 }
 
-/// A revoked invitation must not become a side channel for later roster
-/// controls, even if a caller tries to use a previously valid route.
-fn recipient_has_revoked_invitation(
+/// A revoked invitation cannot authorize the admission it names. It does not
+/// remove a member who was admitted through a different valid transition.
+fn admission_is_revoked(
     book: Option<&InvitationBook>,
     successor: &Roster,
-    recipient: &Member,
+    admission: &InvitationAdmission,
 ) -> bool {
     book.is_some_and(|book| {
         book.records().iter().any(|invitation| {
             invitation.group_id == successor.group_id
-                && invitation.target == *recipient
+                && invitation.id == admission.id
+                && invitation.target == admission.target
                 && invitation.status == InvitationStatus::Revoked
         })
     })
@@ -543,14 +544,16 @@ where
     if client.party.identity_key() != authenticated_authority.identity() {
         return Err(GroupLiveError::Policy);
     }
-    if recipient_has_revoked_invitation(state.invitation_book.as_deref(), &successor, recipient)
-        || (!recipient_can_receive_roster_control(state.view, &successor, recipient)
-            && !recipient_can_observe_invitation_successor(
-                state.invitation_book.as_deref(),
-                &successor,
-                recipient,
-                state.control_now,
-            ))
+    if state.admission.as_ref().is_some_and(|admission| {
+        admission.target == *recipient
+            && admission_is_revoked(state.invitation_book.as_deref(), &successor, admission)
+    }) || (!recipient_can_receive_roster_control(state.view, &successor, recipient)
+        && !recipient_can_observe_invitation_successor(
+            state.invitation_book.as_deref(),
+            &successor,
+            recipient,
+            state.control_now,
+        ))
     {
         return Err(GroupLiveError::Policy);
     }
@@ -615,7 +618,6 @@ where
 {
     let (recipient, route) = recipient_route;
     if client.party.identity_key() != authenticated_authority.identity()
-        || recipient_has_revoked_invitation(state.invitation_book, state.view.roster(), recipient)
         || (!recipient_can_receive_installed_roster_control(
             state.view,
             authenticated_authority,
@@ -2022,7 +2024,7 @@ mod tests {
     use super::{
         ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,
         GroupReceiveInput, InvitationAdmission, MAX_GROUP_CONTROL_RECORDS, PreparedControl,
-        RosterCommit, RosterCommitState, bind_prepared_ciphertext,
+        RosterCommit, RosterCommitState, admission_is_revoked, bind_prepared_ciphertext,
         commit_group_control_outbox_transition, commit_group_invitation_acceptance,
         commit_group_invitation_bootstrap, commit_group_invitation_revocation,
         commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
@@ -2032,9 +2034,8 @@ mod tests {
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
         live_client_error, recipient_can_observe_invitation_successor,
         recipient_can_receive_installed_roster_control, recipient_can_receive_roster_control,
-        recipient_has_revoked_invitation, recover_group_control_outbox,
-        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
-        recover_group_roster_view,
+        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
+        recover_group_receiver, recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -2932,12 +2933,43 @@ mod tests {
         ));
         book.revoke(InvitationId::new([7; 16]), &alice(), &alice(), 1)
             .unwrap();
-        assert!(recipient_has_revoked_invitation(
+        assert!(admission_is_revoked(
+            Some(&book),
+            &successor,
+            &InvitationAdmission {
+                id: InvitationId::new([7; 16]),
+                target: observer.clone(),
+                now: 1,
+            },
+        ));
+        assert!(!recipient_can_observe_invitation_successor(
             Some(&book),
             &successor,
             &observer,
+            1,
         ));
-        assert!(!recipient_can_observe_invitation_successor(
+        let replacement = Invitation::new(
+            InvitationId::new([8; 16]),
+            group_id,
+            observer.clone(),
+            0,
+            genesis_digest,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        book.create(&alice(), &alice(), &[alice()], replacement, 1)
+            .unwrap();
+        assert!(!admission_is_revoked(
+            Some(&book),
+            &successor,
+            &InvitationAdmission {
+                id: InvitationId::new([8; 16]),
+                target: observer.clone(),
+                now: 1,
+            },
+        ));
+        assert!(recipient_can_observe_invitation_successor(
             Some(&book),
             &successor,
             &observer,
