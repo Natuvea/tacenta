@@ -501,6 +501,7 @@ mod tests {
                 view: &mut authority_view,
                 receiver: &mut authority_receiver,
                 logical_sends: &mut authority_sends,
+                group_outbox: None,
                 outbox: &mut authority_outbox,
                 invitation_book: None,
                 admission: None,
@@ -675,6 +676,37 @@ mod tests {
             remaining_members,
         )
         .unwrap();
+        let stale_send = LogicalSend::new(
+            &r1,
+            r1_digest,
+            alice_member.clone(),
+            1,
+            vec![bob_member.clone()],
+            b"withheld before removal".to_vec(),
+        )
+        .unwrap();
+        let stale_id = stale_send.id.clone();
+        let mut group_outbox = GroupOutbox::new(group_id);
+        assert_eq!(
+            commit_logical_intent(
+                &mut authority_store,
+                &mut authority_snapshot,
+                &mut group_outbox,
+                stale_send,
+            ),
+            Ok(OutboxDisposition::Inserted)
+        );
+        prepare_outbox_group_recipient(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut group_outbox,
+            &stale_id,
+            &bob_member,
+            &bob_route,
+        )
+        .await
+        .unwrap();
         let r2_control = prepare_authority_roster_control(
             &mut alice,
             &mut authority_store,
@@ -683,6 +715,7 @@ mod tests {
                 view: &mut authority_view,
                 receiver: &mut authority_receiver,
                 logical_sends: &mut authority_sends,
+                group_outbox: Some(&mut group_outbox),
                 outbox: &mut authority_outbox,
                 invitation_book: None,
                 admission: None,
@@ -695,6 +728,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r2_control.roster.disposition, RosterDisposition::Accepted);
+        assert_eq!(
+            dispatch_outbox_group_handoff(
+                &mut alice,
+                &mut authority_store,
+                &mut authority_snapshot,
+                &mut group_outbox,
+                &stale_id,
+                &bob_member,
+                &bob_route,
+            )
+            .await,
+            Err(GroupLiveError::Policy)
+        );
+        assert_eq!(
+            recover_group_outbox(&authority_snapshot, group_id)
+                .unwrap()
+                .send(&stale_id)
+                .unwrap()
+                .recipients()[0]
+                .disposition,
+            tacenta_group::RecipientDisposition::Cancelled
+        );
         let r2_carol = prepare_installed_roster_control(
             &mut alice,
             &mut authority_store,
@@ -1065,6 +1120,7 @@ mod tests {
                 view: &mut authority_view,
                 receiver: &mut authority_receiver,
                 logical_sends: &mut authority_sends,
+                group_outbox: None,
                 outbox: &mut authority_outbox,
                 invitation_book: Some(&mut authority_book),
                 admission: Some(InvitationAdmission {
@@ -1184,6 +1240,7 @@ mod tests {
                 view: &mut authority_view,
                 receiver: &mut authority_receiver,
                 logical_sends: &mut authority_sends,
+                group_outbox: None,
                 outbox: &mut authority_outbox,
                 invitation_book: None,
                 admission: None,
@@ -1506,6 +1563,7 @@ mod tests {
                     view: &mut authority_view,
                     receiver: &mut authority_receiver,
                     logical_sends: &mut authority_sends,
+                    group_outbox: None,
                     outbox: &mut authority_outbox,
                     invitation_book: Some(&mut authority_book),
                     admission: Some(InvitationAdmission {
@@ -1845,6 +1903,7 @@ mod tests {
                 view: &mut authority_view,
                 receiver: &mut authority_receiver,
                 logical_sends: &mut authority_sends,
+                group_outbox: None,
                 outbox: &mut authority_outbox,
                 invitation_book: Some(&mut authority_book),
                 admission: Some(InvitationAdmission {
@@ -2117,6 +2176,7 @@ mod tests {
                 view: &mut authority_view,
                 receiver: &mut authority_receiver,
                 logical_sends: &mut authority_sends,
+                group_outbox: None,
                 outbox: &mut authority_outbox,
                 invitation_book: Some(&mut authority_book),
                 admission: Some(InvitationAdmission {

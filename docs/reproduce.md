@@ -94,7 +94,8 @@ cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/po
 ## 4. The bounded group experiment
 
 Run the live bounded-profile trace, including cap-plus-one refusals, group and
-direct-message session sharing, invitation admission/removal, and revocation:
+direct-message session sharing, prepared-handoff cancellation on removal,
+invitation admission/removal, and revocation:
 
 ```bash
 cd tacenta

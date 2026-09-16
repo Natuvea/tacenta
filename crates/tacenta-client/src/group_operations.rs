@@ -76,6 +76,7 @@ struct RosterCommitState<'a> {
     view: &'a mut RosterView,
     receiver: Option<&'a mut GroupReceiver>,
     provider: Option<(Vec<u8>, CryptoStateEffect)>,
+    group_outbox: Option<&'a mut GroupOutbox>,
     control_outbox: Option<&'a mut ControlOutbox>,
     prepared_control: Option<PreparedControl>,
     invitation_book: Option<&'a mut InvitationBook>,
@@ -168,6 +169,7 @@ pub(crate) struct AuthorityControlState<'a> {
     pub(crate) view: &'a mut RosterView,
     pub(crate) receiver: &'a mut GroupReceiver,
     pub(crate) logical_sends: &'a mut [LogicalSend],
+    pub(crate) group_outbox: Option<&'a mut GroupOutbox>,
     pub(crate) outbox: &'a mut ControlOutbox,
     pub(crate) invitation_book: Option<&'a mut InvitationBook>,
     pub(crate) admission: Option<InvitationAdmission>,
@@ -258,8 +260,13 @@ pub(crate) fn recover_group_outbox(
     snapshot: &OperationSnapshot,
     group_id: tacenta_group::GroupId,
 ) -> Result<GroupOutbox, GroupOperationError> {
-    GroupOutbox::recover_from_transcript(group_id, &snapshot.outbox, payload_commitment)
-        .map_err(|_| GroupOperationError::Policy)
+    let mut outbox =
+        GroupOutbox::recover_from_transcript(group_id, &snapshot.outbox, payload_commitment)
+            .map_err(|_| GroupOperationError::Policy)?;
+    if let Some(revision) = latest_group_outbox_cancellation(snapshot, group_id)? {
+        outbox.cancel_for_newer_roster(revision);
+    }
+    Ok(outbox)
 }
 
 /// Restores the bounded receiver's stable event and deferred state from the
@@ -634,6 +641,7 @@ where
             view: &mut *state.view,
             receiver: Some(&mut *state.receiver),
             provider: Some((provider_state, CryptoStateEffect::Advanced)),
+            group_outbox: state.group_outbox.map(|outbox| &mut *outbox),
             control_outbox: Some(&mut *state.outbox),
             prepared_control: Some(PreparedControl {
                 recipient: recipient.clone(),
@@ -1448,6 +1456,7 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
                 view,
                 receiver: Some(receiver),
                 provider: Some((input.provider_state, input.provider_effect)),
+                group_outbox: None,
                 control_outbox: None,
                 prepared_control: None,
                 invitation_book: None,
@@ -1514,6 +1523,7 @@ pub(crate) fn commit_group_roster_plaintext<S: OperationStore>(
             view,
             receiver: Some(receiver),
             provider: Some((input.provider_state, input.provider_effect)),
+            group_outbox: None,
             control_outbox: None,
             prepared_control: None,
             invitation_book: None,
@@ -1566,6 +1576,7 @@ pub(crate) fn commit_roster_successor<S: OperationStore>(
             view,
             receiver: None,
             provider: None,
+            group_outbox: None,
             control_outbox: None,
             prepared_control: None,
             invitation_book: None,
@@ -1596,6 +1607,7 @@ pub(crate) fn commit_roster_successor_with_receiver<S: OperationStore>(
             view,
             receiver: Some(receiver),
             provider: None,
+            group_outbox: None,
             control_outbox: None,
             prepared_control: None,
             invitation_book: None,
@@ -1623,11 +1635,15 @@ fn commit_roster_transition<S: OperationStore>(
     let disposition =
         candidate_view.accept_successor(authenticated_authority, candidate.clone(), commitment);
     let mut candidate_sends = logical_sends.to_vec();
+    let mut candidate_group_outbox = state.group_outbox.as_deref().cloned();
     if disposition == RosterDisposition::Accepted {
         for send in &mut candidate_sends {
             if send.id.group_id == candidate.group_id {
                 send.cancel_for_newer_roster(candidate.revision);
             }
+        }
+        if let Some(outbox) = &mut candidate_group_outbox {
+            outbox.cancel_for_newer_roster(candidate.revision);
         }
     }
 
@@ -1637,6 +1653,12 @@ fn commit_roster_transition<S: OperationStore>(
         .checked_add(1)
         .ok_or(GroupOperationError::Frozen)?;
     let mut control_records = vec![encode_roster_record(&preimage, &commitment, disposition)?];
+    if disposition == RosterDisposition::Accepted {
+        control_records.push(encode_group_outbox_cancellation_record(
+            candidate.group_id,
+            candidate.revision,
+        ));
+    }
     if let Some((provider_state, _)) = &state.provider {
         candidate_snapshot.provider_state = provider_state.clone();
     }
@@ -1744,6 +1766,9 @@ fn commit_roster_transition<S: OperationStore>(
     if let (Some(receiver), Some(candidate_receiver)) = (state.receiver, candidate_receiver) {
         *receiver = candidate_receiver;
     }
+    if let (Some(outbox), Some(candidate_outbox)) = (state.group_outbox, candidate_group_outbox) {
+        *outbox = candidate_outbox;
+    }
     if let (Some(outbox), Some(candidate_outbox)) = (state.control_outbox, candidate_control_outbox)
     {
         *outbox = candidate_outbox;
@@ -1795,6 +1820,10 @@ fn append_group_control_records(
             .group_controls
             .iter()
             .rposition(|record| record.starts_with(b"TCGO"));
+        let latest_group_outbox_cancellation = snapshot
+            .group_controls
+            .iter()
+            .rposition(|record| record.starts_with(b"TCGX"));
         let eviction = snapshot
             .group_controls
             .iter()
@@ -1802,12 +1831,51 @@ fn append_group_control_records(
             .find_map(|(index, _)| {
                 (Some(index) != latest_roster_view
                     && Some(index) != latest_invitation_book
-                    && Some(index) != latest_control_outbox)
+                    && Some(index) != latest_control_outbox
+                    && Some(index) != latest_group_outbox_cancellation)
                     .then_some(index)
             })
             .expect("the retained checkpoints fit inside the control record bound");
         snapshot.group_controls.remove(eviction);
     }
+}
+
+/// The latest accepted roster transition for a group stops any older logical
+/// application handoff after recovery as well as in the live coordinator.
+fn latest_group_outbox_cancellation(
+    snapshot: &OperationSnapshot,
+    group_id: tacenta_group::GroupId,
+) -> Result<Option<u64>, GroupOperationError> {
+    let mut latest = None;
+    for record in &snapshot.group_controls {
+        let Some(bytes) = record.strip_prefix(b"TCGX") else {
+            continue;
+        };
+        let (encoded_group, revision) = bytes
+            .split_at_checked(tacenta_group::GROUP_ID_LEN)
+            .ok_or(GroupOperationError::Policy)?;
+        let revision: [u8; 8] = revision
+            .try_into()
+            .map_err(|_| GroupOperationError::Policy)?;
+        if tacenta_group::GroupId::try_from(encoded_group)
+            .map_err(|_| GroupOperationError::Policy)?
+            == group_id
+        {
+            latest = Some(latest.unwrap_or(0).max(u64::from_be_bytes(revision)));
+        }
+    }
+    Ok(latest)
+}
+
+fn encode_group_outbox_cancellation_record(
+    group_id: tacenta_group::GroupId,
+    revision: u64,
+) -> Vec<u8> {
+    let mut record = Vec::with_capacity(4 + tacenta_group::GROUP_ID_LEN + 8);
+    record.extend_from_slice(b"TCGX");
+    record.extend_from_slice(group_id.as_bytes());
+    record.extend_from_slice(&revision.to_be_bytes());
+    record
 }
 
 fn encode_intent_record(intent: &[u8]) -> Result<Vec<u8>, GroupOperationError> {
@@ -2754,6 +2822,7 @@ mod tests {
                 view: &mut view,
                 receiver: Some(&mut receiver),
                 provider: Some((vec![4, 5, 6], CryptoStateEffect::Advanced)),
+                group_outbox: None,
                 control_outbox: Some(&mut outbox),
                 prepared_control: Some(PreparedControl {
                     recipient: bob(),
@@ -2824,6 +2893,7 @@ mod tests {
                 view: &mut view,
                 receiver: Some(&mut receiver),
                 provider: Some((vec![4, 5, 6], CryptoStateEffect::Advanced)),
+                group_outbox: None,
                 control_outbox: Some(&mut outbox),
                 prepared_control: Some(PreparedControl {
                     recipient: bob(),
@@ -2882,6 +2952,7 @@ mod tests {
                     view: &mut view,
                     receiver: Some(&mut receiver),
                     provider: Some((vec![4, 5, 6], CryptoStateEffect::Advanced)),
+                    group_outbox: None,
                     control_outbox: Some(&mut outbox),
                     prepared_control: Some(PreparedControl {
                         recipient: bob(),
@@ -3480,6 +3551,75 @@ mod tests {
         assert_eq!(snapshot, before_snapshot);
         assert_eq!(receiver, before_receiver);
         assert_eq!(store.recover().unwrap(), None);
+    }
+
+    #[test]
+    fn accepted_roster_successor_durably_cancels_group_outbox_work() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+        let r1 = roster(1, *view.digest(), vec![alice(), bob()]);
+        let r1_commitment = roster_commitment(&r1.encode().unwrap());
+        assert_eq!(
+            view.accept_successor(&alice(), r1, r1_commitment),
+            RosterDisposition::Accepted
+        );
+        let r2 = roster(2, *view.digest(), vec![alice()]);
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(group_id);
+        let send = logical_send();
+        let id = send.id.clone();
+        assert_eq!(
+            commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send),
+            Ok(OutboxDisposition::Inserted)
+        );
+
+        assert_eq!(
+            commit_roster_transition(
+                &mut store,
+                &mut snapshot,
+                RosterCommitState {
+                    view: &mut view,
+                    receiver: None,
+                    provider: None,
+                    group_outbox: Some(&mut outbox),
+                    control_outbox: None,
+                    prepared_control: None,
+                    invitation_book: None,
+                    admission: None,
+                },
+                &alice(),
+                r2,
+                &mut [],
+            )
+            .unwrap()
+            .disposition,
+            RosterDisposition::Accepted
+        );
+        assert_eq!(
+            outbox.send(&id).unwrap().recipients()[0].disposition,
+            RecipientDisposition::Cancelled
+        );
+        assert!(
+            snapshot
+                .group_controls
+                .iter()
+                .any(|record| record.starts_with(b"TCGX"))
+        );
+        assert_eq!(
+            recover_group_outbox(&snapshot, group_id)
+                .unwrap()
+                .send(&id)
+                .unwrap()
+                .recipients()[0]
+                .disposition,
+            RecipientDisposition::Cancelled
+        );
     }
 
     #[test]
