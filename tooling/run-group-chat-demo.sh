@@ -6,6 +6,14 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+echo "group profile: eight-member and logical-outbox cap-plus-one refusals"
+cargo test --locked -p tacenta-group \
+  tests::development_member_cap_accepts_eight_and_refuses_ninth \
+  -- --exact
+cargo test --locked -p tacenta-group \
+  send::tests::outbox_applies_live_backpressure_without_discarding_terminal_evidence \
+  -- --exact
+
 echo "group demo: durable group handoff, interleaved DM, and wrong-sender refusal"
 cargo test --locked -p tacenta-client --lib \
   tests::a_live_group_handoff_commits_before_group_delivery \

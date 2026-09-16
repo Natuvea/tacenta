@@ -608,6 +608,37 @@ mod tests {
     }
 
     #[test]
+    fn development_member_cap_accepts_eight_and_refuses_ninth() {
+        let members: Vec<_> = (0..=MAX_MEMBERS)
+            .map(|index| Member::new(vec![index as u8], vec![1]))
+            .collect();
+        assert!(
+            Roster::new(
+                group(),
+                1,
+                [0; DIGEST_LEN],
+                members[0].clone(),
+                POLICY_VERSION_V1,
+                false,
+                members[..MAX_MEMBERS].to_vec(),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            Roster::new(
+                group(),
+                1,
+                [0; DIGEST_LEN],
+                members[0].clone(),
+                POLICY_VERSION_V1,
+                false,
+                members,
+            ),
+            Err(Error::TooManyMembers)
+        );
+    }
+
+    #[test]
     fn roster_refuses_a_reserved_revision_and_trailing_bytes() {
         assert_eq!(
             Roster::new(
