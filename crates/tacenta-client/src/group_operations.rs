@@ -472,6 +472,19 @@ where
     if &invitation.target != recipient {
         return Err(GroupLiveError::Policy);
     }
+    let payload = GroupPayload::InvitationRevocation(
+        tacenta_group::InvitationRevocation::new(
+            invitation.group_id,
+            invitation.id,
+            invitation.source_revision,
+            invitation.source_roster_digest,
+        )
+        .map_err(|_| GroupLiveError::Policy)?,
+    );
+    let encoded_payload = payload.encode().map_err(|_| GroupLiveError::Policy)?;
+    if let Ok(handoff) = state.outbox.handoff(recipient, &encoded_payload) {
+        return Ok(handoff);
+    }
     prepare_outbound_invitation_control(
         client,
         store,
@@ -479,15 +492,7 @@ where
         state.outbox,
         recipient,
         route,
-        GroupPayload::InvitationRevocation(
-            tacenta_group::InvitationRevocation::new(
-                invitation.group_id,
-                invitation.id,
-                invitation.source_revision,
-                invitation.source_roster_digest,
-            )
-            .map_err(|_| GroupLiveError::Policy)?,
-        ),
+        payload,
     )
     .await
 }
@@ -510,7 +515,7 @@ fn commit_authority_invitation_revocation_transition<S: OperationStore>(
         .map_err(|_| GroupOperationError::Policy)?
         .clone();
     let mut candidate_outbox = outbox.clone();
-    candidate_outbox.cancel_for_recipient(&invitation.target);
+    candidate_outbox.cancel_non_revocation_for_recipient(&invitation.target);
     let book_state = candidate_book
         .encode_state()
         .map_err(|_| GroupOperationError::Policy)?;

@@ -1420,6 +1420,23 @@ mod tests {
         )
         .await
         .unwrap();
+        let retried_revocation = prepare_authority_invitation_revocation(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityInvitationState {
+                book: &mut authority_book,
+                outbox: &mut authority_outbox,
+                now: 3,
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+            invitation_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(retried_revocation.payload, revocation.payload);
+        assert_eq!(retried_revocation.ciphertext, revocation.ciphertext);
         assert_eq!(
             authority_book.records()[0].status,
             InvitationStatus::Revoked

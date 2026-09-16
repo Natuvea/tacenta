@@ -103,9 +103,14 @@ impl Outbox {
 
     /// Stops any unsent control, or retry of an uncertain prior handoff, for
     /// one recipient while retaining the exact ciphertext as durable evidence.
-    pub(crate) fn cancel_for_recipient(&mut self, recipient: &Member) {
+    pub(crate) fn cancel_non_revocation_for_recipient(&mut self, recipient: &Member) {
         for handoff in &mut self.handoffs {
-            if handoff.recipient != *recipient {
+            if handoff.recipient != *recipient
+                || matches!(
+                    GroupPayload::decode(&handoff.payload),
+                    Ok(GroupPayload::InvitationRevocation(_))
+                )
+            {
                 continue;
             }
             handoff.disposition = match handoff.disposition {
@@ -347,7 +352,7 @@ mod tests {
         outbox
             .record_prepared(bob(), payload.clone(), vec![7, 8])
             .unwrap();
-        outbox.cancel_for_recipient(&bob());
+        outbox.cancel_non_revocation_for_recipient(&bob());
         assert_eq!(
             outbox.handoff(&bob(), &payload).unwrap().disposition,
             Disposition::Cancelled
@@ -362,7 +367,7 @@ mod tests {
             .record_prepared(bob(), payload.clone(), vec![7, 8])
             .unwrap();
         retried.reserve(&bob(), &payload).unwrap();
-        retried.cancel_for_recipient(&bob());
+        retried.cancel_non_revocation_for_recipient(&bob());
         assert_eq!(
             retried.handoff(&bob(), &payload).unwrap().disposition,
             Disposition::CancelledAfterHandoff
