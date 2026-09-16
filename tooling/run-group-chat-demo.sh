@@ -32,4 +32,4 @@ cargo test --locked -p tacenta-client --lib \
 echo "group demo: durable authenticated invitation revocation"
 cargo test --locked -p tacenta-client --lib \
   tests::a_live_invitation_revocation_uses_a_durable_control_handoff \
-  -- --exact
+  -- --exact --nocapture

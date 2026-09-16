@@ -69,6 +69,11 @@ impl OperationSnapshot {
         Some(out)
     }
 
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn encoded_len(&self) -> Option<usize> {
+        self.encode().map(|bytes| bytes.len())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn decode(bytes: &[u8]) -> Option<Self> {
         fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {

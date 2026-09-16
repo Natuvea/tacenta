@@ -1553,6 +1553,11 @@ mod tests {
             Ok(InvitationStatus::Revoked)
         );
         assert_eq!(bob_book.records()[0].status, InvitationStatus::Revoked);
+        println!(
+            "group-profile authority_operation_snapshot_bytes={} target_operation_snapshot_bytes={}",
+            authority_snapshot.encoded_len().unwrap(),
+            bob_snapshot.encoded_len().unwrap(),
+        );
     }
 
     #[tokio::test]
