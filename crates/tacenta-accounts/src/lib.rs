@@ -24,14 +24,17 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use rand::{RngCore as _, TryRngCore as _};
 use sha2::{Digest, Sha256};
+use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
 mod id;
+mod inventory;
 mod persist;
 #[cfg(feature = "postgres")]
 pub mod pg;
 mod protocol;
 mod ratelimit;
 mod store;
+pub use inventory::{DeviceInventory, InventoryError};
 pub use protocol::{
     AccountRequest, AccountResponse, SignupReason, decode_account_request, decode_account_response,
     encode_account_request, encode_account_response,
@@ -202,6 +205,9 @@ pub struct Accounts {
     // hold several (rotation): the map is keyed by key, not by tenant.
     api_keys: HashMap<[u8; 32], ApiKeyRecord>,
     users: HashMap<(TenantId, String), UserRecord>,
+    // Per-account group-capable device lifecycle state. A user without an
+    // entry has the empty generation-zero inventory.
+    device_inventories: HashMap<(TenantId, String), DeviceInventory>,
     // sha256(session token) -> (tenant, username, expires_at unix seconds).
     sessions: HashMap<[u8; 32], (TenantId, String, u64)>,
     // Failed-sign-in throttle, keyed by (tenant, identifier).
@@ -549,6 +555,78 @@ impl Accounts {
         let tenant_username = &self.tenants.get(tenant)?.username;
         Some(format!("{tenant_username}/{username}"))
     }
+
+    /// The durable device inventory for an existing account. A newly-created
+    /// account starts at the empty generation-zero inventory; `None` means the
+    /// account itself does not exist.
+    pub fn device_inventory(&self, tenant: &TenantId, username: &str) -> Option<DeviceInventory> {
+        let username = normalize(username);
+        self.users
+            .contains_key(&(tenant.clone(), username.clone()))
+            .then(|| {
+                self.device_inventories
+                    .get(&(tenant.clone(), username))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+    }
+
+    /// Record a newly proven device binding against an exact predecessor
+    /// generation. Authorization and proof of possession are intentionally
+    /// performed by the provisioning service before this mutation; this method
+    /// makes the state transition durable and rejects conflicting retries.
+    pub fn link_device_binding(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        binding: DeviceBinding,
+    ) -> Result<DeviceInventory, InventoryError> {
+        let username = normalize(username);
+        let key = (tenant.clone(), username.clone());
+        if !self.users.contains_key(&key) {
+            return Err(InventoryError::UnknownUser);
+        }
+        let current = self
+            .device_inventories
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        if current.generation != predecessor_generation {
+            return Err(InventoryError::PredecessorMismatch);
+        }
+        if current.active.iter().any(|existing| existing == &binding) {
+            return Err(InventoryError::DuplicateBinding);
+        }
+        if current
+            .active
+            .iter()
+            .any(|existing| existing.device_id == binding.device_id)
+        {
+            return Err(InventoryError::DeviceIdInUse);
+        }
+        if current
+            .revoked
+            .iter()
+            .any(|revoked| revoked.binding == binding)
+        {
+            return Err(InventoryError::BindingRevoked);
+        }
+
+        let mut next = current;
+        next.generation = next
+            .generation
+            .checked_add(1)
+            .ok_or(InventoryError::GenerationExhausted)?;
+        next.active.push(binding);
+        next.active.sort();
+        let handle = self
+            .handle(tenant, &username)
+            .expect("an inventory user must have an existing tenant");
+        inventory::validate_inventory(&handle, &next)?;
+        self.device_inventories.insert(key, next.clone());
+        Ok(next)
+    }
 }
 
 /// Trim and lowercase, the normal form for a case-insensitive identifier.
@@ -721,6 +799,7 @@ fn generate_api_key() -> (ApiKey, [u8; 32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tacenta_core::crypto::groups::inventory::GROUP_EPOCH_V1;
 
     fn tenant(accounts: &mut Accounts) -> (TenantId, ApiKey) {
         let (t, key) = accounts
@@ -937,6 +1016,59 @@ mod tests {
                 .all(|k| k.prefix != k1.prefix())
         );
         assert_eq!(a.tenant_by_api_key(k1.as_str()), Some(t1.id));
+    }
+
+    fn group_binding(device_id: u32, key: u8) -> DeviceBinding {
+        DeviceBinding {
+            device_id,
+            identity_public_key: [key; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: None,
+        }
+    }
+
+    #[test]
+    fn device_inventory_uses_exact_predecessor_generations() {
+        let mut accounts = Accounts::new();
+        let (tenant, _) = tenant(&mut accounts);
+        accounts
+            .sign_up_user(&tenant, "alice", "hunter2!!")
+            .unwrap();
+
+        assert_eq!(
+            accounts.device_inventory(&tenant, "alice"),
+            Some(DeviceInventory::default())
+        );
+        let first = accounts
+            .link_device_binding(&tenant, "Alice", 0, group_binding(1, 1))
+            .unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(first.active, vec![group_binding(1, 1)]);
+
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 0, group_binding(2, 2)),
+            Err(InventoryError::PredecessorMismatch),
+        );
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 1, group_binding(1, 2)),
+            Err(InventoryError::DeviceIdInUse),
+        );
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 1, group_binding(1, 1)),
+            Err(InventoryError::DuplicateBinding),
+        );
+        assert_eq!(
+            accounts.link_device_binding(
+                &tenant,
+                "alice",
+                1,
+                DeviceBinding {
+                    capabilities: 2,
+                    ..group_binding(2, 2)
+                },
+            ),
+            Err(InventoryError::Invalid),
+        );
     }
 }
 

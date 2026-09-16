@@ -16,6 +16,7 @@ license.workspace = true
 # store (decision record 0030).
 
 [dependencies]
+tacenta-core = { workspace = true }
 argon2 = "0.5"
 sha2 = "0.11"
 rand = "0.9"
