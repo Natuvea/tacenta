@@ -639,6 +639,35 @@ mod tests {
     }
 
     #[test]
+    fn development_profile_reports_checkpoint_sizes_at_two_three_and_eight_members() {
+        for member_count in [2, 3, MAX_MEMBERS] {
+            let mut members = Vec::with_capacity(member_count);
+            members.push(alice());
+            for index in 1..member_count {
+                members.push(Member::new(vec![b'm', index as u8], vec![1]));
+            }
+            let roster = Roster::new(
+                group(),
+                1,
+                [0; DIGEST_LEN],
+                alice(),
+                POLICY_VERSION_V1,
+                false,
+                members.clone(),
+            )
+            .unwrap();
+            let roster_bytes = roster.encode().unwrap();
+            let receiver = GroupReceiver::new(roster, [0; DIGEST_LEN], members[1].clone());
+            let receiver_state = receiver.encode_state().unwrap();
+            println!(
+                "group-profile members={member_count} roster_bytes={} receiver_state_bytes={}",
+                roster_bytes.len(),
+                receiver_state.len(),
+            );
+        }
+    }
+
+    #[test]
     fn roster_refuses_a_reserved_revision_and_trailing_bytes() {
         assert_eq!(
             Roster::new(

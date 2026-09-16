@@ -14,6 +14,11 @@ cargo test --locked -p tacenta-group \
   send::tests::outbox_applies_live_backpressure_without_discarding_terminal_evidence \
   -- --exact
 
+echo "group profile: deterministic 2/3/8-member checkpoint sizes"
+cargo test --locked -p tacenta-group \
+  tests::development_profile_reports_checkpoint_sizes_at_two_three_and_eight_members \
+  -- --exact --nocapture
+
 echo "group demo: durable group handoff, interleaved DM, and wrong-sender refusal"
 cargo test --locked -p tacenta-client --lib \
   tests::a_live_group_handoff_commits_before_group_delivery \
