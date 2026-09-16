@@ -18,7 +18,11 @@ the result. Repeating the same control returns the durable revoked state.
 Revocation is terminal for a pending or accepted invitation. It does not remove
 an admitted member: removal remains an authenticated roster successor. A
 revoked target receives no later successor-history or admission control, even
-if an older prepared handoff is recovered.
+if an older prepared handoff is recovered. The authority checkpoints the
+terminal invitation state and cancellation of that target's earlier
+non-revocation controls together, retaining the exact ciphertext as evidence
+but refusing first dispatch and retry. A retried revocation instead reuses its
+already committed exact handoff.
 
 ## Considered
 
