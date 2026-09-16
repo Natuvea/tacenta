@@ -362,6 +362,81 @@ impl AccountStore {
         }
     }
 
+    /// Atomically revoke one exact active binding after the caller verifies
+    /// the PG-02 lifecycle authorization and continuity or recovery proof.
+    pub async fn revoke_device_binding(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        idempotency_key: [u8; 32],
+        retired: DeviceBinding,
+    ) -> Result<DeviceInventory, StoreError> {
+        match self {
+            AccountStore::Memory(m) => m
+                .lock()
+                .expect("accounts mutex poisoned")
+                .revoke_device_binding(
+                    tenant,
+                    username,
+                    predecessor_generation,
+                    idempotency_key,
+                    retired,
+                )
+                .map_err(StoreError::Inventory),
+            #[cfg(feature = "postgres")]
+            AccountStore::Postgres(s) => s
+                .revoke_device_binding(
+                    tenant,
+                    username,
+                    predecessor_generation,
+                    idempotency_key,
+                    retired,
+                )
+                .await
+                .map_err(StoreError::from),
+        }
+    }
+
+    /// Atomically retire one exact active binding and activate its committed
+    /// successor after the caller verifies the PG-02 lifecycle proofs.
+    pub async fn replace_device_binding(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        idempotency_key: [u8; 32],
+        retired: DeviceBinding,
+        replacement: DeviceBinding,
+    ) -> Result<DeviceInventory, StoreError> {
+        match self {
+            AccountStore::Memory(m) => m
+                .lock()
+                .expect("accounts mutex poisoned")
+                .replace_device_binding(
+                    tenant,
+                    username,
+                    predecessor_generation,
+                    idempotency_key,
+                    retired,
+                    replacement,
+                )
+                .map_err(StoreError::Inventory),
+            #[cfg(feature = "postgres")]
+            AccountStore::Postgres(s) => s
+                .replace_device_binding(
+                    tenant,
+                    username,
+                    predecessor_generation,
+                    idempotency_key,
+                    retired,
+                    replacement,
+                )
+                .await
+                .map_err(StoreError::from),
+        }
+    }
+
     /// A whole-state snapshot for the snapshot-persisted in-memory backend, or
     /// `None` for a durable backend (Postgres persists itself, so the server
     /// writes no snapshot for it).

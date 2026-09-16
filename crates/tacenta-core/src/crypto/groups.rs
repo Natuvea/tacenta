@@ -20,9 +20,15 @@ pub fn payload_commitment(context: &[u8]) -> [u8; 32] {
 /// authorization, durable lifecycle state, and directory publication.
 pub mod inventory {
     pub use open_tacenta::groups::inventory::{
-        DeviceBinding, Error, GROUP_EPOCH_V1, INVENTORY_DOMAIN, InventoryStatement,
-        MAX_ACCOUNT_BYTES, MAX_ACTIVE_BINDINGS, MAX_RECENT_REVOCATIONS, Revocation,
+        BINDING_COMMITMENT_LABEL, DeviceBinding, Error, GROUP_EPOCH_V1, INVENTORY_DOMAIN,
+        InventoryStatement, MAX_ACCOUNT_BYTES, MAX_ACTIVE_BINDINGS, MAX_RECENT_REVOCATIONS,
+        Revocation,
     };
+
+    /// Commit the exact canonical binding a replacement retires.
+    pub fn binding_commitment(binding: &DeviceBinding) -> Result<[u8; 32], Error> {
+        open_tacenta::groups::inventory::binding_commitment(binding)
+    }
 
     /// Derive the pinned public key corresponding to a deployment-held issuer
     /// secret. The secret stays with the service; callers distribute only this

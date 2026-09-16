@@ -13,7 +13,7 @@
 
 use tacenta_accounts::pg::{PgAccounts, PgError};
 use tacenta_accounts::{AuthError, DeviceInventory, InventoryError, SignupError};
-use tacenta_core::crypto::groups::inventory::{DeviceBinding, GROUP_EPOCH_V1};
+use tacenta_core::crypto::groups::inventory::{DeviceBinding, GROUP_EPOCH_V1, binding_commitment};
 
 /// Serialize the Postgres tests: they share one database and each starts by
 /// truncating it, so they must not run concurrently. Held for the whole test.
@@ -123,10 +123,50 @@ async fn the_account_flow_works_on_postgres() {
     );
     assert!(matches!(
         store
-            .link_device_binding(&tenant.id, "alice", 0, [2; 32], binding)
+            .link_device_binding(&tenant.id, "alice", 0, [2; 32], binding.clone())
             .await,
         Err(PgError::Inventory(InventoryError::PredecessorMismatch)),
     ));
+    let replacement = DeviceBinding {
+        device_id: 2,
+        identity_public_key: [8; 32],
+        capabilities: GROUP_EPOCH_V1,
+        replacement_predecessor: Some(binding_commitment(&binding).unwrap()),
+    };
+    let replaced = store
+        .replace_device_binding(
+            &tenant.id,
+            "alice",
+            1,
+            [3; 32],
+            binding.clone(),
+            replacement.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replaced.generation, 2);
+    assert_eq!(replaced.active, vec![replacement.clone()]);
+    assert_eq!(
+        store
+            .replace_device_binding(
+                &tenant.id,
+                "alice",
+                1,
+                [3; 32],
+                binding,
+                replacement.clone(),
+            )
+            .await
+            .unwrap(),
+        replaced,
+        "the database keeps the original replacement result for an exact retry"
+    );
+    let revoked = store
+        .revoke_device_binding(&tenant.id, "alice", 2, [4; 32], replacement)
+        .await
+        .unwrap();
+    assert_eq!(revoked.generation, 3);
+    assert!(revoked.active.is_empty());
 
     // Sign in issues a session that validates; the handle resolves.
     let (_, token) = store
