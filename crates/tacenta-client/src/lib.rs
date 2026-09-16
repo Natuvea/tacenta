@@ -322,16 +322,17 @@ mod tests {
     use super::*;
     use crate::group_control_outbox::Outbox as ControlOutbox;
     use crate::group_operations::{
-        AuthorityControlState, GroupLiveError, GroupPayloadDisposition, GroupReceiveInput,
-        InstalledControlState, InvitationAdmission, commit_group_invitation_acceptance,
-        commit_group_invitation_bootstrap, commit_group_invitation_transition,
+        AuthorityControlState, AuthorityInvitationState, GroupLiveError, GroupPayloadDisposition,
+        GroupReceiveInput, InstalledControlState, InvitationAdmission,
+        commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
+        commit_group_invitation_revocation, commit_group_invitation_transition,
         commit_group_payload, commit_group_plaintext, commit_logical_intent,
         commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
-        dispatch_outbox_group_handoff, prepare_authority_roster_control,
-        prepare_installed_roster_control, prepare_outbound_invitation_control,
-        prepare_outbox_group_recipient, recover_group_control_outbox,
-        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
-        recover_group_roster_view,
+        dispatch_outbox_group_handoff, prepare_authority_invitation_revocation,
+        prepare_authority_roster_control, prepare_installed_roster_control,
+        prepare_outbound_invitation_control, prepare_outbox_group_recipient,
+        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
+        recover_group_receiver, recover_group_roster_view,
     };
     use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
     use std::net::{IpAddr, Ipv4Addr};
@@ -1270,6 +1271,208 @@ mod tests {
                 ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn a_live_invitation_revocation_uses_a_durable_control_handoff() {
+        let (directory, relay) = start_server().await;
+        let mut alice = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let mut bob = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+bob".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
+        let alice_route = alice.address().clone();
+        let bob_route = bob.address().clone();
+        let alice_member = Member::new(alice.party.identity_key(), vec![1]);
+        let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let genesis = Roster::new(
+            group_id,
+            0,
+            [0; DIGEST_LEN],
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice_member.clone()],
+        )
+        .unwrap();
+        let genesis_digest =
+            tacenta_core::crypto::groups::roster_commitment(&genesis.encode().unwrap());
+        let invitation_id = InvitationId::new([10; 16]);
+        let invitation = Invitation::new(
+            invitation_id,
+            group_id,
+            bob_member.clone(),
+            0,
+            genesis_digest,
+            POLICY_VERSION_V1,
+            10,
+        )
+        .unwrap();
+        let mut authority_book = InvitationBook::new(group_id);
+        let mut authority_store = GroupStore { snapshot: None };
+        let mut authority_snapshot = OperationSnapshot::empty(0);
+        commit_group_invitation_transition(
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_book,
+            |book| {
+                book.create(
+                    &alice_member,
+                    &alice_member,
+                    &[alice_member.clone()],
+                    invitation.clone(),
+                    0,
+                )
+                .map(|_| ())
+            },
+        )
+        .unwrap();
+        let mut authority_outbox = ControlOutbox::default();
+        let bootstrap = prepare_outbound_invitation_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &bob_route,
+            GroupPayload::InvitationBootstrap(
+                InvitationBootstrap::new(invitation, genesis.clone()).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &bootstrap.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+
+        let mut bob_book = InvitationBook::new(group_id);
+        let mut bob_store = GroupStore { snapshot: None };
+        let mut bob_snapshot = OperationSnapshot::empty(0);
+        let inbound = bob.receive().await.unwrap();
+        assert!(
+            commit_group_invitation_bootstrap(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_book,
+                &bob_member,
+                1,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            )
+            .is_ok()
+        );
+
+        let revocation = prepare_authority_invitation_revocation(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            AuthorityInvitationState {
+                book: &mut authority_book,
+                outbox: &mut authority_outbox,
+                now: 2,
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+            invitation_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            authority_book.records()[0].status,
+            InvitationStatus::Revoked
+        );
+        let mut authority_view =
+            RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
+        let mut authority_receiver =
+            GroupReceiver::new(genesis.clone(), genesis_digest, alice_member.clone());
+        let mut authority_sends = Vec::new();
+        let successor = Roster::new(
+            group_id,
+            1,
+            genesis_digest,
+            alice_member.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice_member.clone(), bob_member.clone()],
+        )
+        .unwrap();
+        assert!(matches!(
+            prepare_authority_roster_control(
+                &mut alice,
+                &mut authority_store,
+                &mut authority_snapshot,
+                AuthorityControlState {
+                    view: &mut authority_view,
+                    receiver: &mut authority_receiver,
+                    logical_sends: &mut authority_sends,
+                    outbox: &mut authority_outbox,
+                    invitation_book: Some(&mut authority_book),
+                    admission: None,
+                    control_now: 2,
+                },
+                &alice_member,
+                (&bob_member, &bob_route),
+                successor,
+            )
+            .await,
+            Err(GroupLiveError::Policy)
+        ));
+        dispatch_outbound_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            &mut authority_outbox,
+            &bob_member,
+            &revocation.payload,
+            &bob_route,
+        )
+        .await
+        .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(
+            commit_group_invitation_revocation(
+                &mut bob_store,
+                &mut bob_snapshot,
+                &mut bob_book,
+                &bob_member,
+                &alice_member,
+                2,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(InvitationStatus::Revoked)
+        );
+        assert_eq!(bob_book.records()[0].status, InvitationStatus::Revoked);
     }
 
     #[tokio::test]
