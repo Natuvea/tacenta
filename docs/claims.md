@@ -501,11 +501,13 @@ not in our proofs' dependency cone.
 - **Bounded group experiment** (`tacenta-group` and the client group-operation
   tests): canonical roster/context values, invitation and logical-send policy,
   core-bound commitments, bounded dedup/defer queues, restart codecs, and the
-  group envelope class have focused Rust tests. This is **tested, not proven**.
-  It is not a shipped group-chat protocol, a production membership system, or
-  a claim of end-to-end group delivery; the real three-client coordinator and
-  production sender-key, authority, sequencing, multi-device, sealed-sender,
-  and franking work remain open.
+  group envelope class have focused Rust tests. The repeatable group demo also
+  drives the bounded three-client invitation, restart, admission, removal,
+  revocation, direct-message interleaving, and wrong-sender paths through the
+  real in-process directory, relay, provider, and operation store. This is
+  **tested, not proven**. It is not a shipped group-chat protocol or a
+  production membership system; sender-key, production authority, sequencing,
+  multi-device, sealed-sender, franking, and scale work remain open.
 - Style gates: rustfmt and clippy at `-D warnings`.
 
 ## Assumed — the trusted base
