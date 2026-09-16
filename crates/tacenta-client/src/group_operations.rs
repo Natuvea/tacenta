@@ -128,6 +128,22 @@ fn recipient_can_observe_invitation_successor(
     })
 }
 
+/// A revoked invitation must not become a side channel for later roster
+/// controls, even if a caller tries to use a previously valid route.
+fn recipient_has_revoked_invitation(
+    book: Option<&InvitationBook>,
+    successor: &Roster,
+    recipient: &Member,
+) -> bool {
+    book.is_some_and(|book| {
+        book.records().iter().any(|invitation| {
+            invitation.group_id == successor.group_id
+                && invitation.target == *recipient
+                && invitation.status == InvitationStatus::Revoked
+        })
+    })
+}
+
 fn recipient_can_receive_installed_roster_control(
     view: &RosterView,
     authenticated_authority: &Member,
@@ -527,13 +543,14 @@ where
     if client.party.identity_key() != authenticated_authority.identity() {
         return Err(GroupLiveError::Policy);
     }
-    if !recipient_can_receive_roster_control(state.view, &successor, recipient)
-        && !recipient_can_observe_invitation_successor(
-            state.invitation_book.as_deref(),
-            &successor,
-            recipient,
-            state.control_now,
-        )
+    if recipient_has_revoked_invitation(state.invitation_book.as_deref(), &successor, recipient)
+        || (!recipient_can_receive_roster_control(state.view, &successor, recipient)
+            && !recipient_can_observe_invitation_successor(
+                state.invitation_book.as_deref(),
+                &successor,
+                recipient,
+                state.control_now,
+            ))
     {
         return Err(GroupLiveError::Policy);
     }
@@ -598,6 +615,7 @@ where
 {
     let (recipient, route) = recipient_route;
     if client.party.identity_key() != authenticated_authority.identity()
+        || recipient_has_revoked_invitation(state.invitation_book, state.view.roster(), recipient)
         || (!recipient_can_receive_installed_roster_control(
             state.view,
             authenticated_authority,
@@ -2014,8 +2032,9 @@ mod tests {
         commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
         live_client_error, recipient_can_observe_invitation_successor,
         recipient_can_receive_installed_roster_control, recipient_can_receive_roster_control,
-        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
-        recover_group_receiver, recover_group_roster_view,
+        recipient_has_revoked_invitation, recover_group_control_outbox,
+        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -2913,6 +2932,11 @@ mod tests {
         ));
         book.revoke(InvitationId::new([7; 16]), &alice(), &alice(), 1)
             .unwrap();
+        assert!(recipient_has_revoked_invitation(
+            Some(&book),
+            &successor,
+            &observer,
+        ));
         assert!(!recipient_can_observe_invitation_successor(
             Some(&book),
             &successor,

@@ -322,10 +322,11 @@ mod tests {
     use super::*;
     use crate::group_control_outbox::Outbox as ControlOutbox;
     use crate::group_operations::{
-        AuthorityControlState, GroupPayloadDisposition, GroupReceiveInput, InstalledControlState,
-        InvitationAdmission, commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
-        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
-        commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
+        AuthorityControlState, GroupLiveError, GroupPayloadDisposition, GroupReceiveInput,
+        InstalledControlState, InvitationAdmission, commit_group_invitation_acceptance,
+        commit_group_invitation_bootstrap, commit_group_invitation_transition,
+        commit_group_payload, commit_group_plaintext, commit_logical_intent,
+        commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
         dispatch_outbox_group_handoff, prepare_authority_roster_control,
         prepare_installed_roster_control, prepare_outbound_invitation_control,
         prepare_outbox_group_recipient, recover_group_control_outbox,
@@ -1593,6 +1594,27 @@ mod tests {
                 .unwrap()
                 .ciphertext,
             member_ciphertext
+        );
+        let mut revoked_book = authority_book.clone();
+        revoked_book
+            .revoke(InvitationId::new([9; 16]), &alice_member, &alice_member, 1)
+            .unwrap();
+        assert_eq!(
+            prepare_installed_roster_control(
+                &mut alice,
+                &mut authority_store,
+                &mut authority_snapshot,
+                InstalledControlState {
+                    view: &authority_view,
+                    outbox: &mut authority_outbox,
+                    invitation_book: Some(&revoked_book),
+                    control_now: 1,
+                },
+                &alice_member,
+                (&carol_member, &carol_route),
+            )
+            .await,
+            Err(GroupLiveError::Policy)
         );
         let observer_control = prepare_installed_roster_control(
             &mut alice,
