@@ -11,7 +11,7 @@ use tacenta_core::crypto::{
     groups::{payload_commitment, roster_commitment},
 };
 use tacenta_group::{
-    ApplicationContext, Error as GroupError, GroupOutbox, GroupPayload, GroupReceiver,
+    ApplicationContext, Error as GroupError, GroupOutbox, GroupPayload, GroupReceiver, Invitation,
     InvitationBook, InvitationBootstrap, InvitationId, InvitationStatus, LogicalMessageId,
     LogicalSend, Member, OutboxDisposition, ReceiveDisposition, ReceiveRefusal, RecipientProgress,
     RevalidatedReceive, Roster, RosterDisposition, RosterRefusal, RosterView,
@@ -459,17 +459,19 @@ where
     if client.party.identity_key() != authority.identity() {
         return Err(GroupLiveError::Policy);
     }
-    commit_group_invitation_transition(store, snapshot, state.book, |book| {
-        book.revoke(invitation_id, authority, authority, state.now)
-            .map(|_| ())
-    })
+    let invitation = commit_authority_invitation_revocation_transition(
+        store,
+        snapshot,
+        state.book,
+        state.outbox,
+        authority,
+        invitation_id,
+        state.now,
+    )
     .map_err(GroupLiveError::from)?;
-    let invitation = state
-        .book
-        .records()
-        .iter()
-        .find(|record| record.id == invitation_id && &record.target == recipient)
-        .ok_or(GroupLiveError::Policy)?;
+    if &invitation.target != recipient {
+        return Err(GroupLiveError::Policy);
+    }
     prepare_outbound_invitation_control(
         client,
         store,
@@ -488,6 +490,52 @@ where
         ),
     )
     .await
+}
+
+/// Atomically records an authority revocation and cancels any earlier
+/// recipient-specific control handoff that could otherwise be retried after a
+/// restart. The cancelled ciphertext remains in the outbox transcript.
+fn commit_authority_invitation_revocation_transition<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    book: &mut InvitationBook,
+    outbox: &mut ControlOutbox,
+    authority: &Member,
+    invitation_id: InvitationId,
+    now: u64,
+) -> Result<Invitation, GroupOperationError> {
+    let mut candidate_book = book.clone();
+    let invitation = candidate_book
+        .revoke(invitation_id, authority, authority, now)
+        .map_err(|_| GroupOperationError::Policy)?
+        .clone();
+    let mut candidate_outbox = outbox.clone();
+    candidate_outbox.cancel_for_recipient(&invitation.target);
+    let book_state = candidate_book
+        .encode_state()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let outbox_state = candidate_outbox
+        .encode_state()
+        .map_err(|_| GroupOperationError::Policy)?;
+    let mut candidate_snapshot = snapshot.clone();
+    candidate_snapshot.generation = candidate_snapshot
+        .generation
+        .checked_add(1)
+        .ok_or(GroupOperationError::Frozen)?;
+    append_group_control_records(
+        &mut candidate_snapshot,
+        [
+            encode_invitation_book_record(&book_state)?,
+            encode_control_outbox_record(&outbox_state)?,
+        ],
+    );
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *book = candidate_book;
+    *outbox = candidate_outbox;
+    Ok(invitation)
 }
 
 /// Encrypts one canonical roster successor for an authenticated recipient and

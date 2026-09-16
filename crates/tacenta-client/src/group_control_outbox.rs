@@ -13,6 +13,8 @@ pub(crate) enum Disposition {
     HandedOff,
     RelayAccepted,
     ExhaustedUnknown,
+    Cancelled,
+    CancelledAfterHandoff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +85,10 @@ impl Outbox {
             .ok_or(GroupError::Malformed)?;
         match handoff.disposition {
             Disposition::Prepared | Disposition::HandedOff => {}
-            Disposition::RelayAccepted | Disposition::ExhaustedUnknown => {
+            Disposition::RelayAccepted
+            | Disposition::ExhaustedUnknown
+            | Disposition::Cancelled
+            | Disposition::CancelledAfterHandoff => {
                 return Err(GroupError::WrongDisposition);
             }
         }
@@ -94,6 +99,21 @@ impl Outbox {
         handoff.attempts_reserved += 1;
         handoff.disposition = Disposition::HandedOff;
         Ok(handoff.clone())
+    }
+
+    /// Stops any unsent control, or retry of an uncertain prior handoff, for
+    /// one recipient while retaining the exact ciphertext as durable evidence.
+    pub(crate) fn cancel_for_recipient(&mut self, recipient: &Member) {
+        for handoff in &mut self.handoffs {
+            if handoff.recipient != *recipient {
+                continue;
+            }
+            handoff.disposition = match handoff.disposition {
+                Disposition::Prepared => Disposition::Cancelled,
+                Disposition::HandedOff => Disposition::CancelledAfterHandoff,
+                disposition => disposition,
+            };
+        }
     }
 
     pub(crate) fn handoff(
@@ -162,6 +182,8 @@ impl Outbox {
                 Disposition::HandedOff => 1,
                 Disposition::RelayAccepted => 2,
                 Disposition::ExhaustedUnknown => 3,
+                Disposition::Cancelled => 4,
+                Disposition::CancelledAfterHandoff => 5,
             });
         }
         Ok(state)
@@ -208,6 +230,8 @@ impl Outbox {
                 1 => Disposition::HandedOff,
                 2 => Disposition::RelayAccepted,
                 3 => Disposition::ExhaustedUnknown,
+                4 => Disposition::Cancelled,
+                5 => Disposition::CancelledAfterHandoff,
                 _ => return Err(GroupError::Malformed),
             };
             if attempts > MAX_ATTEMPTS
@@ -304,6 +328,49 @@ mod tests {
 
         let state = outbox.encode_state().unwrap();
         assert_eq!(Outbox::decode_state(&state), Ok(outbox));
+    }
+
+    #[test]
+    fn recipient_cancellation_retains_evidence_but_blocks_later_dispatch() {
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let payload = GroupPayload::Roster(roster).encode().unwrap();
+        let mut outbox = Outbox::default();
+        outbox
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        outbox.cancel_for_recipient(&bob());
+        assert_eq!(
+            outbox.handoff(&bob(), &payload).unwrap().disposition,
+            Disposition::Cancelled
+        );
+        assert_eq!(
+            outbox.reserve(&bob(), &payload),
+            Err(GroupError::WrongDisposition)
+        );
+
+        let mut retried = Outbox::default();
+        retried
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        retried.reserve(&bob(), &payload).unwrap();
+        retried.cancel_for_recipient(&bob());
+        assert_eq!(
+            retried.handoff(&bob(), &payload).unwrap().disposition,
+            Disposition::CancelledAfterHandoff
+        );
+        assert_eq!(
+            Outbox::decode_state(&retried.encode_state().unwrap()),
+            Ok(retried)
+        );
     }
 
     #[test]

@@ -320,7 +320,7 @@ fn take_u32(bytes: &mut &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::group_control_outbox::Outbox as ControlOutbox;
+    use crate::group_control_outbox::{Disposition as ControlDisposition, Outbox as ControlOutbox};
     use crate::group_operations::{
         AuthorityControlState, AuthorityInvitationState, GroupLiveError, GroupPayloadDisposition,
         GroupReceiveInput, InstalledControlState, InvitationAdmission,
@@ -1387,6 +1387,24 @@ mod tests {
             .is_ok()
         );
 
+        let observer_view =
+            RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
+        let observer_control = prepare_installed_roster_control(
+            &mut alice,
+            &mut authority_store,
+            &mut authority_snapshot,
+            InstalledControlState {
+                view: &observer_view,
+                outbox: &mut authority_outbox,
+                invitation_book: Some(&authority_book),
+                control_now: 1,
+            },
+            &alice_member,
+            (&bob_member, &bob_route),
+        )
+        .await
+        .unwrap();
+
         let revocation = prepare_authority_invitation_revocation(
             &mut alice,
             &mut authority_store,
@@ -1405,6 +1423,26 @@ mod tests {
         assert_eq!(
             authority_book.records()[0].status,
             InvitationStatus::Revoked
+        );
+        assert_eq!(
+            authority_outbox
+                .handoff(&bob_member, &observer_control.payload)
+                .unwrap()
+                .disposition,
+            ControlDisposition::Cancelled
+        );
+        assert_eq!(
+            dispatch_outbound_roster_control(
+                &mut alice,
+                &mut authority_store,
+                &mut authority_snapshot,
+                &mut authority_outbox,
+                &bob_member,
+                &observer_control.payload,
+                &bob_route,
+            )
+            .await,
+            Err(GroupLiveError::Policy)
         );
         let mut authority_view =
             RosterView::accept_genesis(&alice_member, genesis.clone(), genesis_digest).unwrap();
