@@ -333,17 +333,30 @@ impl AccountStore {
         tenant: &TenantId,
         username: &str,
         predecessor_generation: u64,
+        idempotency_key: [u8; 32],
         binding: DeviceBinding,
     ) -> Result<DeviceInventory, StoreError> {
         match self {
             AccountStore::Memory(m) => m
                 .lock()
                 .expect("accounts mutex poisoned")
-                .link_device_binding(tenant, username, predecessor_generation, binding)
+                .link_device_binding(
+                    tenant,
+                    username,
+                    predecessor_generation,
+                    idempotency_key,
+                    binding,
+                )
                 .map_err(StoreError::Inventory),
             #[cfg(feature = "postgres")]
             AccountStore::Postgres(s) => s
-                .link_device_binding(tenant, username, predecessor_generation, binding)
+                .link_device_binding(
+                    tenant,
+                    username,
+                    predecessor_generation,
+                    idempotency_key,
+                    binding,
+                )
                 .await
                 .map_err(StoreError::from),
         }

@@ -38,8 +38,17 @@ pub enum InventoryError {
     DeviceIdInUse,
     /// A revoked binding may not silently become active again.
     BindingRevoked,
+    /// An idempotency key was reused for a different mutation request.
+    IdempotencyConflict,
     /// The proposed record violates the canonical inventory bounds.
     Invalid,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InventoryMutation {
+    pub predecessor_generation: u64,
+    pub binding: DeviceBinding,
+    pub result: DeviceInventory,
 }
 
 pub(crate) fn validate_inventory(
@@ -153,6 +162,20 @@ pub(crate) fn link_inventory(
     next.active.sort();
     validate_inventory(account_handle, &next)?;
     Ok(next)
+}
+
+#[cfg(feature = "postgres")]
+pub(crate) fn encode_link_request(predecessor_generation: u64, binding: &DeviceBinding) -> Vec<u8> {
+    let mut out = predecessor_generation.to_be_bytes().to_vec();
+    put_binding(&mut out, binding);
+    out
+}
+
+#[cfg(feature = "postgres")]
+pub(crate) fn decode_link_request(bytes: &[u8]) -> Option<(u64, DeviceBinding)> {
+    let (predecessor_generation, rest) = take_u64(bytes)?;
+    let (binding, rest) = take_binding(rest)?;
+    rest.is_empty().then_some((predecessor_generation, binding))
 }
 
 fn put_binding(out: &mut Vec<u8>, binding: &DeviceBinding) {
