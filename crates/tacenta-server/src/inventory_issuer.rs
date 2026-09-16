@@ -142,6 +142,13 @@ mod tests {
     use tacenta_accounts::DeviceInventory;
     use tacenta_core::crypto::groups::inventory::InventoryStatement;
 
+    fn issuer_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "tacenta-inventory-issuer-{}",
+            rand::random::<u64>()
+        ))
+    }
+
     #[test]
     fn issuer_signs_with_a_distinct_pinned_public_key() {
         let issuer = InventoryIssuer::from_secret(7, [9; 32]);
@@ -151,5 +158,18 @@ mod tests {
         let decoded = InventoryStatement::decode_signed(&signed, &issuer.public_key()).unwrap();
         assert_eq!(decoded.issuer_key_id, 7);
         assert_eq!(decoded.account_handle, "acme/alice");
+    }
+
+    #[test]
+    fn issuer_key_file_is_stable_and_rejects_an_unexpected_key_id() {
+        let path = issuer_path();
+        let first = InventoryIssuer::load_or_create(&path, 7).unwrap();
+        let public = first.public_key();
+        drop(first);
+
+        let loaded = InventoryIssuer::load_or_create(&path, 7).unwrap();
+        assert_eq!(loaded.public_key(), public, "restart keeps the pinned key");
+        assert!(InventoryIssuer::load_or_create(&path, 8).is_err());
+        std::fs::remove_file(path).ok();
     }
 }
