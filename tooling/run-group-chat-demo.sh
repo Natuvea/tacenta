@@ -6,6 +6,11 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+echo "group demo: durable group handoff, interleaved DM, and wrong-sender refusal"
+cargo test --locked -p tacenta-client --lib \
+  tests::a_live_group_handoff_commits_before_group_delivery \
+  -- --exact
+
 echo "group demo: invitation, pending observation, authority restart, admission, and removal"
 cargo test --locked -p tacenta-client --lib \
   tests::a_pending_invitee_observes_live_successors_without_application_membership \
