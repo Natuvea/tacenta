@@ -2538,6 +2538,7 @@ mod tests {
         );
 
         let persisted = sender_snapshot.clone();
+        let restart_started = std::time::Instant::now();
         drop(alice);
         let mut restarted =
             DefaultClient::connect_with_state(&alice_config, &persisted.provider_state)
@@ -2545,6 +2546,10 @@ mod tests {
                 .unwrap();
         let mut resumed_snapshot = persisted;
         let mut resumed_outbox = recover_group_outbox(&resumed_snapshot, group_id).unwrap();
+        println!(
+            "group-profile sender_restart_and_outbox_recovery_micros={}",
+            restart_started.elapsed().as_micros(),
+        );
         let mut resumed_store = GroupStore {
             snapshot: Some(resumed_snapshot.clone()),
         };

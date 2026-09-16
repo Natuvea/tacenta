@@ -103,8 +103,10 @@ tooling/run-group-chat-demo.sh
 
 To capture comparable cold and warm process-level measurements, pass an empty
 output directory. The runner records the revision, host, Rust toolchain, test
-logs, elapsed/user/system timing, and maximum resident memory where the host
-supports it. These results are development evidence, not production budgets.
+logs, elapsed/user/system timing, maximum resident memory where the host
+supports it, deterministic 2/3/8-member checkpoint sizes, and the sender
+restart plus recovered-outbox duration from the live test. These results are
+development evidence, not production budgets.
 
 ```bash
 tooling/measure-group-chat.sh /tmp/tacenta-group-measurements

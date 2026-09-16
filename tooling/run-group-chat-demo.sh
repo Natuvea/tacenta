@@ -24,6 +24,11 @@ cargo test --locked -p tacenta-client --lib \
   tests::a_live_group_handoff_commits_before_group_delivery \
   -- --exact
 
+echo "group demo: sender restart and exact recovered group handoff"
+cargo test --locked -p tacenta-client --lib \
+  tests::a_three_client_group_retries_the_committed_ciphertext_after_sender_restart \
+  -- --exact --nocapture
+
 echo "group demo: invitation, pending observation, authority restart, admission, and removal"
 cargo test --locked -p tacenta-client --lib \
   tests::a_pending_invitee_observes_live_successors_without_application_membership \
