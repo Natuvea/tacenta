@@ -2169,10 +2169,20 @@ mod tests {
         })
         .await
         .unwrap();
+        let mut mallory = DefaultClient::connect(&Config {
+            directory,
+            relay,
+            user: "+mallory".into(),
+            device: 1,
+        })
+        .await
+        .unwrap();
         let alice_route = alice.address().clone();
         let bob_route = bob.address().clone();
+        let mallory_route = mallory.address().clone();
         let alice_member = Member::new(alice.party.identity_key(), vec![1]);
         let bob_member = Member::new(bob.party.identity_key(), vec![1]);
+        let mallory_member = Member::new(mallory.party.identity_key(), vec![1]);
         let group_id = GroupId::new(*b"bounded-group-id");
         let mut members = vec![alice_member.clone(), bob_member.clone()];
         members.sort_by(|left, right| {
@@ -2254,7 +2264,7 @@ mod tests {
             .find(|message| message.kind == MessageKind::Direct)
             .unwrap();
         assert_eq!(direct_inbound.plaintext, b"interleaved direct message");
-        let mut receiver = GroupReceiver::new(roster, roster_digest, bob_member);
+        let mut receiver = GroupReceiver::new(roster, roster_digest, bob_member.clone());
         let mut receiver_store = GroupStore { snapshot: None };
         let mut receiver_snapshot = OperationSnapshot::empty(0);
         assert_eq!(
@@ -2271,6 +2281,45 @@ mod tests {
                 },
             ),
             Ok(ReceiveDisposition::Accepted { event_id: 0 })
+        );
+
+        // An authenticated but non-member peer cannot impersonate the sender
+        // carried by a canonical group context.
+        let forged = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                1,
+                roster_digest,
+                alice_member.clone(),
+                bob_member,
+                1,
+                b"forged group sender".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        mallory
+            .send_as(&bob_route, &forged, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(
+            commit_group_plaintext(
+                &mut receiver_store,
+                &mut receiver_snapshot,
+                &mut receiver,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: mallory_member.identity(),
+                    peer: &peer_address(&mallory_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Rejected(ReceiveRefusal::WrongPeer))
         );
     }
 
