@@ -1437,6 +1437,21 @@ mod tests {
         .unwrap();
         assert_eq!(retried_revocation.payload, revocation.payload);
         assert_eq!(retried_revocation.ciphertext, revocation.ciphertext);
+        let recovered_outbox = recover_group_control_outbox(&authority_snapshot).unwrap();
+        assert_eq!(
+            recovered_outbox
+                .handoff(&bob_member, &observer_control.payload)
+                .unwrap()
+                .disposition,
+            ControlDisposition::Cancelled
+        );
+        assert_eq!(
+            recovered_outbox
+                .handoff(&bob_member, &revocation.payload)
+                .unwrap()
+                .ciphertext,
+            revocation.ciphertext
+        );
         assert_eq!(
             authority_book.records()[0].status,
             InvitationStatus::Revoked
