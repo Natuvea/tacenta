@@ -2339,6 +2339,7 @@ mod tests {
             .find(|message| message.kind == MessageKind::Direct)
             .unwrap();
         assert_eq!(direct_inbound.plaintext, b"interleaved direct message");
+        let group_plaintext = group_inbound.plaintext.clone();
         let mut receiver = GroupReceiver::new(roster, roster_digest, bob_member.clone());
         let mut receiver_store = GroupStore { snapshot: None };
         let mut receiver_snapshot = OperationSnapshot::empty(0);
@@ -2357,6 +2358,76 @@ mod tests {
             ),
             Ok(ReceiveDisposition::Accepted { event_id: 0 })
         );
+
+        // A repeated authenticated group context from a new pairwise envelope
+        // is a durable duplicate, rather than a second application event.
+        alice
+            .send_as(&bob_route, &group_plaintext, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(
+            commit_group_plaintext(
+                &mut receiver_store,
+                &mut receiver_snapshot,
+                &mut receiver,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Duplicate { event_id: 0 })
+        );
+
+        // The bounded receiver holds four immediately-future contexts. The
+        // fifth is authenticated and durably refused instead of growing an
+        // unbounded queue.
+        for sequence in 10_u64..15 {
+            let future = GroupPayload::Application(
+                ApplicationContext::new(
+                    group_id,
+                    2,
+                    [9; DIGEST_LEN],
+                    alice_member.clone(),
+                    bob_member.clone(),
+                    sequence,
+                    b"bounded future group context".to_vec(),
+                )
+                .unwrap(),
+            )
+            .encode()
+            .unwrap();
+            alice
+                .send_as(&bob_route, &future, Kind::Group)
+                .await
+                .unwrap();
+            let inbound = bob.receive().await.unwrap();
+            assert_eq!(inbound.len(), 1);
+            let expected = if sequence < 14 {
+                ReceiveDisposition::Deferred
+            } else {
+                ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull)
+            };
+            assert_eq!(
+                commit_group_plaintext(
+                    &mut receiver_store,
+                    &mut receiver_snapshot,
+                    &mut receiver,
+                    GroupReceiveInput {
+                        plaintext: &inbound[0].plaintext,
+                        authenticated_identity: alice_member.identity(),
+                        peer: &peer_address(&alice_route).unwrap(),
+                        provider_state: bob.export_state().await.unwrap(),
+                        provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                    },
+                ),
+                Ok(expected)
+            );
+        }
 
         // An authenticated but non-member peer cannot impersonate the sender
         // carried by a canonical group context.
