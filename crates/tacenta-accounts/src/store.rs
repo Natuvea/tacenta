@@ -9,8 +9,10 @@
 use std::sync::Mutex;
 
 use crate::{
-    Accounts, ApiKey, ApiKeyInfo, AuthError, SessionToken, SignupError, Tenant, TenantId, User,
+    Accounts, ApiKey, ApiKeyInfo, AuthError, DeviceInventory, InventoryError, SessionToken,
+    SignupError, Tenant, TenantId, User,
 };
+use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
 /// What can go wrong at the store: a domain refusal (the same the in-memory
 /// store returns) or a backend failure (only a database backend produces
@@ -21,6 +23,8 @@ pub enum StoreError {
     Signup(SignupError),
     /// Authentication failed.
     Auth(AuthError),
+    /// A device-inventory lifecycle transition was refused.
+    Inventory(InventoryError),
     /// The backend (a database) failed.
     Backend(String),
 }
@@ -30,6 +34,7 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::Signup(e) => write!(f, "signup refused: {e:?}"),
             StoreError::Auth(e) => write!(f, "authentication failed: {e:?}"),
+            StoreError::Inventory(e) => write!(f, "inventory mutation refused: {e:?}"),
             StoreError::Backend(e) => write!(f, "store backend error: {e}"),
         }
     }
@@ -44,6 +49,7 @@ impl From<crate::pg::PgError> for StoreError {
             crate::pg::PgError::Database(db) => StoreError::Backend(db.to_string()),
             crate::pg::PgError::Signup(s) => StoreError::Signup(s),
             crate::pg::PgError::Auth(a) => StoreError::Auth(a),
+            crate::pg::PgError::Inventory(i) => StoreError::Inventory(i),
         }
     }
 }
@@ -297,6 +303,49 @@ impl AccountStore {
                 .handle(tenant, username)),
             #[cfg(feature = "postgres")]
             AccountStore::Postgres(s) => s.handle(tenant, username).await.map_err(StoreError::from),
+        }
+    }
+
+    /// Read an account's durable device inventory. An existing account with no
+    /// device record returns its empty generation-zero inventory.
+    pub async fn device_inventory(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<DeviceInventory>, StoreError> {
+        match self {
+            AccountStore::Memory(m) => Ok(m
+                .lock()
+                .expect("accounts mutex poisoned")
+                .device_inventory(tenant, username)),
+            #[cfg(feature = "postgres")]
+            AccountStore::Postgres(s) => s
+                .device_inventory(tenant, username)
+                .await
+                .map_err(StoreError::from),
+        }
+    }
+
+    /// Atomically add a newly proven group-capable device binding at the exact
+    /// predecessor inventory generation.
+    pub async fn link_device_binding(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        binding: DeviceBinding,
+    ) -> Result<DeviceInventory, StoreError> {
+        match self {
+            AccountStore::Memory(m) => m
+                .lock()
+                .expect("accounts mutex poisoned")
+                .link_device_binding(tenant, username, predecessor_generation, binding)
+                .map_err(StoreError::Inventory),
+            #[cfg(feature = "postgres")]
+            AccountStore::Postgres(s) => s
+                .link_device_binding(tenant, username, predecessor_generation, binding)
+                .await
+                .map_err(StoreError::from),
         }
     }
 

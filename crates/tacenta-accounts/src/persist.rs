@@ -19,7 +19,7 @@ use tacenta_core::crypto::groups::inventory::{
 
 use crate::{
     Accounts, ApiKeyRecord, DeviceInventory, TenantId, TenantRecord, UserRecord,
-    inventory::validate_inventory,
+    inventory::{encode_inventory, validate_inventory},
 };
 
 fn put_hash(out: &mut Vec<u8>, hash: &[u8; 32]) {
@@ -29,19 +29,6 @@ fn put_hash(out: &mut Vec<u8>, hash: &[u8; 32]) {
 fn take_hash(bytes: &[u8]) -> Option<([u8; 32], &[u8])> {
     let (head, rest) = bytes.split_at_checked(32)?;
     Some((head.try_into().ok()?, rest))
-}
-
-fn put_binding(out: &mut Vec<u8>, binding: &DeviceBinding) {
-    put_u32(out, binding.device_id);
-    out.extend_from_slice(&binding.identity_public_key);
-    put_u64(out, binding.capabilities);
-    match binding.replacement_predecessor {
-        Some(predecessor) => {
-            out.push(1);
-            out.extend_from_slice(&predecessor);
-        }
-        None => out.push(0),
-    }
 }
 
 fn take_binding(bytes: &[u8]) -> Option<(DeviceBinding, &[u8])> {
@@ -69,17 +56,7 @@ fn take_binding(bytes: &[u8]) -> Option<(DeviceBinding, &[u8])> {
 }
 
 fn put_inventory(out: &mut Vec<u8>, inventory: &DeviceInventory) {
-    put_u64(out, inventory.generation);
-    put_u32(out, inventory.active.len() as u32);
-    for binding in &inventory.active {
-        put_binding(out, binding);
-    }
-    put_u64(out, inventory.revocation_floor_generation);
-    put_u32(out, inventory.revoked.len() as u32);
-    for revocation in &inventory.revoked {
-        put_binding(out, &revocation.binding);
-        put_u64(out, revocation.terminal_generation);
-    }
+    out.extend_from_slice(&encode_inventory(inventory));
 }
 
 fn take_inventory(bytes: &[u8]) -> Option<(DeviceInventory, &[u8])> {
