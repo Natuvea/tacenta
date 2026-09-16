@@ -40,11 +40,25 @@ target_dir="$output/cargo-target"
 run cold "$target_dir"
 run warm "$target_dir"
 
+{
+  echo "bounded group checkpoint sizes"
+  grep '^group-profile ' "$output/warm.log" || true
+  echo
+  echo "cold process timing"
+  grep -E 'real|user|sys|resident|Elapsed|User time|System time|Maximum resident' \
+    "$output/cold.time" || true
+  echo
+  echo "warm process timing"
+  grep -E 'real|user|sys|resident|Elapsed|User time|System time|Maximum resident' \
+    "$output/warm.time" || true
+} >"$output/summary.txt"
+
 cat >"$output/README.txt" <<'EOF'
 These are process-level measurements of the bounded group-chat demonstration.
 The cold run uses an empty target directory; the warm run reuses it. The time
 output reports elapsed/user/system time and maximum resident set size when the
-host's /usr/bin/time supports it. This runner records evidence for comparison;
+host's /usr/bin/time supports it. summary.txt extracts those fields and the
+deterministic 2/3/8-member checkpoint sizes. This runner records evidence for comparison;
 it does not establish production performance budgets or synthetic 32/128/512
 member results.
 EOF
