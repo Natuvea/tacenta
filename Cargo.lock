@@ -2848,6 +2848,7 @@ version = "1.11.5"
 dependencies = [
  "futures-util",
  "rand 0.9.5",
+ "rand_core 0.6.4",
  "rcgen",
  "tacenta-accounts",
  "tacenta-core 1.11.5",
@@ -2857,6 +2858,7 @@ dependencies = [
  "tacenta-transport",
  "tacenta-wire 1.11.5",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

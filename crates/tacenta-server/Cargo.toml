@@ -32,6 +32,8 @@ tacenta-accounts = { workspace = true }
 tacenta-discovery = { workspace = true }
 tacenta-transport = { workspace = true }
 rand = "0.9"
+rand_core_06 = { workspace = true }
+zeroize = "1"
 # "signal" for graceful shutdown (Ctrl-C → persist → exit); "time" for the
 # periodic snapshot interval.
 tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "sync", "macros", "signal", "time"] }
