@@ -3126,7 +3126,12 @@ mod tests {
         let mut outbox = GroupOutbox::new(GroupId::new(*b"bounded-group-id"));
         let send = logical_send();
         let id = send.id.clone();
+        let commit_started = std::time::Instant::now();
         commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+        println!(
+            "group-profile native_logical_intent_commit_micros={}",
+            commit_started.elapsed().as_micros(),
+        );
         commit_outbox_prepared_ciphertext(
             &mut store,
             &mut snapshot,

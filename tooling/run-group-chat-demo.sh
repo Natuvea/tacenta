@@ -19,6 +19,11 @@ cargo test --locked -p tacenta-group \
   tests::development_profile_reports_checkpoint_sizes_at_two_three_and_eight_members \
   -- --exact --nocapture
 
+echo "group profile: native durable group logical-intent transaction"
+cargo test --locked -p tacenta-client --lib \
+  group_operations::tests::native_snapshot_restores_group_send_and_receive_state_together \
+  -- --exact --nocapture
+
 echo "group demo: durable group handoff, interleaved DM, and wrong-sender refusal"
 cargo test --locked -p tacenta-client --lib \
   tests::a_live_group_handoff_commits_before_group_delivery \

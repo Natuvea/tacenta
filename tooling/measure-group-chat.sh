@@ -59,9 +59,10 @@ The cold run uses an empty target directory; the warm run reuses it. The time
 output reports elapsed/user/system time and maximum resident set size when the
 host's /usr/bin/time supports it. summary.txt extracts those fields and the
 the group-profile metrics emitted by its live tests, including deterministic
-2/3/8-member checkpoint sizes and sender restart plus outbox recovery. This
-runner records evidence for comparison; it does not establish production
-performance budgets or synthetic 32/128/512 member results.
+2/3/8-member checkpoint sizes, one native durable logical-intent transaction,
+and sender restart plus outbox recovery. This runner records evidence for
+comparison; it does not establish production performance budgets or synthetic
+32/128/512 member results.
 EOF
 
 echo "group-chat measurements written to $output"
