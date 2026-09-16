@@ -2366,7 +2366,7 @@ mod tests {
                 1,
                 roster_digest,
                 alice_member.clone(),
-                bob_member,
+                bob_member.clone(),
                 1,
                 b"forged group sender".to_vec(),
             )
@@ -2390,6 +2390,59 @@ mod tests {
                     plaintext: &inbound[0].plaintext,
                     authenticated_identity: mallory_member.identity(),
                     peer: &peer_address(&mallory_route).unwrap(),
+                    provider_state: bob.export_state().await.unwrap(),
+                    provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(ReceiveDisposition::Rejected(ReceiveRefusal::WrongPeer))
+        );
+
+        // A second device that presents Alice's identity is pairwise-authentic,
+        // but it is not the exact Alice/device-1 roster member. The sender
+        // binding therefore refuses a context that claims Alice/device-1.
+        let alice_second_device_config = Config {
+            directory,
+            relay,
+            user: "+alice".into(),
+            device: 2,
+        };
+        let mut alice_second_device = DefaultClient::connect_with_identity(
+            &alice_second_device_config,
+            &alice.export_identity(),
+        )
+        .await
+        .unwrap();
+        let alice_second_route = alice_second_device.address().clone();
+        let wrong_device = GroupPayload::Application(
+            ApplicationContext::new(
+                group_id,
+                1,
+                roster_digest,
+                alice_member.clone(),
+                bob_member.clone(),
+                2,
+                b"wrong group sender device".to_vec(),
+            )
+            .unwrap(),
+        )
+        .encode()
+        .unwrap();
+        alice_second_device
+            .send_as(&bob_route, &wrong_device, Kind::Group)
+            .await
+            .unwrap();
+        let inbound = bob.receive().await.unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(
+            commit_group_plaintext(
+                &mut receiver_store,
+                &mut receiver_snapshot,
+                &mut receiver,
+                GroupReceiveInput {
+                    plaintext: &inbound[0].plaintext,
+                    authenticated_identity: alice_member.identity(),
+                    peer: &peer_address(&alice_second_route).unwrap(),
                     provider_state: bob.export_state().await.unwrap(),
                     provider_effect: tacenta_core::crypto::CryptoStateEffect::Advanced,
                 },

@@ -503,7 +503,7 @@ not in our proofs' dependency cone.
   core-bound commitments, bounded dedup/defer queues, restart codecs, and the
   group envelope class have focused Rust tests. The repeatable group demo also
   drives the bounded three-client invitation, restart, admission, removal,
-  revocation, direct-message interleaving, and wrong-sender paths through the
+  revocation, direct-message interleaving, and wrong-sender/device paths through the
   real in-process directory, relay, provider, and operation store. This is
   **tested, not proven**. It is not a shipped group-chat protocol or a
   production membership system; sender-key, production authority, sequencing,
