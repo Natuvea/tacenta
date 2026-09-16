@@ -12,7 +12,8 @@
 #![allow(clippy::await_holding_lock)]
 
 use tacenta_accounts::pg::{PgAccounts, PgError};
-use tacenta_accounts::{AuthError, SignupError};
+use tacenta_accounts::{AuthError, DeviceInventory, InventoryError, SignupError};
+use tacenta_core::crypto::groups::inventory::{DeviceBinding, GROUP_EPOCH_V1};
 
 /// Serialize the Postgres tests: they share one database and each starts by
 /// truncating it, so they must not run concurrently. Held for the whole test.
@@ -87,6 +88,35 @@ async fn the_account_flow_works_on_postgres() {
     assert!(matches!(
         store.sign_up_user(&tenant.id, "Alice", "hunter2!!").await,
         Err(PgError::Signup(SignupError::UsernameTaken)),
+    ));
+
+    // A first device advances the durable inventory from its empty state;
+    // stale predecessor generations are refused even after the state is read
+    // back from PostgreSQL.
+    assert_eq!(
+        store.device_inventory(&tenant.id, "alice").await.unwrap(),
+        Some(DeviceInventory::default()),
+    );
+    let binding = DeviceBinding {
+        device_id: 1,
+        identity_public_key: [7; 32],
+        capabilities: GROUP_EPOCH_V1,
+        replacement_predecessor: None,
+    };
+    let inventory = store
+        .link_device_binding(&tenant.id, "alice", 0, binding.clone())
+        .await
+        .unwrap();
+    assert_eq!(inventory.generation, 1);
+    assert_eq!(
+        store.device_inventory(&tenant.id, "alice").await.unwrap(),
+        Some(inventory),
+    );
+    assert!(matches!(
+        store
+            .link_device_binding(&tenant.id, "alice", 0, binding)
+            .await,
+        Err(PgError::Inventory(InventoryError::PredecessorMismatch)),
     ));
 
     // Sign in issues a session that validates; the handle resolves.

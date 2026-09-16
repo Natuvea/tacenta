@@ -592,38 +592,10 @@ impl Accounts {
             .get(&key)
             .cloned()
             .unwrap_or_default();
-        if current.generation != predecessor_generation {
-            return Err(InventoryError::PredecessorMismatch);
-        }
-        if current.active.iter().any(|existing| existing == &binding) {
-            return Err(InventoryError::DuplicateBinding);
-        }
-        if current
-            .active
-            .iter()
-            .any(|existing| existing.device_id == binding.device_id)
-        {
-            return Err(InventoryError::DeviceIdInUse);
-        }
-        if current
-            .revoked
-            .iter()
-            .any(|revoked| revoked.binding == binding)
-        {
-            return Err(InventoryError::BindingRevoked);
-        }
-
-        let mut next = current;
-        next.generation = next
-            .generation
-            .checked_add(1)
-            .ok_or(InventoryError::GenerationExhausted)?;
-        next.active.push(binding);
-        next.active.sort();
         let handle = self
             .handle(tenant, &username)
             .expect("an inventory user must have an existing tenant");
-        inventory::validate_inventory(&handle, &next)?;
+        let next = inventory::link_inventory(&handle, &current, predecessor_generation, binding)?;
         self.device_inventories.insert(key, next.clone());
         Ok(next)
     }

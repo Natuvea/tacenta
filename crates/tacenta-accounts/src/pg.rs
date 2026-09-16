@@ -14,7 +14,12 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row as _};
 
-use crate::{ApiKey, ApiKeyInfo, AuthError, SessionToken, SignupError, Tenant, TenantId, User};
+use crate::{
+    ApiKey, ApiKeyInfo, AuthError, DeviceInventory, InventoryError, SessionToken, SignupError,
+    Tenant, TenantId, User,
+    inventory::{decode_inventory, encode_inventory, link_inventory, validate_inventory},
+};
+use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
 /// What can go wrong against the database: an infrastructure error, or one of
 /// the domain refusals the in-memory store also returns.
@@ -27,6 +32,8 @@ pub enum PgError {
     Signup(SignupError),
     /// Authentication failed.
     Auth(AuthError),
+    /// A device-inventory lifecycle transition was refused.
+    Inventory(InventoryError),
 }
 
 impl std::fmt::Display for PgError {
@@ -35,6 +42,7 @@ impl std::fmt::Display for PgError {
             PgError::Database(e) => write!(f, "database error: {e}"),
             PgError::Signup(e) => write!(f, "signup refused: {e:?}"),
             PgError::Auth(e) => write!(f, "authentication failed: {e:?}"),
+            PgError::Inventory(e) => write!(f, "inventory mutation refused: {e:?}"),
         }
     }
 }
@@ -417,6 +425,92 @@ impl PgAccounts {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(tenant_username.map(|t| format!("{t}/{username}")))
+    }
+
+    /// Read a user's durable device inventory. Existing accounts without a
+    /// stored row are represented by the empty generation-zero inventory.
+    pub async fn device_inventory(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<DeviceInventory>, PgError> {
+        let username = crate::normalize(username);
+        let row = sqlx::query(
+            "select t.username as tenant_username, i.state \
+             from users u join tenants t on t.id = u.tenant_id \
+             left join account_device_inventories i \
+               on i.tenant_id = u.tenant_id and i.username = u.username \
+             where u.tenant_id = $1 and u.username = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(&username)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let handle = format!("{}/{}", row.get::<String, _>("tenant_username"), username);
+        let inventory = match row.get::<Option<Vec<u8>>, _>("state") {
+            Some(bytes) => {
+                decode_inventory(&bytes).ok_or(PgError::Inventory(InventoryError::Invalid))?
+            }
+            None => DeviceInventory::default(),
+        };
+        validate_inventory(&handle, &inventory).map_err(PgError::Inventory)?;
+        Ok(Some(inventory))
+    }
+
+    /// Atomically replace an account inventory at its exact predecessor
+    /// generation after the provisioning layer has checked authorization and
+    /// possession of the new identity key.
+    pub async fn link_device_binding(
+        &self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        binding: DeviceBinding,
+    ) -> Result<DeviceInventory, PgError> {
+        let username = crate::normalize(username);
+        let mut tx = self.pool.begin().await?;
+        // Lock the user row even before this account has an inventory row. That
+        // serializes two first-device links, which an inventory-row lock alone
+        // cannot do when neither transaction has inserted one yet.
+        let row = sqlx::query(
+            "select t.username as tenant_username, i.state \
+             from users u join tenants t on t.id = u.tenant_id \
+             left join account_device_inventories i \
+               on i.tenant_id = u.tenant_id and i.username = u.username \
+             where u.tenant_id = $1 and u.username = $2 for update of u",
+        )
+        .bind(tenant.as_str())
+        .bind(&username)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(PgError::Inventory(InventoryError::UnknownUser));
+        };
+        let handle = format!("{}/{}", row.get::<String, _>("tenant_username"), username);
+        let current = match row.get::<Option<Vec<u8>>, _>("state") {
+            Some(bytes) => {
+                decode_inventory(&bytes).ok_or(PgError::Inventory(InventoryError::Invalid))?
+            }
+            None => DeviceInventory::default(),
+        };
+        validate_inventory(&handle, &current).map_err(PgError::Inventory)?;
+        let next = link_inventory(&handle, &current, predecessor_generation, binding)
+            .map_err(PgError::Inventory)?;
+        sqlx::query(
+            "insert into account_device_inventories (tenant_id, username, state) \
+             values ($1, $2, $3) \
+             on conflict (tenant_id, username) do update set state = excluded.state",
+        )
+        .bind(tenant.as_str())
+        .bind(&username)
+        .bind(encode_inventory(&next))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(next)
     }
 
     async fn tenant_exists(&self, tenant: &TenantId) -> Result<bool, PgError> {
