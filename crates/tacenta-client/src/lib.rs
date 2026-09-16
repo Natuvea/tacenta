@@ -1411,6 +1411,12 @@ mod tests {
         let mut authority_receiver =
             GroupReceiver::new(genesis.clone(), genesis_digest, alice_member.clone());
         let mut authority_sends = Vec::new();
+        let mut successor_members = vec![alice_member.clone(), bob_member.clone()];
+        successor_members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
         let successor = Roster::new(
             group_id,
             1,
@@ -1418,7 +1424,7 @@ mod tests {
             alice_member.clone(),
             POLICY_VERSION_V1,
             false,
-            vec![alice_member.clone(), bob_member.clone()],
+            successor_members,
         )
         .unwrap();
         assert!(matches!(
@@ -2230,9 +2236,24 @@ mod tests {
         assert_eq!(&sender_snapshot.outbox[2][..4], b"TCGH");
         assert_eq!(&sender_snapshot.outbox[3][..4], b"TCGA");
 
+        // The direct-message path shares this pairwise session. Sending it
+        // immediately after the committed group handoff must preserve both
+        // message classes and their independently authenticated contents.
+        alice
+            .send_as(&bob_route, b"interleaved direct message", Kind::Dm)
+            .await
+            .unwrap();
         let inbound = bob.receive().await.unwrap();
-        assert_eq!(inbound.len(), 1);
-        assert_eq!(inbound[0].kind, MessageKind::Group);
+        assert_eq!(inbound.len(), 2);
+        let group_inbound = inbound
+            .iter()
+            .find(|message| message.kind == MessageKind::Group)
+            .unwrap();
+        let direct_inbound = inbound
+            .iter()
+            .find(|message| message.kind == MessageKind::Direct)
+            .unwrap();
+        assert_eq!(direct_inbound.plaintext, b"interleaved direct message");
         let mut receiver = GroupReceiver::new(roster, roster_digest, bob_member);
         let mut receiver_store = GroupStore { snapshot: None };
         let mut receiver_snapshot = OperationSnapshot::empty(0);
@@ -2242,7 +2263,7 @@ mod tests {
                 &mut receiver_snapshot,
                 &mut receiver,
                 GroupReceiveInput {
-                    plaintext: &inbound[0].plaintext,
+                    plaintext: &group_inbound.plaintext,
                     authenticated_identity: alice_member.identity(),
                     peer: &peer_address(&alice_route).unwrap(),
                     provider_state: bob.export_state().await.unwrap(),
