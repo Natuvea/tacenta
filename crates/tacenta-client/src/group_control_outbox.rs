@@ -242,6 +242,8 @@ impl Outbox {
             if attempts > MAX_ATTEMPTS
                 || (disposition == Disposition::Prepared && attempts != 0)
                 || (disposition == Disposition::HandedOff && attempts == 0)
+                || (disposition == Disposition::Cancelled && attempts != 0)
+                || (disposition == Disposition::CancelledAfterHandoff && attempts == 0)
             {
                 return Err(GroupError::Malformed);
             }
@@ -361,6 +363,13 @@ mod tests {
             outbox.reserve(&bob(), &payload),
             Err(GroupError::WrongDisposition)
         );
+        let mut malformed_cancelled = outbox.encode_state().unwrap();
+        let cancelled_attempt = malformed_cancelled.len() - 2;
+        malformed_cancelled[cancelled_attempt] = 1;
+        assert_eq!(
+            Outbox::decode_state(&malformed_cancelled),
+            Err(GroupError::Malformed)
+        );
 
         let mut retried = Outbox::default();
         retried
@@ -372,9 +381,14 @@ mod tests {
             retried.handoff(&bob(), &payload).unwrap().disposition,
             Disposition::CancelledAfterHandoff
         );
+        let state = retried.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(retried));
+        let mut malformed_after_handoff = state;
+        let after_handoff_attempt = malformed_after_handoff.len() - 2;
+        malformed_after_handoff[after_handoff_attempt] = 0;
         assert_eq!(
-            Outbox::decode_state(&retried.encode_state().unwrap()),
-            Ok(retried)
+            Outbox::decode_state(&malformed_after_handoff),
+            Err(GroupError::Malformed)
         );
     }
 
