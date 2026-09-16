@@ -17,7 +17,10 @@ use sqlx::{PgPool, Row as _};
 use crate::{
     ApiKey, ApiKeyInfo, AuthError, DeviceInventory, InventoryError, SessionToken, SignupError,
     Tenant, TenantId, User,
-    inventory::{decode_inventory, encode_inventory, link_inventory, validate_inventory},
+    inventory::{
+        decode_inventory, decode_link_request, encode_inventory, encode_link_request,
+        link_inventory, validate_inventory,
+    },
 };
 use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
@@ -468,6 +471,7 @@ impl PgAccounts {
         tenant: &TenantId,
         username: &str,
         predecessor_generation: u64,
+        idempotency_key: [u8; 32],
         binding: DeviceBinding,
     ) -> Result<DeviceInventory, PgError> {
         let username = crate::normalize(username);
@@ -490,6 +494,29 @@ impl PgAccounts {
             return Err(PgError::Inventory(InventoryError::UnknownUser));
         };
         let handle = format!("{}/{}", row.get::<String, _>("tenant_username"), username);
+        let prior = sqlx::query(
+            "select request, result from account_inventory_mutations \
+             where tenant_id = $1 and username = $2 and idempotency_key = $3",
+        )
+        .bind(tenant.as_str())
+        .bind(&username)
+        .bind(&idempotency_key[..])
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(prior) = prior {
+            let request = prior.get::<Vec<u8>, _>("request");
+            let result = prior.get::<Vec<u8>, _>("result");
+            let matches_request = decode_link_request(&request)
+                .is_some_and(|request| request == (predecessor_generation, binding.clone()));
+            if !matches_request {
+                return Err(PgError::Inventory(InventoryError::IdempotencyConflict));
+            }
+            let result =
+                decode_inventory(&result).ok_or(PgError::Inventory(InventoryError::Invalid))?;
+            validate_inventory(&handle, &result).map_err(PgError::Inventory)?;
+            tx.commit().await?;
+            return Ok(result);
+        }
         let current = match row.get::<Option<Vec<u8>>, _>("state") {
             Some(bytes) => {
                 decode_inventory(&bytes).ok_or(PgError::Inventory(InventoryError::Invalid))?
@@ -497,7 +524,7 @@ impl PgAccounts {
             None => DeviceInventory::default(),
         };
         validate_inventory(&handle, &current).map_err(PgError::Inventory)?;
-        let next = link_inventory(&handle, &current, predecessor_generation, binding)
+        let next = link_inventory(&handle, &current, predecessor_generation, binding.clone())
             .map_err(PgError::Inventory)?;
         sqlx::query(
             "insert into account_device_inventories (tenant_id, username, state) \
@@ -506,6 +533,18 @@ impl PgAccounts {
         )
         .bind(tenant.as_str())
         .bind(&username)
+        .bind(encode_inventory(&next))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "insert into account_inventory_mutations \
+             (tenant_id, username, idempotency_key, request, result) \
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(tenant.as_str())
+        .bind(&username)
+        .bind(&idempotency_key[..])
+        .bind(encode_link_request(predecessor_generation, &binding))
         .bind(encode_inventory(&next))
         .execute(&mut *tx)
         .await?;

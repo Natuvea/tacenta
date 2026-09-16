@@ -31,6 +31,19 @@ fn take_hash(bytes: &[u8]) -> Option<([u8; 32], &[u8])> {
     Some((head.try_into().ok()?, rest))
 }
 
+fn put_binding(out: &mut Vec<u8>, binding: &DeviceBinding) {
+    put_u32(out, binding.device_id);
+    out.extend_from_slice(&binding.identity_public_key);
+    put_u64(out, binding.capabilities);
+    match binding.replacement_predecessor {
+        Some(predecessor) => {
+            out.push(1);
+            out.extend_from_slice(&predecessor);
+        }
+        None => out.push(0),
+    }
+}
+
 fn take_binding(bytes: &[u8]) -> Option<(DeviceBinding, &[u8])> {
     let (device_id, rest) = take_u32(bytes)?;
     let (identity_public_key, rest) = take_hash(rest)?;
@@ -145,6 +158,15 @@ impl Accounts {
             put_str(&mut out, username);
             put_inventory(&mut out, inventory);
         }
+        put_u32(&mut out, self.inventory_mutations.len() as u32);
+        for ((tenant, username, idempotency_key), mutation) in &self.inventory_mutations {
+            put_str(&mut out, tenant.as_str());
+            put_str(&mut out, username);
+            out.extend_from_slice(idempotency_key);
+            put_u64(&mut out, mutation.predecessor_generation);
+            put_binding(&mut out, &mutation.binding);
+            put_inventory(&mut out, &mutation.result);
+        }
 
         out
     }
@@ -256,6 +278,49 @@ impl Accounts {
             }
         }
 
+        // The preceding inventory section is present in every snapshot that
+        // can contain device state. The idempotency section was appended later
+        // and is optional for compatibility with those earlier snapshots.
+        if rest.is_empty() {
+            return Some(accounts);
+        }
+        let (mutations, r) = take_u32(rest)?;
+        rest = r;
+        for _ in 0..mutations {
+            let (tenant, r) = take_str(rest)?;
+            let (username, r) = take_str(r)?;
+            let (idempotency_key, r) = take_hash(r)?;
+            let (predecessor_generation, r) = take_u64(r)?;
+            let (binding, r) = take_binding(r)?;
+            let (result, r) = take_inventory(r)?;
+            rest = r;
+            let tenant = TenantId(tenant);
+            let account_key = (tenant.clone(), username.clone());
+            if !accounts.users.contains_key(&account_key) {
+                return None;
+            }
+            let handle = accounts.handle(&tenant, &username)?;
+            validate_inventory(&handle, &result).ok()?;
+            if result.generation <= predecessor_generation {
+                return None;
+            }
+            let key = (tenant, username, idempotency_key);
+            if accounts
+                .inventory_mutations
+                .insert(
+                    key,
+                    crate::inventory::InventoryMutation {
+                        predecessor_generation,
+                        binding,
+                        result,
+                    },
+                )
+                .is_some()
+            {
+                return None;
+            }
+        }
+
         rest.is_empty().then_some(accounts)
     }
 }
@@ -320,12 +385,19 @@ mod tests {
             replacement_predecessor: None,
         };
         let inventory = a
-            .link_device_binding(&tenant.id, "alice", 0, binding)
+            .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding.clone())
             .unwrap();
-        let restored = Accounts::restore(&a.snapshot()).expect("inventory snapshot restores");
+        let mut restored = Accounts::restore(&a.snapshot()).expect("inventory snapshot restores");
         assert_eq!(
             restored.device_inventory(&tenant.id, "alice"),
-            Some(inventory)
+            Some(inventory.clone())
+        );
+        assert_eq!(
+            restored
+                .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding)
+                .unwrap(),
+            inventory,
+            "the idempotency result survives a restart"
         );
 
         // Before inventories, snapshots ended right after the sessions count.

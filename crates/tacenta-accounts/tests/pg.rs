@@ -104,7 +104,7 @@ async fn the_account_flow_works_on_postgres() {
         replacement_predecessor: None,
     };
     let inventory = store
-        .link_device_binding(&tenant.id, "alice", 0, binding.clone())
+        .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding.clone())
         .await
         .unwrap();
     assert_eq!(inventory.generation, 1);
@@ -112,9 +112,18 @@ async fn the_account_flow_works_on_postgres() {
         store.device_inventory(&tenant.id, "alice").await.unwrap(),
         Some(inventory),
     );
+    assert_eq!(
+        store
+            .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding.clone())
+            .await
+            .unwrap()
+            .generation,
+        1,
+        "the database keeps the original result for an idempotent retry"
+    );
     assert!(matches!(
         store
-            .link_device_binding(&tenant.id, "alice", 0, binding)
+            .link_device_binding(&tenant.id, "alice", 0, [2; 32], binding)
             .await,
         Err(PgError::Inventory(InventoryError::PredecessorMismatch)),
     ));

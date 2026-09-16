@@ -208,6 +208,9 @@ pub struct Accounts {
     // Per-account group-capable device lifecycle state. A user without an
     // entry has the empty generation-zero inventory.
     device_inventories: HashMap<(TenantId, String), DeviceInventory>,
+    // A retry key is bound to the complete mutation request and its immutable
+    // committed result, never merely to the current inventory generation.
+    inventory_mutations: HashMap<(TenantId, String, [u8; 32]), inventory::InventoryMutation>,
     // sha256(session token) -> (tenant, username, expires_at unix seconds).
     sessions: HashMap<[u8; 32], (TenantId, String, u64)>,
     // Failed-sign-in throttle, keyed by (tenant, identifier).
@@ -580,12 +583,20 @@ impl Accounts {
         tenant: &TenantId,
         username: &str,
         predecessor_generation: u64,
+        idempotency_key: [u8; 32],
         binding: DeviceBinding,
     ) -> Result<DeviceInventory, InventoryError> {
         let username = normalize(username);
         let key = (tenant.clone(), username.clone());
         if !self.users.contains_key(&key) {
             return Err(InventoryError::UnknownUser);
+        }
+        let mutation_key = (tenant.clone(), username.clone(), idempotency_key);
+        if let Some(prior) = self.inventory_mutations.get(&mutation_key) {
+            return (prior.predecessor_generation == predecessor_generation
+                && prior.binding == binding)
+                .then_some(prior.result.clone())
+                .ok_or(InventoryError::IdempotencyConflict);
         }
         let current = self
             .device_inventories
@@ -595,8 +606,17 @@ impl Accounts {
         let handle = self
             .handle(tenant, &username)
             .expect("an inventory user must have an existing tenant");
-        let next = inventory::link_inventory(&handle, &current, predecessor_generation, binding)?;
+        let next =
+            inventory::link_inventory(&handle, &current, predecessor_generation, binding.clone())?;
         self.device_inventories.insert(key, next.clone());
+        self.inventory_mutations.insert(
+            mutation_key,
+            inventory::InventoryMutation {
+                predecessor_generation,
+                binding,
+                result: next.clone(),
+            },
+        );
         Ok(next)
     }
 }
@@ -1012,21 +1032,21 @@ mod tests {
             Some(DeviceInventory::default())
         );
         let first = accounts
-            .link_device_binding(&tenant, "Alice", 0, group_binding(1, 1))
+            .link_device_binding(&tenant, "Alice", 0, [1; 32], group_binding(1, 1))
             .unwrap();
         assert_eq!(first.generation, 1);
         assert_eq!(first.active, vec![group_binding(1, 1)]);
 
         assert_eq!(
-            accounts.link_device_binding(&tenant, "alice", 0, group_binding(2, 2)),
+            accounts.link_device_binding(&tenant, "alice", 0, [2; 32], group_binding(2, 2)),
             Err(InventoryError::PredecessorMismatch),
         );
         assert_eq!(
-            accounts.link_device_binding(&tenant, "alice", 1, group_binding(1, 2)),
+            accounts.link_device_binding(&tenant, "alice", 1, [3; 32], group_binding(1, 2)),
             Err(InventoryError::DeviceIdInUse),
         );
         assert_eq!(
-            accounts.link_device_binding(&tenant, "alice", 1, group_binding(1, 1)),
+            accounts.link_device_binding(&tenant, "alice", 1, [4; 32], group_binding(1, 1)),
             Err(InventoryError::DuplicateBinding),
         );
         assert_eq!(
@@ -1034,12 +1054,24 @@ mod tests {
                 &tenant,
                 "alice",
                 1,
+                [5; 32],
                 DeviceBinding {
                     capabilities: 2,
                     ..group_binding(2, 2)
                 },
             ),
             Err(InventoryError::Invalid),
+        );
+        assert_eq!(
+            accounts
+                .link_device_binding(&tenant, "alice", 0, [1; 32], group_binding(1, 1))
+                .unwrap(),
+            first,
+            "a retry returns its original committed result"
+        );
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 1, [1; 32], group_binding(2, 2)),
+            Err(InventoryError::IdempotencyConflict),
         );
     }
 }
