@@ -47,6 +47,8 @@ use tacenta_transport::{
 };
 use tokio::net::TcpListener;
 
+pub mod inventory_issuer;
+
 /// Re-exported so a caller configuring [`Config::registration_policy`] can name
 /// the policy without depending on `tacenta-transport` directly.
 pub use tacenta_transport::RegistrationPolicy;
