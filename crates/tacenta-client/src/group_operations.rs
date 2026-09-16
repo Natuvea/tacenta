@@ -1419,6 +1419,48 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
     logical_sends: &mut [LogicalSend],
     input: GroupReceiveInput<'_>,
 ) -> Result<GroupPayloadDisposition, GroupOperationError> {
+    commit_group_payload_with_optional_outbox(
+        store,
+        snapshot,
+        view,
+        receiver,
+        logical_sends,
+        None,
+        input,
+    )
+}
+
+/// As [`commit_group_payload`], while atomically cancelling any locally held
+/// application handoffs made obsolete by an accepted roster successor.
+pub(crate) fn commit_group_payload_with_outbox<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: &mut GroupReceiver,
+    logical_sends: &mut [LogicalSend],
+    group_outbox: &mut GroupOutbox,
+    input: GroupReceiveInput<'_>,
+) -> Result<GroupPayloadDisposition, GroupOperationError> {
+    commit_group_payload_with_optional_outbox(
+        store,
+        snapshot,
+        view,
+        receiver,
+        logical_sends,
+        Some(group_outbox),
+        input,
+    )
+}
+
+fn commit_group_payload_with_optional_outbox<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: &mut GroupReceiver,
+    logical_sends: &mut [LogicalSend],
+    group_outbox: Option<&mut GroupOutbox>,
+    input: GroupReceiveInput<'_>,
+) -> Result<GroupPayloadDisposition, GroupOperationError> {
     let payload = match GroupPayload::decode(input.plaintext) {
         Ok(payload) => payload,
         Err(_) => {
@@ -1456,7 +1498,7 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
                 view,
                 receiver: Some(receiver),
                 provider: Some((input.provider_state, input.provider_effect)),
-                group_outbox: None,
+                group_outbox,
                 control_outbox: None,
                 prepared_control: None,
                 invitation_book: None,
@@ -2148,15 +2190,16 @@ mod tests {
         RosterCommit, RosterCommitState, admission_is_revoked, bind_prepared_ciphertext,
         commit_group_control_outbox_transition, commit_group_invitation_acceptance,
         commit_group_invitation_bootstrap, commit_group_invitation_revocation,
-        commit_group_invitation_transition, commit_group_payload, commit_group_plaintext,
-        commit_handoff_reservation, commit_logical_intent, commit_outbox_handoff_reservation,
-        commit_outbox_prepared_ciphertext, commit_outbox_relay_acceptance,
-        commit_prepared_ciphertext, commit_prepared_control_handoff, commit_receive_disposition,
-        commit_roster_successor, commit_roster_successor_with_receiver, commit_roster_transition,
-        live_client_error, recipient_can_observe_invitation_successor,
-        recipient_can_receive_installed_roster_control, recipient_can_receive_roster_control,
-        recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
-        recover_group_receiver, recover_group_roster_view,
+        commit_group_invitation_transition, commit_group_payload, commit_group_payload_with_outbox,
+        commit_group_plaintext, commit_handoff_reservation, commit_logical_intent,
+        commit_outbox_handoff_reservation, commit_outbox_prepared_ciphertext,
+        commit_outbox_relay_acceptance, commit_prepared_ciphertext,
+        commit_prepared_control_handoff, commit_receive_disposition, commit_roster_successor,
+        commit_roster_successor_with_receiver, commit_roster_transition, live_client_error,
+        recipient_can_observe_invitation_successor, recipient_can_receive_installed_roster_control,
+        recipient_can_receive_roster_control, recover_group_control_outbox,
+        recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
+        recover_group_roster_view,
     };
     use crate::ErrorKind;
     #[cfg(not(target_arch = "wasm32"))]
@@ -3551,6 +3594,78 @@ mod tests {
         assert_eq!(snapshot, before_snapshot);
         assert_eq!(receiver, before_receiver);
         assert_eq!(store.recover().unwrap(), None);
+    }
+
+    #[test]
+    fn received_roster_successor_cancels_live_group_outbox_work() {
+        let group_id = GroupId::new(*b"bounded-group-id");
+        let genesis = roster(0, [0; DIGEST_LEN], vec![alice()]);
+        let genesis_commitment = roster_commitment(&genesis.encode().unwrap());
+        let mut view = RosterView::accept_genesis(&alice(), genesis, genesis_commitment).unwrap();
+        let r1 = roster(1, *view.digest(), vec![alice(), bob()]);
+        let r1_commitment = roster_commitment(&r1.encode().unwrap());
+        assert_eq!(
+            view.accept_successor(&alice(), r1.clone(), r1_commitment),
+            RosterDisposition::Accepted
+        );
+        let r2 = roster(2, *view.digest(), vec![alice()]);
+        let mut receiver = GroupReceiver::new(r1.clone(), r1_commitment, bob());
+        let mut store = Store {
+            outcome: CommitOutcome::Committed,
+            committed: None,
+        };
+        let mut snapshot = OperationSnapshot::empty(4);
+        let mut outbox = GroupOutbox::new(group_id);
+        let send = LogicalSend::new(
+            &r1,
+            [5; DIGEST_LEN],
+            bob(),
+            8,
+            vec![alice()],
+            b"withheld before remote removal".to_vec(),
+        )
+        .unwrap();
+        let id = send.id.clone();
+        assert_eq!(
+            commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send),
+            Ok(OutboxDisposition::Inserted)
+        );
+        let payload = GroupPayload::Roster(r2).encode().unwrap();
+
+        assert_eq!(
+            commit_group_payload_with_outbox(
+                &mut store,
+                &mut snapshot,
+                &mut view,
+                &mut receiver,
+                &mut [],
+                &mut outbox,
+                GroupReceiveInput {
+                    plaintext: &payload,
+                    authenticated_identity: alice().identity(),
+                    peer: &Address::new("alice", 1),
+                    provider_state: vec![7],
+                    provider_effect: CryptoStateEffect::Advanced,
+                },
+            ),
+            Ok(GroupPayloadDisposition::Roster(RosterCommit {
+                disposition: RosterDisposition::Accepted,
+                revalidated: Vec::new(),
+            }))
+        );
+        assert_eq!(
+            outbox.send(&id).unwrap().recipients()[0].disposition,
+            RecipientDisposition::Cancelled
+        );
+        assert_eq!(
+            recover_group_outbox(&snapshot, group_id)
+                .unwrap()
+                .send(&id)
+                .unwrap()
+                .recipients()[0]
+                .disposition,
+            RecipientDisposition::Cancelled
+        );
     }
 
     #[test]

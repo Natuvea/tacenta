@@ -326,8 +326,8 @@ mod tests {
         GroupReceiveInput, InstalledControlState, InvitationAdmission,
         commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
         commit_group_invitation_revocation, commit_group_invitation_transition,
-        commit_group_payload, commit_group_plaintext, commit_logical_intent,
-        commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
+        commit_group_payload, commit_group_payload_with_outbox, commit_group_plaintext,
+        commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
         dispatch_outbox_group_handoff, prepare_authority_invitation_revocation,
         prepare_authority_roster_control, prepare_installed_roster_control,
         prepare_outbound_invitation_control, prepare_outbox_group_recipient,
@@ -622,6 +622,37 @@ mod tests {
             ))
         );
         let r1_digest = tacenta_core::crypto::groups::roster_commitment(&r1.encode().unwrap());
+        let stale_bob_send = LogicalSend::new(
+            &r1,
+            r1_digest,
+            bob_member.clone(),
+            1,
+            vec![alice_member.clone()],
+            b"withheld before remote removal".to_vec(),
+        )
+        .unwrap();
+        let stale_bob_id = stale_bob_send.id.clone();
+        let mut bob_group_outbox = GroupOutbox::new(group_id);
+        assert_eq!(
+            commit_logical_intent(
+                &mut store,
+                &mut snapshot,
+                &mut bob_group_outbox,
+                stale_bob_send,
+            ),
+            Ok(OutboxDisposition::Inserted)
+        );
+        prepare_outbox_group_recipient(
+            &mut bob,
+            &mut store,
+            &mut snapshot,
+            &mut bob_group_outbox,
+            &stale_bob_id,
+            &alice_member,
+            &alice_route,
+        )
+        .await
+        .unwrap();
         let application = GroupPayload::Application(
             ApplicationContext::new(
                 group_id,
@@ -789,12 +820,13 @@ mod tests {
         .unwrap();
         let inbound = bob.receive().await.unwrap();
         assert_eq!(
-            commit_group_payload(
+            commit_group_payload_with_outbox(
                 &mut store,
                 &mut snapshot,
                 &mut view,
                 &mut receiver,
                 &mut [],
+                &mut bob_group_outbox,
                 GroupReceiveInput {
                     plaintext: &inbound[0].plaintext,
                     authenticated_identity: &alice_identity,
@@ -809,6 +841,28 @@ mod tests {
                     revalidated: Vec::new(),
                 }
             ))
+        );
+        assert_eq!(
+            dispatch_outbox_group_handoff(
+                &mut bob,
+                &mut store,
+                &mut snapshot,
+                &mut bob_group_outbox,
+                &stale_bob_id,
+                &alice_member,
+                &alice_route,
+            )
+            .await,
+            Err(GroupLiveError::Policy)
+        );
+        assert_eq!(
+            recover_group_outbox(&snapshot, group_id)
+                .unwrap()
+                .send(&stale_bob_id)
+                .unwrap()
+                .recipients()[0]
+                .disposition,
+            tacenta_group::RecipientDisposition::Cancelled
         );
         let inbound = carol.receive().await.unwrap();
         assert_eq!(
