@@ -52,7 +52,8 @@ use std::path::{Path, PathBuf};
 
 /// Write `bytes` to `path` so that a crash leaves `path` holding either its
 /// previous complete contents or these new complete contents, never a mix, and
-/// so that a successful return means the new contents survive a power loss.
+/// and, on platforms that support directory synchronization, so that a
+/// successful return means the new contents survive a power loss.
 ///
 /// **Those are two separate guarantees and it is worth keeping them apart.**
 ///
@@ -61,12 +62,15 @@ use std::path::{Path, PathBuf};
 /// is never observed half-written. This is what the fault-injection tests
 /// exercise, by simulating a crash between the write and the rename.
 ///
-/// *Durability after return*: the containing directory is then `fsync`ed too. A
-/// rename is a directory modification and is not on disk until the directory
-/// is flushed. Without that step this function could return, the caller could
-/// treat the mutation as committed -- advance a ratchet, drop a one-time
-/// prekey -- and a power loss could still leave the directory entry pointing at
-/// the old file. Atomicity would have held; durability would not.
+/// *Durability after return*: where the platform permits it, the containing
+/// directory is then `fsync`ed too. A rename is a directory modification and
+/// is not on disk until the directory is flushed. Without that step this
+/// function could return, the caller could treat the mutation as committed --
+/// advance a ratchet, drop a one-time prekey -- and a power loss could still
+/// leave the directory entry pointing at the old file. Atomicity would have
+/// held; durability would not. Windows does not expose a supported directory
+/// sync through Rust's standard library, so this helper preserves atomic
+/// replacement there but cannot make that durability claim.
 ///
 /// The tests below are split the same way: the fault-injection test covers
 /// the first guarantee, and a separate test covers the mechanism of the
@@ -99,13 +103,30 @@ fn fsync_parent_dir(path: &Path) -> io::Result<()> {
         return Ok(());
     };
     // An empty parent is `.`, which `File::open` handles; a directory opened
-    // read-only can still be synced.
+    // read-only can still be synced on Unix.
     let dir = if dir.as_os_str().is_empty() {
         Path::new(".")
     } else {
         dir
     };
-    fs::File::open(dir)?.sync_all()
+    #[cfg(windows)]
+    {
+        // `File::sync_all` on a directory is unsupported on Windows and turns
+        // an already-completed atomic rename into a false write failure. Keep
+        // the missing-parent failure contract, but do not claim a directory
+        // flush that this platform cannot perform through std.
+        if !dir.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "parent directory missing",
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(dir)?.sync_all()
+    }
 }
 
 #[cfg(test)]
