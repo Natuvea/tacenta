@@ -24,14 +24,17 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use rand::{RngCore as _, TryRngCore as _};
 use sha2::{Digest, Sha256};
+use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
 mod id;
+mod inventory;
 mod persist;
 #[cfg(feature = "postgres")]
 pub mod pg;
 mod protocol;
 mod ratelimit;
 mod store;
+pub use inventory::{DeviceInventory, InventoryError};
 pub use protocol::{
     AccountRequest, AccountResponse, SignupReason, decode_account_request, decode_account_response,
     encode_account_request, encode_account_response,
@@ -202,6 +205,17 @@ pub struct Accounts {
     // hold several (rotation): the map is keyed by key, not by tenant.
     api_keys: HashMap<[u8; 32], ApiKeyRecord>,
     users: HashMap<(TenantId, String), UserRecord>,
+    // Per-account group-capable device lifecycle state. A user without an
+    // entry has the empty generation-zero inventory.
+    device_inventories: HashMap<(TenantId, String), DeviceInventory>,
+    // A retry key is bound to the complete mutation request and its immutable
+    // committed result, never merely to the current inventory generation.
+    inventory_mutations: HashMap<(TenantId, String, [u8; 32]), inventory::InventoryMutation>,
+    // Replace and revoke retries use the same account-local idempotency key
+    // namespace as links, but a separately appended snapshot section keeps
+    // pre-lifecycle snapshots readable.
+    inventory_lifecycle_mutations:
+        HashMap<(TenantId, String, [u8; 32]), inventory::LifecycleMutation>,
     // sha256(session token) -> (tenant, username, expires_at unix seconds).
     sessions: HashMap<[u8; 32], (TenantId, String, u64)>,
     // Failed-sign-in throttle, keyed by (tenant, identifier).
@@ -549,6 +563,181 @@ impl Accounts {
         let tenant_username = &self.tenants.get(tenant)?.username;
         Some(format!("{tenant_username}/{username}"))
     }
+
+    /// The durable device inventory for an existing account. A newly-created
+    /// account starts at the empty generation-zero inventory; `None` means the
+    /// account itself does not exist.
+    pub fn device_inventory(&self, tenant: &TenantId, username: &str) -> Option<DeviceInventory> {
+        let username = normalize(username);
+        self.users
+            .contains_key(&(tenant.clone(), username.clone()))
+            .then(|| {
+                self.device_inventories
+                    .get(&(tenant.clone(), username))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+    }
+
+    /// Record a newly proven device binding against an exact predecessor
+    /// generation. Authorization and proof of possession are intentionally
+    /// performed by the provisioning service before this mutation; this method
+    /// makes the state transition durable and rejects conflicting retries.
+    pub fn link_device_binding(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        idempotency_key: [u8; 32],
+        binding: DeviceBinding,
+    ) -> Result<DeviceInventory, InventoryError> {
+        let username = normalize(username);
+        let key = (tenant.clone(), username.clone());
+        if !self.users.contains_key(&key) {
+            return Err(InventoryError::UnknownUser);
+        }
+        let mutation_key = (tenant.clone(), username.clone(), idempotency_key);
+        if self
+            .inventory_lifecycle_mutations
+            .contains_key(&mutation_key)
+        {
+            return Err(InventoryError::IdempotencyConflict);
+        }
+        if let Some(prior) = self.inventory_mutations.get(&mutation_key) {
+            return (prior.predecessor_generation == predecessor_generation
+                && prior.binding == binding)
+                .then_some(prior.result.clone())
+                .ok_or(InventoryError::IdempotencyConflict);
+        }
+        let current = self
+            .device_inventories
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let handle = self
+            .handle(tenant, &username)
+            .expect("an inventory user must have an existing tenant");
+        let next =
+            inventory::link_inventory(&handle, &current, predecessor_generation, binding.clone())?;
+        self.device_inventories.insert(key, next.clone());
+        self.inventory_mutations.insert(
+            mutation_key,
+            inventory::InventoryMutation {
+                predecessor_generation,
+                binding,
+                result: next.clone(),
+            },
+        );
+        Ok(next)
+    }
+
+    /// Terminally revoke one exact active binding at an exact predecessor
+    /// generation. The caller must first verify the lifecycle authorization
+    /// and prior-device or recovery proof required by the PG-02 profile.
+    pub fn revoke_device_binding(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        idempotency_key: [u8; 32],
+        retired: DeviceBinding,
+    ) -> Result<DeviceInventory, InventoryError> {
+        self.apply_lifecycle_mutation(
+            tenant,
+            username,
+            idempotency_key,
+            inventory::LifecycleRequest::Revoke {
+                predecessor_generation,
+                retired,
+            },
+        )
+    }
+
+    /// Atomically retire one exact active binding and add its committed
+    /// successor at an exact predecessor generation. Lifecycle authorization
+    /// and possession/continuity proofs are checked by the service layer.
+    pub fn replace_device_binding(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        predecessor_generation: u64,
+        idempotency_key: [u8; 32],
+        retired: DeviceBinding,
+        replacement: DeviceBinding,
+    ) -> Result<DeviceInventory, InventoryError> {
+        self.apply_lifecycle_mutation(
+            tenant,
+            username,
+            idempotency_key,
+            inventory::LifecycleRequest::Replace {
+                predecessor_generation,
+                retired,
+                replacement,
+            },
+        )
+    }
+
+    fn apply_lifecycle_mutation(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        idempotency_key: [u8; 32],
+        request: inventory::LifecycleRequest,
+    ) -> Result<DeviceInventory, InventoryError> {
+        let username = normalize(username);
+        let key = (tenant.clone(), username.clone());
+        if !self.users.contains_key(&key) {
+            return Err(InventoryError::UnknownUser);
+        }
+        let mutation_key = (tenant.clone(), username.clone(), idempotency_key);
+        if self.inventory_mutations.contains_key(&mutation_key) {
+            return Err(InventoryError::IdempotencyConflict);
+        }
+        if let Some(prior) = self.inventory_lifecycle_mutations.get(&mutation_key) {
+            return (prior.request == request)
+                .then_some(prior.result.clone())
+                .ok_or(InventoryError::IdempotencyConflict);
+        }
+        let current = self
+            .device_inventories
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let handle = self
+            .handle(tenant, &username)
+            .expect("an inventory user must have an existing tenant");
+        let next = match &request {
+            inventory::LifecycleRequest::Revoke {
+                predecessor_generation,
+                retired,
+            } => inventory::revoke_inventory(
+                &handle,
+                &current,
+                *predecessor_generation,
+                retired.clone(),
+            ),
+            inventory::LifecycleRequest::Replace {
+                predecessor_generation,
+                retired,
+                replacement,
+            } => inventory::replace_inventory(
+                &handle,
+                &current,
+                *predecessor_generation,
+                retired.clone(),
+                replacement.clone(),
+            ),
+        }?;
+        self.device_inventories.insert(key, next.clone());
+        self.inventory_lifecycle_mutations.insert(
+            mutation_key,
+            inventory::LifecycleMutation {
+                request,
+                result: next.clone(),
+            },
+        );
+        Ok(next)
+    }
 }
 
 /// Trim and lowercase, the normal form for a case-insensitive identifier.
@@ -721,6 +910,7 @@ fn generate_api_key() -> (ApiKey, [u8; 32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tacenta_core::crypto::groups::inventory::{GROUP_EPOCH_V1, binding_commitment};
 
     fn tenant(accounts: &mut Accounts) -> (TenantId, ApiKey) {
         let (t, key) = accounts
@@ -937,6 +1127,180 @@ mod tests {
                 .all(|k| k.prefix != k1.prefix())
         );
         assert_eq!(a.tenant_by_api_key(k1.as_str()), Some(t1.id));
+    }
+
+    fn group_binding(device_id: u32, key: u8) -> DeviceBinding {
+        DeviceBinding {
+            device_id,
+            identity_public_key: [key; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: None,
+        }
+    }
+
+    #[test]
+    fn device_inventory_uses_exact_predecessor_generations() {
+        let mut accounts = Accounts::new();
+        let (tenant, _) = tenant(&mut accounts);
+        accounts
+            .sign_up_user(&tenant, "alice", "hunter2!!")
+            .unwrap();
+
+        assert_eq!(
+            accounts.device_inventory(&tenant, "alice"),
+            Some(DeviceInventory::default())
+        );
+        let first = accounts
+            .link_device_binding(&tenant, "Alice", 0, [1; 32], group_binding(1, 1))
+            .unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(first.active, vec![group_binding(1, 1)]);
+
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 0, [2; 32], group_binding(2, 2)),
+            Err(InventoryError::PredecessorMismatch),
+        );
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 1, [3; 32], group_binding(1, 2)),
+            Err(InventoryError::DeviceIdInUse),
+        );
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 1, [4; 32], group_binding(1, 1)),
+            Err(InventoryError::DuplicateBinding),
+        );
+        assert_eq!(
+            accounts.link_device_binding(
+                &tenant,
+                "alice",
+                1,
+                [5; 32],
+                DeviceBinding {
+                    capabilities: 2,
+                    ..group_binding(2, 2)
+                },
+            ),
+            Err(InventoryError::Invalid),
+        );
+        assert_eq!(
+            accounts
+                .link_device_binding(&tenant, "alice", 0, [1; 32], group_binding(1, 1))
+                .unwrap(),
+            first,
+            "a retry returns its original committed result"
+        );
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 1, [1; 32], group_binding(2, 2)),
+            Err(InventoryError::IdempotencyConflict),
+        );
+    }
+
+    #[test]
+    fn replacing_and_revoking_bindings_require_exact_lifecycle_state() {
+        let mut accounts = Accounts::new();
+        let (tenant, _) = tenant(&mut accounts);
+        accounts
+            .sign_up_user(&tenant, "alice", "hunter2!!")
+            .unwrap();
+        let first = group_binding(1, 1);
+        accounts
+            .link_device_binding(&tenant, "alice", 0, [1; 32], first.clone())
+            .unwrap();
+
+        let mut successor = group_binding(2, 2);
+        assert_eq!(
+            accounts.replace_device_binding(
+                &tenant,
+                "alice",
+                1,
+                [2; 32],
+                first.clone(),
+                successor.clone(),
+            ),
+            Err(InventoryError::ReplacementPredecessorMismatch),
+        );
+        successor.replacement_predecessor = Some(binding_commitment(&first).unwrap());
+        let replaced = accounts
+            .replace_device_binding(
+                &tenant,
+                "alice",
+                1,
+                [2; 32],
+                first.clone(),
+                successor.clone(),
+            )
+            .unwrap();
+        assert_eq!(replaced.generation, 2);
+        assert_eq!(replaced.active, vec![successor.clone()]);
+        assert_eq!(replaced.revoked[0].binding, first);
+
+        assert_eq!(
+            accounts.link_device_binding(&tenant, "alice", 2, [3; 32], group_binding(1, 3)),
+            Err(InventoryError::DeviceIdRetired),
+        );
+        assert_eq!(
+            accounts.revoke_device_binding(&tenant, "alice", 1, [4; 32], successor.clone()),
+            Err(InventoryError::PredecessorMismatch),
+        );
+        let revoked = accounts
+            .revoke_device_binding(&tenant, "alice", 2, [4; 32], successor.clone())
+            .unwrap();
+        assert_eq!(revoked.generation, 3);
+        assert!(revoked.active.is_empty());
+        assert_eq!(revoked.revoked.len(), 2);
+        assert_eq!(
+            accounts
+                .revoke_device_binding(&tenant, "alice", 2, [4; 32], successor)
+                .unwrap(),
+            revoked,
+            "an exact retry returns the committed lifecycle result"
+        );
+        assert_eq!(
+            accounts.revoke_device_binding(&tenant, "alice", 3, [4; 32], group_binding(3, 3)),
+            Err(InventoryError::IdempotencyConflict),
+        );
+    }
+
+    #[test]
+    fn bounded_revocation_history_advances_its_terminal_floor() {
+        let mut accounts = Accounts::new();
+        let (tenant, _) = tenant(&mut accounts);
+        accounts
+            .sign_up_user(&tenant, "alice", "hunter2!!")
+            .unwrap();
+        let mut current = group_binding(1, 1);
+        accounts
+            .link_device_binding(&tenant, "alice", 0, [1; 32], current.clone())
+            .unwrap();
+        for next_id in 2..=10 {
+            let replacement = DeviceBinding {
+                device_id: next_id,
+                identity_public_key: [next_id as u8; 32],
+                capabilities: GROUP_EPOCH_V1,
+                replacement_predecessor: Some(binding_commitment(&current).unwrap()),
+            };
+            let generation = u64::from(next_id - 1);
+            accounts
+                .replace_device_binding(
+                    &tenant,
+                    "alice",
+                    generation,
+                    [next_id as u8; 32],
+                    current,
+                    replacement.clone(),
+                )
+                .unwrap();
+            current = replacement;
+        }
+        let inventory = accounts.device_inventory(&tenant, "alice").unwrap();
+        assert_eq!(inventory.generation, 10);
+        assert_eq!(inventory.revocation_floor_generation, 2);
+        assert_eq!(inventory.revoked.len(), 8);
+        assert!(
+            inventory
+                .revoked
+                .iter()
+                .all(|revocation| revocation.terminal_generation > 2)
+        );
     }
 }
 

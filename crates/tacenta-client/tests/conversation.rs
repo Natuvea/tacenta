@@ -5,7 +5,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use tacenta_client::{Config, DefaultClient};
+use tacenta_client::{Config, DefaultClient, MessageKind};
 use tacenta_server::{Config as ServerConfig, Server};
 
 async fn start_server() -> (std::net::SocketAddr, std::net::SocketAddr) {
@@ -66,6 +66,7 @@ async fn two_clients_hold_a_conversation() {
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].from, alice_addr);
     assert_eq!(inbox[0].plaintext, b"meet at the north dock");
+    assert_eq!(inbox[0].kind, MessageKind::Direct);
 
     // Bob replies over the session Bob's decrypt established; Alice receives.
     bob.send(&alice_addr, b"understood").await.unwrap();
@@ -73,6 +74,7 @@ async fn two_clients_hold_a_conversation() {
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].from, bob_addr);
     assert_eq!(inbox[0].plaintext, b"understood");
+    assert_eq!(inbox[0].kind, MessageKind::Direct);
 }
 
 #[tokio::test]

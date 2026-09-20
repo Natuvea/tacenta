@@ -13,7 +13,14 @@
 //! on restore, so they cannot drift from the records.
 
 use crate::protocol::{put_str, put_u32, put_u64, take_str, take_u32, take_u64};
-use crate::{Accounts, ApiKeyRecord, TenantId, TenantRecord, UserRecord};
+use tacenta_core::crypto::groups::inventory::{
+    DeviceBinding, MAX_ACTIVE_BINDINGS, MAX_RECENT_REVOCATIONS, Revocation,
+};
+
+use crate::{
+    Accounts, ApiKeyRecord, DeviceInventory, TenantId, TenantRecord, UserRecord,
+    inventory::{encode_inventory, validate_inventory},
+};
 
 fn put_hash(out: &mut Vec<u8>, hash: &[u8; 32]) {
     out.extend_from_slice(hash);
@@ -22,6 +29,141 @@ fn put_hash(out: &mut Vec<u8>, hash: &[u8; 32]) {
 fn take_hash(bytes: &[u8]) -> Option<([u8; 32], &[u8])> {
     let (head, rest) = bytes.split_at_checked(32)?;
     Some((head.try_into().ok()?, rest))
+}
+
+fn put_binding(out: &mut Vec<u8>, binding: &DeviceBinding) {
+    put_u32(out, binding.device_id);
+    out.extend_from_slice(&binding.identity_public_key);
+    put_u64(out, binding.capabilities);
+    match binding.replacement_predecessor {
+        Some(predecessor) => {
+            out.push(1);
+            out.extend_from_slice(&predecessor);
+        }
+        None => out.push(0),
+    }
+}
+
+fn take_binding(bytes: &[u8]) -> Option<(DeviceBinding, &[u8])> {
+    let (device_id, rest) = take_u32(bytes)?;
+    let (identity_public_key, rest) = take_hash(rest)?;
+    let (capabilities, rest) = take_u64(rest)?;
+    let (present, rest) = rest.split_first()?;
+    let (replacement_predecessor, rest) = match present {
+        0 => (None, rest),
+        1 => {
+            let (key, rest) = take_hash(rest)?;
+            (Some(key), rest)
+        }
+        _ => return None,
+    };
+    Some((
+        DeviceBinding {
+            device_id,
+            identity_public_key,
+            capabilities,
+            replacement_predecessor,
+        },
+        rest,
+    ))
+}
+
+fn put_inventory(out: &mut Vec<u8>, inventory: &DeviceInventory) {
+    out.extend_from_slice(&encode_inventory(inventory));
+}
+
+fn take_inventory(bytes: &[u8]) -> Option<(DeviceInventory, &[u8])> {
+    let (generation, mut rest) = take_u64(bytes)?;
+    let (active_count, r) = take_u32(rest)?;
+    if active_count as usize > MAX_ACTIVE_BINDINGS {
+        return None;
+    }
+    rest = r;
+    let mut active = Vec::new();
+    for _ in 0..active_count {
+        let (binding, r) = take_binding(rest)?;
+        active.push(binding);
+        rest = r;
+    }
+    let (revocation_floor_generation, r) = take_u64(rest)?;
+    rest = r;
+    let (revoked_count, r) = take_u32(rest)?;
+    if revoked_count as usize > MAX_RECENT_REVOCATIONS {
+        return None;
+    }
+    rest = r;
+    let mut revoked = Vec::new();
+    for _ in 0..revoked_count {
+        let (binding, r) = take_binding(rest)?;
+        let (terminal_generation, r) = take_u64(r)?;
+        revoked.push(Revocation {
+            binding,
+            terminal_generation,
+        });
+        rest = r;
+    }
+    Some((
+        DeviceInventory {
+            generation,
+            active,
+            revocation_floor_generation,
+            revoked,
+        },
+        rest,
+    ))
+}
+
+fn put_lifecycle_request(out: &mut Vec<u8>, request: &crate::inventory::LifecycleRequest) {
+    match request {
+        crate::inventory::LifecycleRequest::Replace {
+            predecessor_generation,
+            retired,
+            replacement,
+        } => {
+            out.push(1);
+            put_u64(out, *predecessor_generation);
+            put_binding(out, retired);
+            put_binding(out, replacement);
+        }
+        crate::inventory::LifecycleRequest::Revoke {
+            predecessor_generation,
+            retired,
+        } => {
+            out.push(2);
+            put_u64(out, *predecessor_generation);
+            put_binding(out, retired);
+        }
+    }
+}
+
+fn take_lifecycle_request(bytes: &[u8]) -> Option<(crate::inventory::LifecycleRequest, &[u8])> {
+    let (tag, rest) = bytes.split_first()?;
+    let (predecessor_generation, rest) = take_u64(rest)?;
+    match tag {
+        1 => {
+            let (retired, rest) = take_binding(rest)?;
+            let (replacement, rest) = take_binding(rest)?;
+            Some((
+                crate::inventory::LifecycleRequest::Replace {
+                    predecessor_generation,
+                    retired,
+                    replacement,
+                },
+                rest,
+            ))
+        }
+        2 => {
+            let (retired, rest) = take_binding(rest)?;
+            Some((
+                crate::inventory::LifecycleRequest::Revoke {
+                    predecessor_generation,
+                    retired,
+                },
+                rest,
+            ))
+        }
+        _ => None,
+    }
 }
 
 impl Accounts {
@@ -61,6 +203,30 @@ impl Accounts {
             put_str(&mut out, tenant.as_str());
             put_str(&mut out, username);
             put_u64(&mut out, *expires_at);
+        }
+
+        put_u32(&mut out, self.device_inventories.len() as u32);
+        for ((tenant, username), inventory) in &self.device_inventories {
+            put_str(&mut out, tenant.as_str());
+            put_str(&mut out, username);
+            put_inventory(&mut out, inventory);
+        }
+        put_u32(&mut out, self.inventory_mutations.len() as u32);
+        for ((tenant, username, idempotency_key), mutation) in &self.inventory_mutations {
+            put_str(&mut out, tenant.as_str());
+            put_str(&mut out, username);
+            out.extend_from_slice(idempotency_key);
+            put_u64(&mut out, mutation.predecessor_generation);
+            put_binding(&mut out, &mutation.binding);
+            put_inventory(&mut out, &mutation.result);
+        }
+        put_u32(&mut out, self.inventory_lifecycle_mutations.len() as u32);
+        for ((tenant, username, idempotency_key), mutation) in &self.inventory_lifecycle_mutations {
+            put_str(&mut out, tenant.as_str());
+            put_str(&mut out, username);
+            out.extend_from_slice(idempotency_key);
+            put_lifecycle_request(&mut out, &mutation.request);
+            put_inventory(&mut out, &mutation.result);
         }
 
         out
@@ -148,6 +314,121 @@ impl Accounts {
                 .insert(hash, (TenantId(tenant), username, expires_at));
         }
 
+        // Snapshots written before device inventories ended immediately after
+        // sessions. Treat that exact shape as an empty inventory map so a
+        // server upgrade preserves existing accounts.
+        if rest.is_empty() {
+            return Some(accounts);
+        }
+        let (inventories, r) = take_u32(rest)?;
+        rest = r;
+        for _ in 0..inventories {
+            let (tenant, r) = take_str(rest)?;
+            let (username, r) = take_str(r)?;
+            let (inventory, r) = take_inventory(r)?;
+            rest = r;
+            let tenant = TenantId(tenant);
+            let key = (tenant.clone(), username.clone());
+            if !accounts.users.contains_key(&key) {
+                return None;
+            }
+            let handle = accounts.handle(&tenant, &username)?;
+            validate_inventory(&handle, &inventory).ok()?;
+            if accounts.device_inventories.insert(key, inventory).is_some() {
+                return None;
+            }
+        }
+
+        // The preceding inventory section is present in every snapshot that
+        // can contain device state. The idempotency section was appended later
+        // and is optional for compatibility with those earlier snapshots.
+        if rest.is_empty() {
+            return Some(accounts);
+        }
+        let (mutations, r) = take_u32(rest)?;
+        rest = r;
+        for _ in 0..mutations {
+            let (tenant, r) = take_str(rest)?;
+            let (username, r) = take_str(r)?;
+            let (idempotency_key, r) = take_hash(r)?;
+            let (predecessor_generation, r) = take_u64(r)?;
+            let (binding, r) = take_binding(r)?;
+            let (result, r) = take_inventory(r)?;
+            rest = r;
+            let tenant = TenantId(tenant);
+            let account_key = (tenant.clone(), username.clone());
+            if !accounts.users.contains_key(&account_key) {
+                return None;
+            }
+            let handle = accounts.handle(&tenant, &username)?;
+            validate_inventory(&handle, &result).ok()?;
+            if result.generation <= predecessor_generation {
+                return None;
+            }
+            let key = (tenant, username, idempotency_key);
+            if accounts
+                .inventory_mutations
+                .insert(
+                    key,
+                    crate::inventory::InventoryMutation {
+                        predecessor_generation,
+                        binding,
+                        result,
+                    },
+                )
+                .is_some()
+            {
+                return None;
+            }
+        }
+
+        // Non-link lifecycle retries were appended after the original link
+        // replay record. Their separate section leaves prior snapshots valid.
+        if rest.is_empty() {
+            return Some(accounts);
+        }
+        let (mutations, r) = take_u32(rest)?;
+        rest = r;
+        for _ in 0..mutations {
+            let (tenant, r) = take_str(rest)?;
+            let (username, r) = take_str(r)?;
+            let (idempotency_key, r) = take_hash(r)?;
+            let (request, r) = take_lifecycle_request(r)?;
+            let (result, r) = take_inventory(r)?;
+            rest = r;
+            let tenant = TenantId(tenant);
+            let account_key = (tenant.clone(), username.clone());
+            if !accounts.users.contains_key(&account_key) {
+                return None;
+            }
+            let handle = accounts.handle(&tenant, &username)?;
+            validate_inventory(&handle, &result).ok()?;
+            let predecessor_generation = match &request {
+                crate::inventory::LifecycleRequest::Replace {
+                    predecessor_generation,
+                    ..
+                }
+                | crate::inventory::LifecycleRequest::Revoke {
+                    predecessor_generation,
+                    ..
+                } => *predecessor_generation,
+            };
+            if result.generation <= predecessor_generation {
+                return None;
+            }
+            let key = (tenant, username, idempotency_key);
+            if accounts.inventory_mutations.contains_key(&key) {
+                return None;
+            }
+            if accounts
+                .inventory_lifecycle_mutations
+                .insert(key, crate::inventory::LifecycleMutation { request, result })
+                .is_some()
+            {
+                return None;
+            }
+        }
+
         rest.is_empty().then_some(accounts)
     }
 }
@@ -155,6 +436,9 @@ impl Accounts {
 #[cfg(test)]
 mod tests {
     use crate::Accounts;
+    use tacenta_core::crypto::groups::inventory::{
+        DeviceBinding, GROUP_EPOCH_V1, binding_commitment,
+    };
 
     #[test]
     fn a_snapshot_round_trips_tenants_users_keys_and_sessions() {
@@ -195,5 +479,97 @@ mod tests {
     fn garbage_does_not_restore() {
         assert!(Accounts::restore(&[]).is_none());
         assert!(Accounts::restore(&[0, 0, 0, 1]).is_none()); // claims a tenant, no body
+    }
+
+    #[test]
+    fn an_inventory_round_trips_and_legacy_snapshots_remain_readable() {
+        let mut a = Accounts::new();
+        let (tenant, _) = a
+            .sign_up_tenant("acme", "admin@acme.example", "correct horse")
+            .unwrap();
+        a.sign_up_user(&tenant.id, "alice", "hunter2!!").unwrap();
+        let binding = DeviceBinding {
+            device_id: 1,
+            identity_public_key: [7; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: None,
+        };
+        let inventory = a
+            .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding.clone())
+            .unwrap();
+        let mut restored = Accounts::restore(&a.snapshot()).expect("inventory snapshot restores");
+        assert_eq!(
+            restored.device_inventory(&tenant.id, "alice"),
+            Some(inventory.clone())
+        );
+        assert_eq!(
+            restored
+                .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding)
+                .unwrap(),
+            inventory,
+            "the idempotency result survives a restart"
+        );
+
+        // Before inventories, snapshots ended right after the sessions count.
+        // A no-inventory new snapshot has one trailing zero count, so remove it
+        // to reproduce that older exact framing.
+        let mut legacy = Accounts::new();
+        let (legacy_tenant, _) = legacy
+            .sign_up_tenant("beta", "admin@beta.example", "correct horse")
+            .unwrap();
+        legacy
+            .sign_up_user(&legacy_tenant.id, "bob", "hunter2!!")
+            .unwrap();
+        let mut bytes = legacy.snapshot();
+        bytes.truncate(bytes.len() - 4);
+        let restored = Accounts::restore(&bytes).expect("legacy snapshot restores");
+        assert_eq!(
+            restored.device_inventory(&legacy_tenant.id, "bob"),
+            Some(Default::default()),
+        );
+    }
+
+    #[test]
+    fn lifecycle_retry_records_survive_a_snapshot_restore() {
+        let mut accounts = Accounts::new();
+        let (tenant, _) = accounts
+            .sign_up_tenant("acme", "admin@acme.example", "correct horse")
+            .unwrap();
+        accounts
+            .sign_up_user(&tenant.id, "alice", "hunter2!!")
+            .unwrap();
+        let retired = DeviceBinding {
+            device_id: 1,
+            identity_public_key: [1; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: None,
+        };
+        accounts
+            .link_device_binding(&tenant.id, "alice", 0, [1; 32], retired.clone())
+            .unwrap();
+        let replacement = DeviceBinding {
+            device_id: 2,
+            identity_public_key: [2; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: Some(binding_commitment(&retired).unwrap()),
+        };
+        let result = accounts
+            .replace_device_binding(
+                &tenant.id,
+                "alice",
+                1,
+                [2; 32],
+                retired.clone(),
+                replacement.clone(),
+            )
+            .unwrap();
+        let mut restored = Accounts::restore(&accounts.snapshot()).unwrap();
+        assert_eq!(
+            restored
+                .replace_device_binding(&tenant.id, "alice", 1, [2; 32], retired, replacement,)
+                .unwrap(),
+            result,
+            "the committed replacement result remains the exact retry result"
+        );
     }
 }

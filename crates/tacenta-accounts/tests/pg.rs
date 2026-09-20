@@ -12,7 +12,8 @@
 #![allow(clippy::await_holding_lock)]
 
 use tacenta_accounts::pg::{PgAccounts, PgError};
-use tacenta_accounts::{AuthError, SignupError};
+use tacenta_accounts::{AuthError, DeviceInventory, InventoryError, SignupError};
+use tacenta_core::crypto::groups::inventory::{DeviceBinding, GROUP_EPOCH_V1, binding_commitment};
 
 /// Serialize the Postgres tests: they share one database and each starts by
 /// truncating it, so they must not run concurrently. Held for the whole test.
@@ -88,6 +89,84 @@ async fn the_account_flow_works_on_postgres() {
         store.sign_up_user(&tenant.id, "Alice", "hunter2!!").await,
         Err(PgError::Signup(SignupError::UsernameTaken)),
     ));
+
+    // A first device advances the durable inventory from its empty state;
+    // stale predecessor generations are refused even after the state is read
+    // back from PostgreSQL.
+    assert_eq!(
+        store.device_inventory(&tenant.id, "alice").await.unwrap(),
+        Some(DeviceInventory::default()),
+    );
+    let binding = DeviceBinding {
+        device_id: 1,
+        identity_public_key: [7; 32],
+        capabilities: GROUP_EPOCH_V1,
+        replacement_predecessor: None,
+    };
+    let inventory = store
+        .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding.clone())
+        .await
+        .unwrap();
+    assert_eq!(inventory.generation, 1);
+    assert_eq!(
+        store.device_inventory(&tenant.id, "alice").await.unwrap(),
+        Some(inventory),
+    );
+    assert_eq!(
+        store
+            .link_device_binding(&tenant.id, "alice", 0, [1; 32], binding.clone())
+            .await
+            .unwrap()
+            .generation,
+        1,
+        "the database keeps the original result for an idempotent retry"
+    );
+    assert!(matches!(
+        store
+            .link_device_binding(&tenant.id, "alice", 0, [2; 32], binding.clone())
+            .await,
+        Err(PgError::Inventory(InventoryError::PredecessorMismatch)),
+    ));
+    let replacement = DeviceBinding {
+        device_id: 2,
+        identity_public_key: [8; 32],
+        capabilities: GROUP_EPOCH_V1,
+        replacement_predecessor: Some(binding_commitment(&binding).unwrap()),
+    };
+    let replaced = store
+        .replace_device_binding(
+            &tenant.id,
+            "alice",
+            1,
+            [3; 32],
+            binding.clone(),
+            replacement.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replaced.generation, 2);
+    assert_eq!(replaced.active, vec![replacement.clone()]);
+    assert_eq!(
+        store
+            .replace_device_binding(
+                &tenant.id,
+                "alice",
+                1,
+                [3; 32],
+                binding,
+                replacement.clone(),
+            )
+            .await
+            .unwrap(),
+        replaced,
+        "the database keeps the original replacement result for an exact retry"
+    );
+    let revoked = store
+        .revoke_device_binding(&tenant.id, "alice", 2, [4; 32], replacement)
+        .await
+        .unwrap();
+    assert_eq!(revoked.generation, 3);
+    assert!(revoked.active.is_empty());
 
     // Sign in issues a session that validates; the handle resolves.
     let (_, token) = store

@@ -91,7 +91,30 @@ cargo test --workspace
 cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/postgres" --all-targets -- -D warnings
 ```
 
-## 4. The repo gates
+## 4. The bounded group experiment
+
+Run the live bounded-profile trace, including cap-plus-one refusals, group and
+direct-message session sharing, prepared-handoff cancellation on removal,
+invitation admission/removal, and revocation:
+
+```bash
+cd tacenta
+tooling/run-group-chat-demo.sh
+```
+
+To capture comparable cold and warm process-level measurements, pass an empty
+output directory. The runner records the revision, host, Rust toolchain, test
+logs, elapsed/user/system timing, maximum resident memory where the host
+supports it, deterministic 2/3/8-member checkpoint sizes, one native durable
+logical-intent transaction, and the sender restart plus recovered-outbox
+duration from the live test. These results are development evidence, not
+production budgets.
+
+```bash
+tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
+```
+
+## 5. The repo gates
 
 ```bash
 cd tacenta

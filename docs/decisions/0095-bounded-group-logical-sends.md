@@ -6,9 +6,10 @@ A bounded group logical send is an immutable product record keyed by
 `(group_id, revision, sender_identity, sender_device, sequence)`. Sequence is
 a monotonically increasing unsigned 64-bit counter allocated with the record,
 never derived from a pairwise ratchet, never reused, and reset only in a new
-revision namespace. The record fixes the roster digest, payload bytes, payload
-commitment input, and the complete canonical recipient set before any pairwise
-operation or transport handoff.
+revision namespace. The record fixes the roster digest, payload bytes, the
+pinned core payload commitment over the canonical application context, and the
+complete canonical recipient set before any pairwise operation or transport
+handoff.
 
 Each recipient has its own immutable ciphertext and disposition:
 `pending`, `prepared`, `handed_off`, `relay_accepted`, `cancelled`, or
@@ -25,8 +26,8 @@ Exhaustion records `exhausted_unknown`, never a nondelivery conclusion.
 
 A newly accepted removal cancels obsolete unsent recipient work and retries,
 while retaining prior handoff evidence and consumed pairwise state. Work
-already ordered before the local removal update remains handed off; it is not
-rewritten as cancelled.
+already handed off becomes `cancelled_after_handoff`: it preserves its immutable
+ciphertext and attempt evidence but cannot reserve another automatic retry.
 
 ## Considered
 

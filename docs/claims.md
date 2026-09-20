@@ -498,6 +498,17 @@ not in our proofs' dependency cone.
   release pipeline (decision 0090); not yet published to a registry.
   A packaged xcframework / `.aar`, async export, and an example app are
   downstream work.
+- **Bounded group experiment** (`tacenta-group` and the client group-operation
+  tests): canonical roster/context values, invitation and logical-send policy,
+  core-bound commitments, bounded dedup/defer queues, restart codecs, and the
+  group envelope class have focused Rust tests. The repeatable group demo also
+  drives the bounded three-client invitation, restart, admission, removal and
+  prepared-handoff cancellation, revocation, direct-message interleaving,
+  duplicate and future-queue bounds, and wrong-sender/device paths through the
+  real in-process directory, relay, provider, and operation store. This is
+  **tested, not proven**. It is not a shipped group-chat protocol or a
+  production membership system; sender-key, production authority, sequencing,
+  multi-device, sealed-sender, franking, and scale work remain open.
 - Style gates: rustfmt and clippy at `-D warnings`.
 
 ## Assumed — the trusted base

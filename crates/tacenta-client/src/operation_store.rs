@@ -7,8 +7,10 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
-/// The first combined snapshot format.
-pub(crate) const OPERATION_SNAPSHOT_VERSION: u8 = 1;
+/// The current combined snapshot format. Version two adds bounded group
+/// control records while retaining read support for ungrouped version-one
+/// snapshots.
+pub(crate) const OPERATION_SNAPSHOT_VERSION: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OperationSnapshot {
@@ -19,6 +21,7 @@ pub(crate) struct OperationSnapshot {
     pub(crate) outbox: Vec<Vec<u8>>,
     pub(crate) inbox: Vec<Vec<u8>>,
     pub(crate) dedup: Vec<Vec<u8>>,
+    pub(crate) group_controls: Vec<Vec<u8>>,
     pub(crate) delivery_cursor: u64,
 }
 
@@ -32,6 +35,7 @@ impl OperationSnapshot {
             outbox: Vec::new(),
             inbox: Vec::new(),
             dedup: Vec::new(),
+            group_controls: Vec::new(),
             delivery_cursor: 0,
         }
     }
@@ -60,8 +64,14 @@ impl OperationSnapshot {
         put_many(&mut out, &self.outbox)?;
         put_many(&mut out, &self.inbox)?;
         put_many(&mut out, &self.dedup)?;
+        put_many(&mut out, &self.group_controls)?;
         out.extend_from_slice(&self.delivery_cursor.to_be_bytes());
         Some(out)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn encoded_len(&self) -> Option<usize> {
+        self.encode().map(|bytes| bytes.len())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -90,8 +100,8 @@ impl OperationSnapshot {
         if take(&mut cursor, 4)? != b"TCOP" {
             return None;
         }
-        let version = *take(&mut cursor, 1)?.first()?;
-        if version != OPERATION_SNAPSHOT_VERSION {
+        let encoded_version = *take(&mut cursor, 1)?.first()?;
+        if encoded_version != 1 && encoded_version != OPERATION_SNAPSHOT_VERSION {
             return None;
         }
         let generation = take_u64(&mut cursor)?;
@@ -100,18 +110,27 @@ impl OperationSnapshot {
         let outbox = take_many(&mut cursor)?;
         let inbox = take_many(&mut cursor)?;
         let dedup = take_many(&mut cursor)?;
+        let group_controls = if encoded_version == 1 {
+            Vec::new()
+        } else {
+            take_many(&mut cursor)?
+        };
         let delivery_cursor = take_u64(&mut cursor)?;
         if !cursor.is_empty() {
             return None;
         }
         Some(Self {
-            version,
+            // A recovered v1 value becomes v2 before its next publication;
+            // otherwise encoding its added group-control field under a v1 tag
+            // would make the following recovery reject trailing bytes.
+            version: OPERATION_SNAPSHOT_VERSION,
             generation,
             provider_state,
             application_state,
             outbox,
             inbox,
             dedup,
+            group_controls,
             delivery_cursor,
         })
     }
@@ -180,6 +199,7 @@ mod tests {
         assert!(snapshot.outbox.is_empty());
         assert!(snapshot.inbox.is_empty());
         assert!(snapshot.dedup.is_empty());
+        assert!(snapshot.group_controls.is_empty());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -199,6 +219,7 @@ mod tests {
         snapshot.outbox = vec![vec![6, 7]];
         snapshot.inbox = vec![vec![8]];
         snapshot.dedup = vec![vec![9, 10]];
+        snapshot.group_controls = vec![vec![11, 12]];
         snapshot.delivery_cursor = 12;
 
         let mut store = FileOperationStore::new(&path);
@@ -223,5 +244,48 @@ mod tests {
 
         assert_eq!(FileOperationStore::new(&path).recover(), Err(()));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_version_one_snapshot_restores_with_no_group_controls() {
+        fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+            out.extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_be_bytes());
+            out.extend_from_slice(bytes);
+        }
+        fn put_many(out: &mut Vec<u8>, entries: &[Vec<u8>]) {
+            out.extend_from_slice(&u32::try_from(entries.len()).unwrap().to_be_bytes());
+            for entry in entries {
+                put_bytes(out, entry);
+            }
+        }
+
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(b"TCOP");
+        legacy.push(1);
+        legacy.extend_from_slice(&7_u64.to_be_bytes());
+        put_bytes(&mut legacy, &[1]);
+        put_bytes(&mut legacy, &[2]);
+        put_many(&mut legacy, &[vec![3]]);
+        put_many(&mut legacy, &[vec![4]]);
+        put_many(&mut legacy, &[vec![5]]);
+        legacy.extend_from_slice(&6_u64.to_be_bytes());
+
+        let migrated = OperationSnapshot {
+            version: OPERATION_SNAPSHOT_VERSION,
+            generation: 7,
+            provider_state: vec![1],
+            application_state: vec![2],
+            outbox: vec![vec![3]],
+            inbox: vec![vec![4]],
+            dedup: vec![vec![5]],
+            group_controls: Vec::new(),
+            delivery_cursor: 6,
+        };
+        assert_eq!(OperationSnapshot::decode(&legacy), Some(migrated.clone()));
+        assert_eq!(
+            OperationSnapshot::decode(&migrated.encode().unwrap()),
+            Some(migrated)
+        );
     }
 }
