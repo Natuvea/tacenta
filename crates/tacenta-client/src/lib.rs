@@ -1024,7 +1024,7 @@ mod tests {
                 book.create(
                     &alice_member,
                     &alice_member,
-                    &[alice_member.clone()],
+                    std::slice::from_ref(&alice_member),
                     invitation.clone(),
                     0,
                 )
@@ -1442,7 +1442,7 @@ mod tests {
                 book.create(
                     &alice_member,
                     &alice_member,
-                    &[alice_member.clone()],
+                    std::slice::from_ref(&alice_member),
                     invitation.clone(),
                     0,
                 )
@@ -1749,7 +1749,7 @@ mod tests {
                 book.create(
                     &alice_member,
                     &alice_member,
-                    &[alice_member.clone()],
+                    std::slice::from_ref(&alice_member),
                     bob_invitation.clone(),
                     0,
                 )
@@ -1765,7 +1765,7 @@ mod tests {
                 book.create(
                     &alice_member,
                     &alice_member,
-                    &[alice_member.clone()],
+                    std::slice::from_ref(&alice_member),
                     invitation.clone(),
                     0,
                 )
