@@ -3,8 +3,51 @@
 One section per release tag, newest first; the section for the next tag
 sits at the top under its version before the tag exists, and
 `tooling/check-versions.sh` refuses a tag without one (`docs/releasing.md` has
-the order of a release). Dates are the day the tag was pushed. Earlier tags (v1.0.0 to v1.1.2) predate this file; the
+the order of a release). Dates are the day the tag was pushed. Release tags are
+cut in the release pipeline, not in this repository. Earlier tags (v1.0.0 to v1.1.2) predate this file; the
 commits carry their story.
+
+## v1.12.1 (2026-09-11)
+
+- tacenta-core moves to `fb89b15`.
+  - An initial message whose `identity` or `ephemeral` key is not its canonical
+    encoding is refused when it is decoded.
+  - A repeated initial message must carry the session's peer identity as well
+    as its ephemeral key; one carrying a different identity is refused
+    (`NotARepeatedInitial`) where it used to be decrypted.
+  - A saved session whose post-quantum key pair fails the FIPS 203 hash or
+    modulus check is refused as malformed when it is loaded, where it used to
+    load and then derive the wrong secrets.
+
+## v1.12.0 (2026-09-11)
+
+- The SDK is licensed Apache-2.0. Each package carries the licence, a
+  `NOTICE` naming the copyright holder, and `THIRD_PARTY_NOTICES` for the code
+  it bundles: the npm package, the Android `.aar`, the Swift xcframework and
+  the CLI download.
+- tacenta-core moves to `e1537e6`, which carries its September review. v1.11.6
+  carried only the fix for GHSA-cgvw-9r5f-xrxp, on the older tacenta-core
+  revision that v1.11.5 used.
+  - Decoding refuses a curve key without its type byte, a KEM prekey of the
+    wrong length, and any curve public key that is not its canonical
+    encoding.
+  - The classical ratchet refuses a stale message from its current receiving
+    chain as out of order, instead of failing later.
+  - The last-resort replay record fails closed per key once a key's budget is
+    spent, instead of evicting older entries.
+  - `create_prekeys` stops at the end of the identifier space.
+  - A saved session or prekey store is validated when it is loaded, and one
+    that breaks the format's rules is refused.
+- Prekey stores are now saved in format `0x04`. Stores saved by earlier
+  releases still load; a store saved by this release cannot be loaded by
+  1.11.x.
+
+## v1.11.6 (2026-09-11)
+
+- Takes a tacenta-core hotfix to session-establishment decoding, the fix for
+  GHSA-cgvw-9r5f-xrxp: the core pin moves to the revision v1.11.5 used with
+  that one change. No API change. The same fix is `36b5db2` on tacenta-core's
+  `main`.
 
 ## v1.11.5 (2026-09-05)
 
