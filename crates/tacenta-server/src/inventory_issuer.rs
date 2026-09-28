@@ -5,15 +5,42 @@
 //! distributes [`public_key`](InventoryIssuer::public_key) and its key id to
 //! clients through configured service metadata; it never derives a new issuer
 //! identity from account or device material.
+//!
+//! # The key file
+//!
+//! [`InventoryIssuer::load_or_create`] keeps the signing secret in one small
+//! file and treats that file as the trust anchor:
+//!
+//! * **Created owner-only, from the first byte.** The secret is written to a
+//!   uniquely named temporary file that is created with mode `0600`
+//!   (`O_EXCL`, so a pre-planted file or symlink is never opened), flushed, and
+//!   then published under its final name with a hard link. No file holding the
+//!   secret has ever been readable by another user, and the final name never
+//!   shows a partly written key.
+//! * **Created once.** The publish fails if the name exists, so when two
+//!   processes start together the loser reads the winner's key instead of
+//!   replacing it: every starter serves the same issuer.
+//! * **Refused if others can read it.** An existing file with any group or
+//!   other permission bit set is refused (`PermissionDenied`) rather than used
+//!   or quietly repaired, because a key that was readable may have been copied.
+//!   Fix the mode (`chmod 600`) or rotate the key deliberately.
+//!
+//! **Windows.** None of the mode handling exists there: the standard library
+//! has no portable way to set an access-control list, so the file inherits the
+//! ACL of its directory and no permission check runs on load. A Windows
+//! deployment must place the key in a directory that only the service account
+//! can read; this code does not enforce that. Publishing needs a file system
+//! that supports hard links (the creation fails, without a key, on one that does
+//! not).
 
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use rand::{CryptoRng as RandCryptoRng, RngCore as RandRngCore, TryRngCore as _};
 use tacenta_accounts::DeviceInventory;
 use tacenta_core::crypto::groups::inventory::{
     Error as InventoryCodecError, InventoryStatement, issuer_public_key,
 };
-use tacenta_core::persist::write_atomically;
 use zeroize::Zeroizing;
 
 const ISSUER_FILE_MAGIC: &[u8] = b"TCIV\x01";
@@ -62,15 +89,28 @@ impl InventoryIssuer {
     /// Load the isolated issuer key, creating it atomically only on first
     /// startup. A changed configured key id refuses the existing file rather
     /// than silently rotating the trust anchor.
+    ///
+    /// A new file is created owner-only (`0600` on Unix) without any window in
+    /// which it is wider, and at most one starter creates it: a concurrent
+    /// starter that loses the race loads the winner's key. An existing file
+    /// that group or others can access is refused with `PermissionDenied`. See
+    /// the [module documentation](self) for the details and for what is not
+    /// enforced on Windows.
     pub fn load_or_create(path: &Path, key_id: u64) -> std::io::Result<InventoryIssuer> {
-        match std::fs::read(path) {
+        match read_key_file(path) {
             Ok(bytes) => Self::decode_file(&bytes, key_id),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut secret = [0u8; 32];
-                rand::rngs::OsRng.unwrap_err().fill_bytes(&mut secret);
-                let issuer = Self::from_secret(key_id, secret);
-                write_atomically(path, &issuer.encode_file())?;
-                Ok(issuer)
+                let mut secret = Zeroizing::new([0u8; 32]);
+                rand::rngs::OsRng.unwrap_err().fill_bytes(&mut *secret);
+                let issuer = Self::from_secret(key_id, *secret);
+                match create_key_file(path, &issuer.encode_file()) {
+                    Ok(()) => Ok(issuer),
+                    // Another starter published first. Serve its key, not ours.
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        Self::decode_file(&read_key_file(path)?, key_id)
+                    }
+                    Err(error) => Err(error),
+                }
             }
             Err(error) => Err(error),
         }
@@ -104,8 +144,8 @@ impl InventoryIssuer {
         .encode_signed(&self.secret, &mut rng)
     }
 
-    fn encode_file(&self) -> Vec<u8> {
-        let mut bytes = ISSUER_FILE_MAGIC.to_vec();
+    fn encode_file(&self) -> Zeroizing<Vec<u8>> {
+        let mut bytes = Zeroizing::new(ISSUER_FILE_MAGIC.to_vec());
         bytes.extend_from_slice(&self.key_id.to_be_bytes());
         bytes.extend_from_slice(&*self.secret);
         bytes
@@ -134,6 +174,75 @@ impl InventoryIssuer {
         let secret = bytes[key_start + 8..].try_into().expect("length checked");
         Ok(InventoryIssuer::from_secret(key_id, secret))
     }
+}
+
+/// Read the key file, refusing one that group or others can access.
+///
+/// The mode is read from the open descriptor, not from the path, so it is the
+/// mode of the file actually read.
+fn read_key_file(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = file.metadata()?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "inventory issuer key file is accessible to group or others (mode {mode:o}); \
+                     it must be owner-only (chmod 600), or the key rotated if it may have been read"
+                ),
+            ));
+        }
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Publish `bytes` at `path` only if nothing is there, owner-only from the
+/// first byte. `Err(AlreadyExists)` means another starter published first.
+fn create_key_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(
+        ".{}.{:016x}.tmp",
+        std::process::id(),
+        rand::rngs::OsRng.unwrap_err().next_u64()
+    ));
+    let temporary = PathBuf::from(temporary);
+    // `create_new` is `O_EXCL`: it never opens an existing file and never
+    // follows a symlink at the temporary name.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let published = (|| {
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        // `link` fails with `AlreadyExists` rather than replacing, and makes
+        // the complete file appear under its final name in one step.
+        std::fs::hard_link(&temporary, path)
+    })();
+    // The temporary name is only a staging area; drop it whatever happened.
+    let _ = std::fs::remove_file(&temporary);
+    published?;
+    #[cfg(unix)]
+    if let Some(directory) = path.parent() {
+        let directory = if directory.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            directory
+        };
+        std::fs::File::open(directory)?.sync_all()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -171,5 +280,141 @@ mod tests {
         assert_eq!(loaded.public_key(), public, "restart keeps the pinned key");
         assert!(InventoryIssuer::load_or_create(&path, 8).is_err());
         std::fs::remove_file(path).ok();
+    }
+
+    /// A private directory for one test, removed on drop.
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new() -> TestDir {
+            let dir = std::env::temp_dir().join(format!(
+                "tacenta-inventory-issuer-dir-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir(&dir).unwrap();
+            TestDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// The signing key is created owner-only. A creation that used the
+    /// process umask would leave it 0644, readable by every local user.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_issuer_key_file_is_owner_only() {
+        let dir = TestDir::new();
+        let path = dir.path().join("issuer.key");
+        InventoryIssuer::load_or_create(&path, 7).unwrap();
+        assert_eq!(mode_of(&path), 0o600);
+    }
+
+    /// The bytes are never in a file wider than owner-only, not even
+    /// transiently: the temporary file is created 0600 too, so a reader
+    /// cannot open it between the write and the publish. The scan below looks
+    /// for any file the creation leaves behind in the directory.
+    #[cfg(unix)]
+    #[test]
+    fn creation_leaves_no_temporary_file_and_nothing_wider_than_owner_only() {
+        let dir = TestDir::new();
+        let path = dir.path().join("issuer.key");
+        InventoryIssuer::load_or_create(&path, 7).unwrap();
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            assert_eq!(entry.path(), path, "unexpected leftover {:?}", entry.path());
+            assert_eq!(mode_of(&entry.path()) & 0o077, 0);
+        }
+    }
+
+    /// A file already sitting at the old temporary name (a crash leftover from
+    /// an earlier build, or planted by a local user) is neither reused nor
+    /// written through: the key does not land in the victim file and the
+    /// published key file is still owner-only.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_temporary_path_is_not_written_through() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let path = dir.path().join("issuer.key");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"not a key").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut planted = path.as_os_str().to_owned();
+        planted.push(".tmp");
+        std::os::unix::fs::symlink(&victim, std::path::PathBuf::from(planted)).unwrap();
+
+        InventoryIssuer::load_or_create(&path, 7).unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"not a key");
+        assert_eq!(mode_of(&victim), 0o644);
+        assert_eq!(mode_of(&path), 0o600);
+    }
+
+    /// A key file another user could read is refused rather than trusted or
+    /// silently repaired: it may already have been copied.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_key_file_readable_by_others_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let path = dir.path().join("issuer.key");
+        InventoryIssuer::load_or_create(&path, 7).unwrap();
+        for wide in [0o640, 0o604, 0o610, 0o644, 0o666, 0o777] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(wide)).unwrap();
+            let error = InventoryIssuer::load_or_create(&path, 7)
+                .err()
+                .unwrap_or_else(|| panic!("mode {wide:o} was accepted"));
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        }
+        for private in [0o400, 0o600, 0o700] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(private)).unwrap();
+            InventoryIssuer::load_or_create(&path, 7)
+                .unwrap_or_else(|e| panic!("owner-only mode {private:o} was refused: {e}"));
+        }
+    }
+
+    /// Two processes starting at once must end up with one issuer key, not one
+    /// each with the last rename winning. Threads stand in for processes: the
+    /// creation path is the same and the file system arbitrates.
+    #[test]
+    fn concurrent_first_starts_agree_on_one_key() {
+        for round in 0..20 {
+            let dir = TestDir::new();
+            let path = dir.path().join("issuer.key");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let (path, barrier) = (path.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        InventoryIssuer::load_or_create(&path, 7)
+                            .expect("every starter gets a key")
+                            .public_key()
+                    })
+                })
+                .collect();
+            let keys: Vec<[u8; 32]> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            assert!(
+                keys.iter().all(|key| key == &keys[0]),
+                "round {round}: starters disagree on the issuer key"
+            );
+            let reloaded = InventoryIssuer::load_or_create(&path, 7).unwrap();
+            assert_eq!(reloaded.public_key(), keys[0]);
+        }
     }
 }
