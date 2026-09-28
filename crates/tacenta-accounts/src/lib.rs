@@ -28,6 +28,8 @@ use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
 mod id;
 mod inventory;
+#[cfg(test)]
+mod inventory_rules_tests;
 #[cfg(any(test, feature = "postgres"))]
 mod inventory_tx;
 mod persist;
