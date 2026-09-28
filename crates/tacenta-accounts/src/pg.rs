@@ -18,10 +18,10 @@ use crate::{
     ApiKey, ApiKeyInfo, AuthError, DeviceInventory, InventoryError, SessionToken, SignupError,
     Tenant, TenantId, User,
     inventory::{
-        decode_inventory, decode_link_request, encode_inventory, encode_link_request,
-        encode_replace_request, encode_revoke_request, link_inventory, replace_inventory,
-        revoke_inventory, validate_inventory,
+        decode_inventory, encode_link_request, encode_replace_request, encode_revoke_request,
+        link_inventory, replace_inventory, revoke_inventory, validate_inventory,
     },
+    inventory_tx::{InventoryTx, MutationError, PriorMutation, apply_mutation},
 };
 use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
@@ -475,82 +475,15 @@ impl PgAccounts {
         idempotency_key: [u8; 32],
         binding: DeviceBinding,
     ) -> Result<DeviceInventory, PgError> {
-        let username = crate::normalize(username);
-        let mut tx = self.pool.begin().await?;
-        // Lock the user row even before this account has an inventory row. That
-        // serializes two first-device links, which an inventory-row lock alone
-        // cannot do when neither transaction has inserted one yet.
-        let row = sqlx::query(
-            "select t.username as tenant_username, i.state \
-             from users u join tenants t on t.id = u.tenant_id \
-             left join account_device_inventories i \
-               on i.tenant_id = u.tenant_id and i.username = u.username \
-             where u.tenant_id = $1 and u.username = $2 for update of u",
+        let request = encode_link_request(predecessor_generation, &binding);
+        self.mutate_inventory(
+            tenant,
+            username,
+            idempotency_key,
+            request,
+            move |handle, current| link_inventory(handle, current, predecessor_generation, binding),
         )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(row) = row else {
-            return Err(PgError::Inventory(InventoryError::UnknownUser));
-        };
-        let handle = format!("{}/{}", row.get::<String, _>("tenant_username"), username);
-        let prior = sqlx::query(
-            "select request, result from account_inventory_mutations \
-             where tenant_id = $1 and username = $2 and idempotency_key = $3",
-        )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .bind(&idempotency_key[..])
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(prior) = prior {
-            let request = prior.get::<Vec<u8>, _>("request");
-            let result = prior.get::<Vec<u8>, _>("result");
-            let matches_request = decode_link_request(&request)
-                .is_some_and(|request| request == (predecessor_generation, binding.clone()));
-            if !matches_request {
-                return Err(PgError::Inventory(InventoryError::IdempotencyConflict));
-            }
-            let result =
-                decode_inventory(&result).ok_or(PgError::Inventory(InventoryError::Invalid))?;
-            validate_inventory(&handle, &result).map_err(PgError::Inventory)?;
-            tx.commit().await?;
-            return Ok(result);
-        }
-        let current = match row.get::<Option<Vec<u8>>, _>("state") {
-            Some(bytes) => {
-                decode_inventory(&bytes).ok_or(PgError::Inventory(InventoryError::Invalid))?
-            }
-            None => DeviceInventory::default(),
-        };
-        validate_inventory(&handle, &current).map_err(PgError::Inventory)?;
-        let next = link_inventory(&handle, &current, predecessor_generation, binding.clone())
-            .map_err(PgError::Inventory)?;
-        sqlx::query(
-            "insert into account_device_inventories (tenant_id, username, state) \
-             values ($1, $2, $3) \
-             on conflict (tenant_id, username) do update set state = excluded.state",
-        )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .bind(encode_inventory(&next))
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "insert into account_inventory_mutations \
-             (tenant_id, username, idempotency_key, request, result) \
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .bind(&idempotency_key[..])
-        .bind(encode_link_request(predecessor_generation, &binding))
-        .bind(encode_inventory(&next))
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(next)
+        .await
     }
 
     /// Atomically terminally revoke one exact active binding. The caller has
@@ -565,7 +498,7 @@ impl PgAccounts {
         retired: DeviceBinding,
     ) -> Result<DeviceInventory, PgError> {
         let request = encode_revoke_request(predecessor_generation, &retired);
-        self.apply_lifecycle_mutation(
+        self.mutate_inventory(
             tenant,
             username,
             idempotency_key,
@@ -589,7 +522,7 @@ impl PgAccounts {
         replacement: DeviceBinding,
     ) -> Result<DeviceInventory, PgError> {
         let request = encode_replace_request(predecessor_generation, &retired, &replacement);
-        self.apply_lifecycle_mutation(
+        self.mutate_inventory(
             tenant,
             username,
             idempotency_key,
@@ -607,7 +540,11 @@ impl PgAccounts {
         .await
     }
 
-    async fn apply_lifecycle_mutation(
+    /// One inventory mutation in one transaction. The order of its statements
+    /// (lock the account, then read, then compare-and-set) is in
+    /// [`apply_mutation`]; this only opens the transaction and commits it on
+    /// success, so a refusal or an error rolls back when the transaction drops.
+    async fn mutate_inventory(
         &self,
         tenant: &TenantId,
         username: &str,
@@ -617,70 +554,26 @@ impl PgAccounts {
     ) -> Result<DeviceInventory, PgError> {
         let username = crate::normalize(username);
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query(
-            "select t.username as tenant_username, i.state \
-             from users u join tenants t on t.id = u.tenant_id \
-             left join account_device_inventories i \
-               on i.tenant_id = u.tenant_id and i.username = u.username \
-             where u.tenant_id = $1 and u.username = $2 for update of u",
+        // The order of statements in `apply_mutation` relies on each statement
+        // seeing what was committed when it began. Say so rather than depend on
+        // the server's default isolation level; this must be the first
+        // statement of the transaction.
+        sqlx::query("set transaction isolation level read committed")
+            .execute(&mut *tx)
+            .await?;
+        let next = apply_mutation(
+            &mut PgInventoryTx(&mut tx),
+            tenant,
+            &username,
+            idempotency_key,
+            &request,
+            transition,
         )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(row) = row else {
-            return Err(PgError::Inventory(InventoryError::UnknownUser));
-        };
-        let handle = format!("{}/{}", row.get::<String, _>("tenant_username"), username);
-        let prior = sqlx::query(
-            "select request, result from account_inventory_mutations \
-             where tenant_id = $1 and username = $2 and idempotency_key = $3",
-        )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .bind(&idempotency_key[..])
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(prior) = prior {
-            if prior.get::<Vec<u8>, _>("request") != request {
-                return Err(PgError::Inventory(InventoryError::IdempotencyConflict));
-            }
-            let result = decode_inventory(&prior.get::<Vec<u8>, _>("result"))
-                .ok_or(PgError::Inventory(InventoryError::Invalid))?;
-            validate_inventory(&handle, &result).map_err(PgError::Inventory)?;
-            tx.commit().await?;
-            return Ok(result);
-        }
-        let current = match row.get::<Option<Vec<u8>>, _>("state") {
-            Some(bytes) => {
-                decode_inventory(&bytes).ok_or(PgError::Inventory(InventoryError::Invalid))?
-            }
-            None => DeviceInventory::default(),
-        };
-        validate_inventory(&handle, &current).map_err(PgError::Inventory)?;
-        let next = transition(&handle, &current).map_err(PgError::Inventory)?;
-        sqlx::query(
-            "insert into account_device_inventories (tenant_id, username, state) \
-             values ($1, $2, $3) \
-             on conflict (tenant_id, username) do update set state = excluded.state",
-        )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .bind(encode_inventory(&next))
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "insert into account_inventory_mutations \
-             (tenant_id, username, idempotency_key, request, result) \
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(tenant.as_str())
-        .bind(&username)
-        .bind(&idempotency_key[..])
-        .bind(request)
-        .bind(encode_inventory(&next))
-        .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(|error| match error {
+            MutationError::Refused(refusal) => PgError::Inventory(refusal),
+            MutationError::Backend(error) => PgError::Database(error),
+        })?;
         tx.commit().await?;
         Ok(next)
     }
@@ -691,5 +584,140 @@ impl PgAccounts {
             .fetch_optional(&self.pool)
             .await?;
         Ok(id.is_some())
+    }
+}
+
+/// The statements of one inventory mutation, over an open Postgres transaction.
+///
+/// Each method is one SQL statement, so each gets its own snapshot under
+/// `READ COMMITTED`. That is what makes [`stored_state`] see everything
+/// committed before the lock in [`lock_account`] was granted.
+///
+/// [`lock_account`]: InventoryTx::lock_account
+/// [`stored_state`]: InventoryTx::stored_state
+struct PgInventoryTx<'a, 'c>(&'a mut sqlx::Transaction<'c, sqlx::Postgres>);
+
+impl InventoryTx for PgInventoryTx<'_, '_> {
+    type Error = sqlx::Error;
+
+    async fn lock_account(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        // `for no key update` serializes mutations of this account (each takes
+        // the same lock) without blocking inserts into tables that reference
+        // `users` by foreign key, such as a sign-in creating a session; those
+        // take only `for key share`, which `for update` would conflict with.
+        // The inventory is deliberately not part of this statement: see
+        // [`InventoryTx::stored_state`].
+        let tenant_username: Option<String> = sqlx::query_scalar(
+            "select t.username \
+             from users u join tenants t on t.id = u.tenant_id \
+             where u.tenant_id = $1 and u.username = $2 for no key update of u",
+        )
+        .bind(tenant.as_str())
+        .bind(username)
+        .fetch_optional(&mut **self.0)
+        .await?;
+        Ok(tenant_username.map(|t| format!("{t}/{username}")))
+    }
+
+    async fn prior_mutation(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        key: &[u8; 32],
+    ) -> Result<Option<PriorMutation>, sqlx::Error> {
+        let row = sqlx::query(
+            "select request, result from account_inventory_mutations \
+             where tenant_id = $1 and username = $2 and idempotency_key = $3",
+        )
+        .bind(tenant.as_str())
+        .bind(username)
+        .bind(&key[..])
+        .fetch_optional(&mut **self.0)
+        .await?;
+        Ok(row.map(|row| PriorMutation {
+            request: row.get("request"),
+            result: row.get("result"),
+        }))
+    }
+
+    async fn stored_state(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+    ) -> Result<Option<Vec<u8>>, sqlx::Error> {
+        sqlx::query_scalar(
+            "select state from account_device_inventories \
+             where tenant_id = $1 and username = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(username)
+        .fetch_optional(&mut **self.0)
+        .await
+    }
+
+    async fn compare_and_set_state(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        expected: Option<&[u8]>,
+        next: &[u8],
+    ) -> Result<bool, sqlx::Error> {
+        let result = match expected {
+            // No row was read, so insert one and match nothing if a row exists
+            // by now.
+            None => {
+                sqlx::query(
+                    "insert into account_device_inventories (tenant_id, username, state) \
+                     values ($1, $2, $3) \
+                     on conflict (tenant_id, username) do nothing",
+                )
+                .bind(tenant.as_str())
+                .bind(username)
+                .bind(next)
+                .execute(&mut **self.0)
+                .await?
+            }
+            // Replace the row only if it still holds the bytes that were read.
+            Some(expected) => {
+                sqlx::query(
+                    "update account_device_inventories set state = $3 \
+                     where tenant_id = $1 and username = $2 and state = $4",
+                )
+                .bind(tenant.as_str())
+                .bind(username)
+                .bind(next)
+                .bind(expected)
+                .execute(&mut **self.0)
+                .await?
+            }
+        };
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn record_mutation(
+        &mut self,
+        tenant: &TenantId,
+        username: &str,
+        key: &[u8; 32],
+        request: &[u8],
+        result: &[u8],
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "insert into account_inventory_mutations \
+             (tenant_id, username, idempotency_key, request, result) \
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(tenant.as_str())
+        .bind(username)
+        .bind(&key[..])
+        .bind(request)
+        .bind(result)
+        .execute(&mut **self.0)
+        .await?;
+        Ok(())
     }
 }

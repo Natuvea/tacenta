@@ -1,14 +1,19 @@
-//! Durable per-account device inventory state.
+//! Per-account device inventory state.
 //!
 //! This module deliberately records lifecycle state without signing it or
 //! publishing it. The hosted issuer is a server concern: it authorizes a
 //! mutation, commits this record, then signs the canonical statement and
 //! repairs directory publication if necessary.
+//!
+//! The rules here are pure functions shared by both store backends. What makes
+//! a committed record durable is the backend: the Postgres store commits it in
+//! the database; the in-memory store keeps it in memory until the server writes
+//! an account snapshot.
 
 use crate::protocol::{put_u32, put_u64};
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 use crate::protocol::{take_u32, take_u64};
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 use tacenta_core::crypto::groups::inventory::MAX_ACTIVE_BINDINGS;
 use tacenta_core::crypto::groups::inventory::{
     DeviceBinding, InventoryStatement, MAX_RECENT_REVOCATIONS, Revocation, binding_commitment,
@@ -25,7 +30,7 @@ pub struct DeviceInventory {
     pub revoked: Vec<Revocation>,
 }
 
-/// Why a durable inventory mutation was refused.
+/// Why an inventory mutation was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InventoryError {
     /// The `(tenant, username)` does not name an existing account.
@@ -38,9 +43,15 @@ pub enum InventoryError {
     DuplicateBinding,
     /// A different active binding already occupies this directory device id.
     DeviceIdInUse,
-    /// A revoked binding may not silently become active again.
+    /// A revoked binding may not silently become active again, for as long as
+    /// its revocation is remembered. Only the `MAX_RECENT_REVOCATIONS` most
+    /// recent revocations are kept; an older one is dropped and
+    /// `revocation_floor_generation` is raised to its terminal generation, after
+    /// which the same binding is accepted as new. The floor in the signed
+    /// statement is how a verifier learns that history was dropped.
     BindingRevoked,
-    /// A device identifier was previously retired and cannot name a new binding.
+    /// A device identifier was previously retired and cannot name a new binding,
+    /// under the same bounded memory as [`BindingRevoked`](InventoryError::BindingRevoked).
     DeviceIdRetired,
     /// An identity key was already used by another active or retired binding.
     IdentityKeyInUse,
@@ -87,7 +98,7 @@ pub(crate) fn validate_inventory(
     inventory: &DeviceInventory,
 ) -> Result<(), InventoryError> {
     // The core owns all byte-level bounds and canonical ordering requirements.
-    // issuer_key_id is irrelevant to durable lifecycle state, so a fixed value
+    // issuer_key_id is irrelevant to stored lifecycle state, so a fixed value
     // is sufficient to exercise exactly that validation surface.
     InventoryStatement {
         issuer_key_id: 0,
@@ -118,7 +129,7 @@ pub(crate) fn encode_inventory(inventory: &DeviceInventory) -> Vec<u8> {
     out
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn decode_inventory(bytes: &[u8]) -> Option<DeviceInventory> {
     let (generation, mut rest) = take_u64(bytes)?;
     let (active_count, r) = take_u32(rest)?;
@@ -298,21 +309,14 @@ fn compact_revocations(inventory: &mut DeviceInventory) {
     inventory.revoked.sort();
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn encode_link_request(predecessor_generation: u64, binding: &DeviceBinding) -> Vec<u8> {
     let mut out = predecessor_generation.to_be_bytes().to_vec();
     put_binding(&mut out, binding);
     out
 }
 
-#[cfg(feature = "postgres")]
-pub(crate) fn decode_link_request(bytes: &[u8]) -> Option<(u64, DeviceBinding)> {
-    let (predecessor_generation, rest) = take_u64(bytes)?;
-    let (binding, rest) = take_binding(rest)?;
-    rest.is_empty().then_some((predecessor_generation, binding))
-}
-
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn encode_revoke_request(
     predecessor_generation: u64,
     retired: &DeviceBinding,
@@ -323,7 +327,7 @@ pub(crate) fn encode_revoke_request(
     out
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn encode_replace_request(
     predecessor_generation: u64,
     retired: &DeviceBinding,
@@ -349,7 +353,7 @@ fn put_binding(out: &mut Vec<u8>, binding: &DeviceBinding) {
     }
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(any(test, feature = "postgres"))]
 fn take_binding(bytes: &[u8]) -> Option<(DeviceBinding, &[u8])> {
     let (device_id, rest) = take_u32(bytes)?;
     let (identity_public_key, rest) = rest.split_at_checked(32)?;
@@ -372,4 +376,119 @@ fn take_binding(bytes: &[u8]) -> Option<(DeviceBinding, &[u8])> {
         },
         rest,
     ))
+}
+
+#[cfg(test)]
+mod codec_tests {
+    //! The byte codecs the Postgres store persists, exercised without a
+    //! database. A stored row is decoded and validated on every read, so a
+    //! malformed one must be refused rather than half-read.
+
+    use super::*;
+
+    fn b(device_id: u32, key: u8, pred: Option<u8>) -> DeviceBinding {
+        DeviceBinding {
+            device_id,
+            identity_public_key: [key; 32],
+            capabilities: 1,
+            replacement_predecessor: pred.map(|p| [p; 32]),
+        }
+    }
+
+    fn sample() -> DeviceInventory {
+        DeviceInventory {
+            generation: 5,
+            active: vec![b(1, 1, None), b(3, 3, Some(9))],
+            revocation_floor_generation: 1,
+            revoked: vec![
+                Revocation {
+                    binding: b(2, 2, None),
+                    terminal_generation: 2,
+                },
+                Revocation {
+                    binding: b(4, 4, Some(7)),
+                    terminal_generation: 4,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn stored_state_round_trips() {
+        let inv = sample();
+        assert_eq!(decode_inventory(&encode_inventory(&inv)), Some(inv));
+        let empty = DeviceInventory::default();
+        assert_eq!(decode_inventory(&encode_inventory(&empty)), Some(empty));
+    }
+
+    #[test]
+    fn stored_state_decoder_rejects_malformed_rows() {
+        let good = encode_inventory(&sample());
+        assert!(
+            decode_inventory(&good[..good.len() - 1]).is_none(),
+            "truncated"
+        );
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(decode_inventory(&trailing).is_none(), "trailing byte");
+        // nine active bindings (the bound is eight), well-formed otherwise
+        let nine = DeviceInventory {
+            generation: 9,
+            active: (1..=9).map(|i| b(i, i as u8, None)).collect(),
+            ..Default::default()
+        };
+        assert!(
+            decode_inventory(&encode_inventory(&nine)).is_none(),
+            "9 active"
+        );
+        let nine_revoked = DeviceInventory {
+            generation: 9,
+            revocation_floor_generation: 0,
+            revoked: (1..=9)
+                .map(|i| Revocation {
+                    binding: b(i, i as u8, None),
+                    terminal_generation: u64::from(i),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        assert!(
+            decode_inventory(&encode_inventory(&nine_revoked)).is_none(),
+            "9 revoked"
+        );
+        // a presence flag other than 0 or 1
+        let one = DeviceInventory {
+            generation: 1,
+            active: vec![b(1, 1, None)],
+            ..Default::default()
+        };
+        let mut bad_flag = encode_inventory(&one);
+        // generation(8) + count(4) + device(4) + key(32) + caps(8) = flag offset
+        bad_flag[8 + 4 + 4 + 32 + 8] = 2;
+        assert!(decode_inventory(&bad_flag).is_none(), "flag 2");
+    }
+
+    /// The three request encodings are compared byte for byte to detect a
+    /// retry key reused for a different request, so no two operations, and no
+    /// two different requests, may share an encoding.
+    #[test]
+    fn request_encodings_are_distinct_per_operation_and_per_field() {
+        let x = b(1, 1, None);
+        let y = b(2, 2, Some(5));
+        let link = encode_link_request(3, &x);
+        let revoke = encode_revoke_request(3, &x);
+        let replace = encode_replace_request(3, &x, &y);
+        assert_ne!(link, revoke);
+        assert_ne!(revoke, replace);
+        assert_ne!(link, replace);
+        // changing any field changes the encoding
+        assert_ne!(encode_link_request(4, &x), link);
+        assert_ne!(encode_link_request(3, &b(1, 2, None)), link);
+        assert_ne!(encode_link_request(3, &b(1, 1, Some(0))), link);
+        assert_ne!(encode_revoke_request(4, &x), revoke);
+        assert_ne!(encode_revoke_request(3, &y), revoke);
+        assert_ne!(encode_replace_request(4, &x, &y), replace);
+        assert_ne!(encode_replace_request(3, &x, &b(2, 2, None)), replace);
+        assert_ne!(encode_replace_request(3, &y, &x), replace);
+    }
 }

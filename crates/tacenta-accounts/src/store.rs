@@ -306,7 +306,7 @@ impl AccountStore {
         }
     }
 
-    /// Read an account's durable device inventory. An existing account with no
+    /// Read an account's stored device inventory. An existing account with no
     /// device record returns its empty generation-zero inventory.
     pub async fn device_inventory(
         &self,

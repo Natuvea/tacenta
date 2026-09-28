@@ -28,6 +28,8 @@ use tacenta_core::crypto::groups::inventory::DeviceBinding;
 
 mod id;
 mod inventory;
+#[cfg(any(test, feature = "postgres"))]
+mod inventory_tx;
 mod persist;
 #[cfg(feature = "postgres")]
 pub mod pg;
@@ -564,7 +566,7 @@ impl Accounts {
         Some(format!("{tenant_username}/{username}"))
     }
 
-    /// The durable device inventory for an existing account. A newly-created
+    /// The stored device inventory for an existing account. A newly-created
     /// account starts at the empty generation-zero inventory; `None` means the
     /// account itself does not exist.
     pub fn device_inventory(&self, tenant: &TenantId, username: &str) -> Option<DeviceInventory> {
@@ -582,7 +584,7 @@ impl Accounts {
     /// Record a newly proven device binding against an exact predecessor
     /// generation. Authorization and proof of possession are intentionally
     /// performed by the provisioning service before this mutation; this method
-    /// makes the state transition durable and rejects conflicting retries.
+    /// records the state transition and rejects conflicting retries.
     pub fn link_device_binding(
         &mut self,
         tenant: &TenantId,

@@ -397,3 +397,208 @@ async fn sweep_removes_expired_sessions_on_postgres() {
     );
     assert_eq!(store.sweep_expired_sessions().await.unwrap(), 0);
 }
+
+/// The race the mutation's lock-then-read-then-compare-and-set order exists to
+/// settle, against the real database. Sixteen submitters race at generation 0,
+/// each with its own retry key and a distinct binding. The predecessor
+/// generation is a compare-and-set, so exactly one may win and the stored
+/// inventory must hold exactly that winner's binding at generation 1.
+///
+/// The order itself is checked without a database by the interleaving tests in
+/// `inventory_tx.rs`; this is the check that the SQL behaves as that model
+/// assumes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_links_at_one_predecessor_admit_exactly_one() {
+    let _serial = db_serial();
+    let Some(store) = store().await else {
+        eprintln!("skipping: set TACENTA_TEST_DATABASE_URL to run the Postgres tests");
+        return;
+    };
+    let store = std::sync::Arc::new(store);
+    let (tenant, _) = store
+        .sign_up_tenant("Acme", "admin@acme.example", "correct horse")
+        .await
+        .unwrap();
+    store
+        .sign_up_user(&tenant.id, "alice", "hunter2!!")
+        .await
+        .unwrap();
+    let mut tasks = Vec::new();
+    for i in 1..=16u8 {
+        let store = store.clone();
+        let tenant = tenant.id.clone();
+        tasks.push(tokio::spawn(async move {
+            let binding = DeviceBinding {
+                device_id: u32::from(i),
+                identity_public_key: [i; 32],
+                capabilities: GROUP_EPOCH_V1,
+                replacement_predecessor: None,
+            };
+            let result = store
+                .link_device_binding(&tenant, "alice", 0, [i; 32], binding.clone())
+                .await;
+            (binding, result)
+        }));
+    }
+    let mut winners = Vec::new();
+    for task in tasks {
+        let (binding, result) = task.await.unwrap();
+        match result {
+            Ok(inventory) => winners.push((binding, inventory)),
+            Err(PgError::Inventory(InventoryError::PredecessorMismatch)) => {}
+            Err(other) => panic!("unexpected refusal: {other:?}"),
+        }
+    }
+    let stored = store
+        .device_inventory(&tenant.id, "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        winners.len(),
+        1,
+        "exactly one submitter may win generation 1"
+    );
+    assert_eq!(stored.generation, 1);
+    assert_eq!(stored.active, vec![winners[0].0.clone()]);
+}
+
+/// The same race on an account that already has a stored row, so the write is
+/// the guarded `update`, and mixing the three operations: links, plus a revoke
+/// and a replace of the same active binding, all at generation 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_mixed_mutations_at_one_predecessor_admit_exactly_one() {
+    let _serial = db_serial();
+    let Some(store) = store().await else {
+        eprintln!("skipping: set TACENTA_TEST_DATABASE_URL to run the Postgres tests");
+        return;
+    };
+    let store = std::sync::Arc::new(store);
+    let (tenant, _) = store
+        .sign_up_tenant("Acme", "admin@acme.example", "correct horse")
+        .await
+        .unwrap();
+    store
+        .sign_up_user(&tenant.id, "alice", "hunter2!!")
+        .await
+        .unwrap();
+    let first = DeviceBinding {
+        device_id: 100,
+        identity_public_key: [100; 32],
+        capabilities: GROUP_EPOCH_V1,
+        replacement_predecessor: None,
+    };
+    store
+        .link_device_binding(&tenant.id, "alice", 0, [100; 32], first.clone())
+        .await
+        .unwrap();
+    let mut tasks = Vec::new();
+    for i in 1..=6u8 {
+        let store = store.clone();
+        let tenant = tenant.id.clone();
+        let first = first.clone();
+        tasks.push(tokio::spawn(async move {
+            let other = DeviceBinding {
+                device_id: u32::from(i),
+                identity_public_key: [i; 32],
+                capabilities: GROUP_EPOCH_V1,
+                replacement_predecessor: None,
+            };
+            match i % 3 {
+                0 => {
+                    store
+                        .link_device_binding(&tenant, "alice", 1, [i; 32], other)
+                        .await
+                }
+                1 => {
+                    store
+                        .revoke_device_binding(&tenant, "alice", 1, [i; 32], first)
+                        .await
+                }
+                _ => {
+                    let successor = DeviceBinding {
+                        replacement_predecessor: Some(binding_commitment(&first).unwrap()),
+                        ..other
+                    };
+                    store
+                        .replace_device_binding(&tenant, "alice", 1, [i; 32], first, successor)
+                        .await
+                }
+            }
+        }));
+    }
+    let mut wins = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => wins += 1,
+            Err(PgError::Inventory(InventoryError::PredecessorMismatch)) => {}
+            Err(other) => panic!("unexpected refusal: {other:?}"),
+        }
+    }
+    assert_eq!(wins, 1, "exactly one mutation may take generation 2");
+    let stored = store
+        .device_inventory(&tenant.id, "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.generation, 2);
+}
+
+/// A refused retry (same key, different body) must be the typed conflict, must
+/// not change state, and a cross-account use of the same key must not return
+/// the first account's record.
+#[tokio::test]
+async fn idempotency_is_scoped_and_conflicts_are_typed_on_postgres() {
+    let _serial = db_serial();
+    let Some(store) = store().await else {
+        eprintln!("skipping: set TACENTA_TEST_DATABASE_URL to run the Postgres tests");
+        return;
+    };
+    let (tenant, _) = store
+        .sign_up_tenant("Acme", "admin@acme.example", "correct horse")
+        .await
+        .unwrap();
+    for name in ["alice", "bob"] {
+        store
+            .sign_up_user(&tenant.id, name, "hunter2!!")
+            .await
+            .unwrap();
+    }
+    let b = |id: u32, k: u8| DeviceBinding {
+        device_id: id,
+        identity_public_key: [k; 32],
+        capabilities: GROUP_EPOCH_V1,
+        replacement_predecessor: None,
+    };
+    let first = store
+        .link_device_binding(&tenant.id, "alice", 0, [1; 32], b(1, 1))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .link_device_binding(&tenant.id, "alice", 0, [1; 32], b(2, 2))
+            .await,
+        Err(PgError::Inventory(InventoryError::IdempotencyConflict))
+    ));
+    assert!(matches!(
+        store
+            .revoke_device_binding(&tenant.id, "alice", 1, [1; 32], b(1, 1))
+            .await,
+        Err(PgError::Inventory(InventoryError::IdempotencyConflict))
+    ));
+    let bob = store
+        .link_device_binding(&tenant.id, "bob", 0, [1; 32], b(7, 7))
+        .await
+        .unwrap();
+    assert_ne!(bob, first);
+    assert!(matches!(
+        store
+            .link_device_binding(&tenant.id, "mallory", 0, [1; 32], b(1, 1))
+            .await,
+        Err(PgError::Inventory(InventoryError::UnknownUser))
+    ));
+    assert_eq!(
+        store.device_inventory(&tenant.id, "alice").await.unwrap(),
+        Some(first)
+    );
+}

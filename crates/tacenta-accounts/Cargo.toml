@@ -37,4 +37,4 @@ sqlx = { version = "0.8", default-features = false, features = [
 postgres = ["dep:sqlx"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync"] }
