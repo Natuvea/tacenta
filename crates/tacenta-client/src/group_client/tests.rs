@@ -1140,3 +1140,104 @@ async fn recovery_forgets_the_sessions_of_the_state_it_discards() {
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].plaintext, b"two");
 }
+
+#[tokio::test]
+async fn receive_next_waits_for_mail_and_returns_it() {
+    let (directory, relay) = start_server().await;
+    let mut alice = plain(directory, relay, "+alice").await;
+    let store = SharedStore::default();
+    let mut bob = coordinator(directory, relay, "+bob", &store).await;
+    let bob_route = bob.address().clone();
+    let (sent, received) = tokio::join!(
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            alice.send_as(&bob_route, b"late", Kind::Dm).await
+        },
+        bob.receive_next(0)
+    );
+    sent.unwrap();
+    let inbound = received.unwrap();
+    assert_eq!(inbound.direct.len(), 1);
+    assert_eq!(inbound.direct[0].plaintext, b"late");
+}
+
+#[tokio::test]
+async fn a_control_committed_before_a_freeze_is_handed_off_after_recovery() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let routes = vec![(bob_member.clone(), route(&bob))];
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+
+    // The installation and the exact control commit; the reservation of the
+    // handoff is in doubt and lost.
+    alice_store.script([CommitOutcome::Committed, CommitOutcome::Unknown], false);
+    assert!(matches!(
+        alice.install_roster(r1, &routes, None, 0).await,
+        Err(GroupError::Frozen)
+    ));
+    assert!(bob.receive(0).await.unwrap().items.is_empty());
+
+    alice.recover().await.unwrap();
+    assert_eq!(alice.roster().unwrap().revision, 1);
+    assert_eq!(alice.dispatch_pending_controls(&routes).await.unwrap(), 1);
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+    // Nothing is left to send.
+    assert_eq!(alice.dispatch_pending_controls(&routes).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_group_send_committed_before_a_freeze_is_handed_off_after_recovery() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let routes = vec![(bob_member.clone(), route(&bob))];
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice.install_roster(r1, &routes, None, 0).await.unwrap();
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+
+    // The intent and the exact ciphertext commit; the reservation is in doubt.
+    alice_store.script(
+        [
+            CommitOutcome::Committed,
+            CommitOutcome::Committed,
+            CommitOutcome::Unknown,
+        ],
+        false,
+    );
+    assert!(matches!(
+        alice.send_group(&routes, b"resumed".to_vec()).await,
+        Err(GroupError::Frozen)
+    ));
+    assert!(bob.receive(0).await.unwrap().events().is_empty());
+
+    alice.recover().await.unwrap();
+    assert_eq!(
+        alice.dispatch_pending_group_sends(&routes).await.unwrap(),
+        1
+    );
+    let inbound = bob.receive(0).await.unwrap();
+    assert_eq!(inbound.events()[0].payload, b"resumed");
+    assert_eq!(
+        alice.dispatch_pending_group_sends(&routes).await.unwrap(),
+        0
+    );
+}
