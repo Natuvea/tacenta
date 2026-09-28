@@ -186,3 +186,120 @@ fn gc_n23_a_receiver_state_for_a_binding_outside_the_roster_must_be_empty() {
     bytes[identity_at + 2] = b'2';
     assert_eq!(restore(&bytes).map(|_| ()), Err(Error::NonCanonical));
 }
+
+// ---------------------------------------------------------------------------
+// Guards that back each other up. Each of these survives a single mutation
+// (a second check returns the same error) and is killed by the double (D10,
+// D11, D12 in tooling/group-mutation/mutants.py).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gc_l10_a_roster_that_lists_a_member_twice_is_refused() {
+    let alice = named("alice");
+    assert_eq!(
+        Roster::new(
+            group(),
+            1,
+            [0; DIGEST_LEN],
+            alice.clone(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice.clone(), alice],
+        )
+        .map(|_| ()),
+        Err(Error::NonCanonical)
+    );
+}
+
+fn commit(bytes: &[u8]) -> [u8; DIGEST_LEN] {
+    let mut digest = [0u8; DIGEST_LEN];
+    for (index, byte) in bytes.iter().enumerate() {
+        digest[index % DIGEST_LEN] ^= byte;
+    }
+    digest
+}
+
+fn lp(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// A transcript record: tag, the recipient's context, its commitment, the
+/// ciphertext and a tag-specific suffix (the same layout `send.rs` recovers).
+fn record(tag: &[u8; 4], context: &ApplicationContext, suffix: &[u8]) -> Vec<u8> {
+    let context = context.encode().unwrap();
+    let mut out = tag.to_vec();
+    lp(&mut out, &context);
+    out.extend_from_slice(&commit(&context));
+    lp(&mut out, b"ciphertext");
+    out.extend_from_slice(suffix);
+    out
+}
+
+fn intent_record(send: &LogicalSend) -> Vec<u8> {
+    let mut out = b"TCGI".to_vec();
+    lp(&mut out, &send.encode_intent().unwrap());
+    out
+}
+
+fn one_recipient_send() -> (LogicalSend, ApplicationContext) {
+    let roster = roster(1, false, &["alice", "bob"]);
+    let send = LogicalSend::new(
+        &roster,
+        [5; DIGEST_LEN],
+        named("alice"),
+        0,
+        vec![named("bob")],
+        b"hello".to_vec(),
+    )
+    .unwrap();
+    let context = send.application_context(&named("bob")).unwrap();
+    (send, context)
+}
+
+#[test]
+fn gc_s11_recovery_refuses_a_handoff_record_that_skips_an_attempt() {
+    let (send, context) = one_recipient_send();
+    // The first handoff record must carry attempt 1; a record claiming 2 is a
+    // gap in the durable attempt count.
+    let entries = vec![
+        intent_record(&send),
+        record(b"TCGP", &context, &[]),
+        record(b"TCGH", &context, &[2, 0]),
+    ];
+    assert_eq!(
+        GroupOutbox::recover_from_transcript(group(), &entries, commit).map(|_| ()),
+        Err(Error::Malformed)
+    );
+    let entries = vec![
+        intent_record(&send),
+        record(b"TCGP", &context, &[]),
+        record(b"TCGH", &context, &[1, 0]),
+    ];
+    assert!(GroupOutbox::recover_from_transcript(group(), &entries, commit).is_ok());
+}
+
+#[test]
+fn gc_s12_recovery_refuses_relay_acceptance_without_a_handoff() {
+    let (send, context) = one_recipient_send();
+    let entries = vec![
+        intent_record(&send),
+        record(b"TCGP", &context, &[]),
+        record(b"TCGA", &context, &[]),
+    ];
+    assert_eq!(
+        GroupOutbox::recover_from_transcript(group(), &entries, commit).map(|_| ()),
+        Err(Error::WrongDisposition)
+    );
+    let entries = vec![
+        intent_record(&send),
+        record(b"TCGP", &context, &[]),
+        record(b"TCGH", &context, &[1, 0]),
+        record(b"TCGA", &context, &[]),
+    ];
+    let recovered = GroupOutbox::recover_from_transcript(group(), &entries, commit).unwrap();
+    assert_eq!(
+        recovered.sends()[0].recipients()[0].disposition,
+        RecipientDisposition::RelayAccepted
+    );
+}

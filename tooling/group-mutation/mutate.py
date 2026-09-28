@@ -5,6 +5,8 @@ usage: tooling/group-mutation/mutate.py [--workers N] [--only ID,ID,...] [--out 
 
 Each mutant in mutants.py replaces one piece of source text in a private
 worktree of HEAD, the group crate's tests run, and the tree is restored. A
+double mutant (the `also` key) applies partner edits too, to show that two
+guards that back each other up are covered as a pair. A
 mutant is KILLED when a test fails, SURVIVED when every test passes,
 BUILD-ERROR when it does not compile and PATCH-FAILED when its old text no
 longer occurs exactly once. The unmodified tree must pass first. The exit
@@ -63,6 +65,14 @@ def run_one(worker, target, mutant, out):
         record.update(result="PATCH-FAILED", detail=f"old text occurs {occurrences} times")
         return record
     open(path, "w").write(text.replace(mutant["old"], mutant["new"]))
+    # A double mutant also applies its partner edits, each to one occurrence.
+    for partner_file, partner_old, partner_new in mutant.get("also", []):
+        partner_path = os.path.join(worker, partner_file)
+        partner_text = open(partner_path).read()
+        if partner_text.count(partner_old) != 1:
+            record.update(result="PATCH-FAILED", detail="partner text does not occur exactly once")
+            return record
+        open(partner_path, "w").write(partner_text.replace(partner_old, partner_new))
     rc, log, secs = sh(TEST, worker, env)
     open(os.path.join(out, mutant["id"] + ".log"), "w").write(log)
     subprocess.run("git checkout -- .", cwd=worker, shell=True, check=True, capture_output=True)
