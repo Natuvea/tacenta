@@ -4,6 +4,7 @@ use crate::{
     ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_LIVE_LOGICAL_SENDS, MAX_MEMBERS,
     MAX_PAYLOAD_LEN, Member, RESERVED_REVISION, Roster,
 };
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 const LOGICAL_SEND_DOMAIN: &[u8] = b"Tacenta Group Logical Send v1";
@@ -679,7 +680,7 @@ fn validate_recipients(roster: &Roster, recipients: &[Member]) -> Result<(), Err
             return Err(Error::NotMember);
         }
         if let Some(previous) = previous
-            && previous.canonical_sort_key() >= recipient.canonical_sort_key()
+            && previous.canonical_cmp(recipient) != Ordering::Less
         {
             return Err(Error::NonCanonical);
         }
@@ -696,7 +697,7 @@ fn validate_recovery_recipients(recipients: &[Member]) -> Result<(), Error> {
     let mut identities = BTreeSet::new();
     for recipient in recipients {
         if let Some(previous) = previous
-            && previous.canonical_sort_key() >= recipient.canonical_sort_key()
+            && previous.canonical_cmp(recipient) != Ordering::Less
         {
             return Err(Error::NonCanonical);
         }

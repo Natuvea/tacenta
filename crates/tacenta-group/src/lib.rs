@@ -6,6 +6,7 @@
 //! future core commitment helper consumes the roster preimage produced here.
 
 use core::fmt;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 mod invitation;
@@ -158,12 +159,12 @@ impl Member {
         &self.device
     }
 
-    fn sort_key(&self) -> Vec<u8> {
-        [self.identity.as_slice(), self.device.as_slice()].concat()
-    }
-
-    pub(crate) fn canonical_sort_key(&self) -> Vec<u8> {
-        self.sort_key()
+    /// The canonical roster order (decision 0127): the identity bytes, then
+    /// the device bytes. It is never the order of their concatenation.
+    pub(crate) fn canonical_cmp(&self, other: &Self) -> Ordering {
+        self.identity
+            .cmp(&other.identity)
+            .then_with(|| self.device.cmp(&other.device))
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -295,7 +296,7 @@ impl Roster {
         for member in &self.members {
             member.validate()?;
             if let Some(previous) = previous
-                && previous.sort_key() >= member.sort_key()
+                && previous.canonical_cmp(member) != Ordering::Less
             {
                 return Err(Error::NonCanonical);
             }
