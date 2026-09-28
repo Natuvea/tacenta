@@ -334,7 +334,7 @@ mod tests {
         recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
         recover_group_receiver, recover_group_roster_view,
     };
-    use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
+    use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, StoreError};
     use std::net::{IpAddr, Ipv4Addr};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
@@ -2334,7 +2334,7 @@ mod tests {
             CommitOutcome::Committed
         }
 
-        fn recover(&mut self) -> std::result::Result<Option<OperationSnapshot>, ()> {
+        fn recover(&mut self) -> std::result::Result<Option<OperationSnapshot>, StoreError> {
             Ok(self.snapshot.clone())
         }
     }
@@ -2835,6 +2835,8 @@ mod tests {
             Ok(ReceiveDisposition::Accepted { event_id: 0 })
         );
     }
+
+    mod review_live;
 
     #[test]
     fn contacts_dedup_remove_and_round_trip() {

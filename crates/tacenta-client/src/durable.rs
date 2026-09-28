@@ -5,7 +5,7 @@
 //! connected: no handoff follows an uncommitted send snapshot, and no ACK or
 //! application event follows an uncommitted inbox disposition.
 
-use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
+use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, StoreError};
 
 /// Each externally relevant boundary of the first operation coordinator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,7 +166,7 @@ mod tests {
             outcome
         }
 
-        fn recover(&mut self) -> Result<Option<OperationSnapshot>, ()> {
+        fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
             Ok(self.committed.last().cloned())
         }
     }
