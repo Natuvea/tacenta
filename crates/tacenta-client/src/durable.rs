@@ -1,9 +1,13 @@
-//! Deterministic crash scheduling for the private durable-operation contract.
+//! A model of the durable-operation ordering, test-only.
 //!
-//! This harness deliberately carries only opaque snapshot bytes.  It proves
-//! the coordinator's ordering rules before a group codec or live provider is
-//! connected: no handoff follows an uncommitted send snapshot, and no ACK or
-//! application event follows an uncommitted inbox disposition.
+//! This harness carries only opaque snapshot bytes and hard-codes the order it
+//! checks: no handoff follows an uncommitted send snapshot, and no ACK or
+//! application event follows an uncommitted inbox disposition. Its tests
+//! therefore assert on its own control flow. It is **not** the live path and
+//! cannot fail on it: nothing here runs a provider, a relay or the
+//! coordinator. The live ordering is `group_client::GroupClient::receive` and
+//! the `prepare_*`/`dispatch_*` functions, and their evidence is the live
+//! traces in `group_client/tests.rs` (0091, 0127).
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, StoreError};
 

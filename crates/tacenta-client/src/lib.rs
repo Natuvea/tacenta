@@ -26,6 +26,12 @@
 //! # Ok(()) }
 //! ```
 //!
+//! **Experimental group coordinator.** [`group_client::GroupClient`] owns a
+//! client and an operation store and is the only place the bounded group
+//! experiment's receive, send and membership operations are reachable (decisions
+//! 0127 to 0130). It is not part of the SDK surface manifest or of any binding,
+//! and its shape may change.
+//!
 //! With explicit addresses:
 //!
 //! ```no_run
