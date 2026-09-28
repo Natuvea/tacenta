@@ -778,3 +778,74 @@ async fn an_authority_grows_a_live_group_from_one_to_eight_members() {
 fn alice_route(alice: &GroupClient) -> DeviceAddr {
     alice.address().clone()
 }
+
+#[tokio::test]
+async fn a_removed_member_restarts_with_an_inert_receiver() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let bob_config = config(directory, relay, "+bob", 1);
+    let (mut bob, bob_store) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let bob_route = route(&bob);
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(r1, &[(bob_member.clone(), bob_route.clone())], None, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+    // Alice removes Bob, and Bob applies it.
+    let r2 = alice.next_roster(vec![alice_member.clone()]).unwrap();
+    let r2_digest = roster_commitment(&r2.encode().unwrap());
+    alice
+        .install_roster(r2, &[(bob_member.clone(), bob_route.clone())], None, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+
+    // The group crate refuses to restore the receiver of a removed member, so
+    // Bob restarts with an inert one over the accepted roster: he comes back
+    // up, and everything addressed to him is refused as not active.
+    drop(bob);
+    let mut bob = restart(&bob_config, &bob_store).await;
+    bob.join_group(genesis_of(&alice_member), alice_member.clone())
+        .unwrap();
+    assert_eq!(bob.roster().unwrap().revision, 2);
+    let after_removal = GroupPayload::Application(
+        ApplicationContext::new(
+            gid(),
+            2,
+            r2_digest,
+            alice_member.clone(),
+            bob_member,
+            0,
+            b"too late".to_vec(),
+        )
+        .unwrap(),
+    )
+    .encode()
+    .unwrap();
+    alice
+        .client
+        .send_as(&bob_route, &after_removal, Kind::Group)
+        .await
+        .unwrap();
+    let inbound = bob.receive(0).await.unwrap();
+    assert!(matches!(
+        inbound.items.as_slice(),
+        [GroupReceipt {
+            outcome: GroupOutcome::Rejected(ReceiveRefusal::NotActive),
+            ..
+        }]
+    ));
+}

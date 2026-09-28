@@ -721,3 +721,95 @@ async fn k_k01_a_recipient_binding_whose_identity_is_not_the_routes_is_refused()
         RecipientDisposition::Pending
     );
 }
+
+#[tokio::test]
+async fn an_exhausted_generation_counter_refuses_every_preparation_before_it_encrypts() {
+    let (directory, relay) = start_server().await;
+    let mut alice = connect(directory, relay, "+alice").await;
+    let bob = connect(directory, relay, "+bob").await;
+    let (a, b) = (member(&alice), member(&bob));
+    let (genesis, digest) = genesis_for(&a);
+    let mut store = GroupStore { snapshot: None };
+    let mut snapshot = OperationSnapshot::empty(u64::MAX);
+    let before = alice.export_state().await.unwrap();
+
+    // A control handoff to a recipient.
+    let mut control = ControlOutbox::default();
+    let r1 = successor(&a, 1, digest, vec![a.clone(), b.clone()]);
+    let result = prepare_outbound_roster_control(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        &mut control,
+        &b,
+        bob.address(),
+        r1.clone(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(GroupLiveError::Frozen)),
+        "{:?}",
+        result.as_ref().map(|_| ())
+    );
+    assert_eq!(before, alice.export_state().await.unwrap());
+
+    // The authority's own installation.
+    let mut view = RosterView::accept_genesis(&a, genesis.clone(), digest).unwrap();
+    let mut receiver = GroupReceiver::new(genesis, digest, a.clone());
+    let result = prepare_authority_roster_control(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        AuthorityControlState {
+            view: &mut view,
+            receiver: &mut receiver,
+            logical_sends: &mut [],
+            group_outbox: None,
+            outbox: &mut control,
+            invitation_book: None,
+            admission: None,
+            control_now: 0,
+        },
+        &a,
+        (&b, bob.address()),
+        r1.clone(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(GroupLiveError::Frozen)),
+        "{:?}",
+        result.as_ref().map(|_| ())
+    );
+    assert_eq!(view.roster().revision, 0);
+    assert_eq!(before, alice.export_state().await.unwrap());
+
+    // An application recipient.
+    let send = LogicalSend::new(
+        &r1,
+        [7; DIGEST_LEN],
+        a.clone(),
+        0,
+        vec![b.clone()],
+        b"last".to_vec(),
+    )
+    .unwrap();
+    let id = send.id.clone();
+    let mut outbox = GroupOutbox::new(gid());
+    outbox.record(send).unwrap();
+    let result = prepare_outbox_group_recipient(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        &mut outbox,
+        &id,
+        &b,
+        bob.address(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(GroupLiveError::Frozen)),
+        "{:?}",
+        result.as_ref().map(|_| ())
+    );
+    assert_eq!(before, alice.export_state().await.unwrap());
+}

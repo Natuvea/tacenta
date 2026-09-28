@@ -1039,3 +1039,73 @@ fn a_plain_store_never_latches() {
     assert_eq!(store.next_generation(0), Some(1));
     assert_eq!(store.next_generation(u64::MAX), None);
 }
+
+fn other_gid() -> GroupId {
+    GroupId::new(*b"another-group-id")
+}
+
+#[test]
+fn a_cancellation_checkpoint_replaces_only_its_own_groups_previous_one() {
+    let mut snapshot = OperationSnapshot::empty(0);
+    append_group_control_records(
+        &mut snapshot,
+        [
+            encode_group_outbox_cancellation_record(gid(), 2),
+            encode_group_outbox_cancellation_record(other_gid(), 3),
+        ],
+    );
+    assert_eq!(snapshot.group_controls.len(), 2);
+    append_group_control_records(
+        &mut snapshot,
+        [encode_group_outbox_cancellation_record(gid(), 5)],
+    );
+    assert_eq!(snapshot.group_controls.len(), 2);
+    assert_eq!(
+        latest_group_outbox_cancellation(&snapshot, gid()),
+        Ok(Some(5))
+    );
+    assert_eq!(
+        latest_group_outbox_cancellation(&snapshot, other_gid()),
+        Ok(Some(3))
+    );
+}
+
+#[test]
+fn compaction_and_recovery_leave_another_groups_records_alone() {
+    let other_roster = Roster::new(
+        other_gid(),
+        1,
+        [0; 32],
+        alice(),
+        POLICY_VERSION_V1,
+        false,
+        vec![alice(), bob()],
+    )
+    .unwrap();
+    let mut store = committed();
+    let mut snapshot = OperationSnapshot::empty(0);
+    let mut other_outbox = GroupOutbox::new(other_gid());
+    for sequence in 0..2u64 {
+        let send = LogicalSend::new(
+            &other_roster,
+            [5; 32],
+            alice(),
+            sequence,
+            vec![bob()],
+            b"other".to_vec(),
+        )
+        .unwrap();
+        commit_logical_intent(&mut store, &mut snapshot, &mut other_outbox, send).unwrap();
+    }
+    let mut outbox = GroupOutbox::new(gid());
+    for sequence in 0..20u64 {
+        finish_send(&mut store, &mut snapshot, &mut outbox, sequence);
+    }
+    // The first group compacted to its sixteen most recent terminal sends and
+    // did not touch the other group's two live sends.
+    assert_eq!(outbox.sends().len(), 16);
+    assert_eq!(recover_group_outbox(&snapshot, gid()).unwrap(), outbox);
+    let recovered_other = recover_group_outbox(&snapshot, other_gid()).unwrap();
+    assert_eq!(recovered_other.sends().len(), 2);
+    assert_eq!(recovered_other, other_outbox);
+}

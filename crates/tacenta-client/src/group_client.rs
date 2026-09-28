@@ -608,13 +608,12 @@ impl<P: CryptoProvider> GroupClient<P> {
                 return Err(error.into());
             }
         };
-        let consumed = item.effect != CryptoStateEffect::Unchanged;
-        if consumed {
-            self.poisoned = true;
-        }
         let result = self.commit_item(item, now, inbound);
-        if result.is_ok() {
-            self.poisoned = false;
+        if result.is_err() {
+            // The item may have advanced the pairwise state in memory and the
+            // commit that would record it did not happen: nothing continues on
+            // this state until `recover` resets it (0130).
+            self.poisoned = true;
         }
         result
     }
