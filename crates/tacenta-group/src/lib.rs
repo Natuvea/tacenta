@@ -631,7 +631,7 @@ mod tests {
                 members[0].clone(),
                 POLICY_VERSION_V1,
                 false,
-                members[..MAX_MEMBERS].to_vec(),
+                members[..8].to_vec(),
             )
             .is_ok()
         );
@@ -651,17 +651,20 @@ mod tests {
 
     #[test]
     fn development_profile_reports_checkpoint_sizes_at_two_three_and_eight_members() {
-        for member_count in [2, 3, MAX_MEMBERS] {
-            let mut members = Vec::with_capacity(member_count);
-            members.push(alice());
-            for index in 1..member_count {
-                members.push(Member::new(vec![b'm', index as u8], vec![1]));
-            }
+        // Real identities are 32-byte public keys with a one-byte device, so
+        // a roster costs 137 + 41 * members bytes and a receiver state 124
+        // bytes more (CR-14). The measurement script reads these lines.
+        for (member_count, expected_roster, expected_state) in
+            [(2u8, 219, 343), (3, 260, 384), (8, 465, 589)]
+        {
+            let members: Vec<Member> = (1..=member_count)
+                .map(|tag| Member::new(vec![tag; 32], vec![1]))
+                .collect();
             let roster = Roster::new(
                 group(),
                 1,
                 [0; DIGEST_LEN],
-                alice(),
+                members[0].clone(),
                 POLICY_VERSION_V1,
                 false,
                 members.clone(),
@@ -670,8 +673,10 @@ mod tests {
             let roster_bytes = roster.encode().unwrap();
             let receiver = GroupReceiver::new(roster, [0; DIGEST_LEN], members[1].clone());
             let receiver_state = receiver.encode_state().unwrap();
+            assert_eq!(roster_bytes.len(), expected_roster);
+            assert_eq!(receiver_state.len(), expected_state);
             println!(
-                "group-profile members={member_count} roster_bytes={} receiver_state_bytes={}",
+                "group-profile members={member_count} identity_bytes=32 roster_bytes={} receiver_state_bytes={}",
                 roster_bytes.len(),
                 receiver_state.len(),
             );
