@@ -72,6 +72,12 @@ bootstrap is recorded only from the pinned authority.
   decrypt is refused. Redelivery of committed but unconsumed events (the
   GC-06 event-consumption boundary) is open, and so is the same window for a
   direct message (0128).
+- If the cumulative acknowledgement itself fails (a transport error after every
+  item of the prefix committed), `receive` returns that error and the events of
+  that call are not returned to the caller. Nothing is lost durably: the relay
+  redelivers the unacknowledged items, whose keys the durable state has
+  consumed, so they are dropped and acknowledged by the next call. It is the
+  same at-most-once window as the one above.
 - The envelope `kind` is a routing label, not an authenticated field (see the
   amendment to 0116).
 - Expiry is evaluated at the explicit logical time the caller passes; there is
