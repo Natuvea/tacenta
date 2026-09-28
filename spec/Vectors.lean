@@ -2,10 +2,11 @@ import Tacenta.Wire
 import Tacenta.Stream
 import Tacenta.Session
 import Tacenta.User
+import Tacenta.Group
 
 /-!
-Conformance-vector extraction. `lake exe vectors <envelope|session|user|stream>`
-prints the named vector set as JSON on stdout; CI regenerates all four
+Conformance-vector extraction. `lake exe vectors <envelope|session|user|stream|group>`
+prints the named vector set as JSON on stdout; CI regenerates all five
 and diffs against the committed files under
 `contracts/vectors/`, so the committed vectors can never drift from the
 specification. The Rust test suites consume the committed files.
@@ -201,12 +202,178 @@ def printStreamVectors : IO Unit := do
   IO.println "  ]"
   IO.println "}"
 
+/-! ## Group policy trace vectors
+
+Each step names the model operation, whether the model accepted it, and the
+state the model holds afterwards (a refused step leaves the state unchanged).
+The Rust `tacenta-group` types replay every step; see decision 0128. The model
+has no exact-retry rule for a duplicate invitation ID (it refuses any
+duplicate), so the traces only repeat an ID with a different target, which both
+sides refuse. Revocation carries no logical time in the model, and removal of a
+non-member has no Rust counterpart in the invitation book, so neither appears.
+-/
+
+namespace GroupVectors
+
+open Tacenta.Group
+
+inductive Step where
+  | invite (actor : Member) (id now expiresAt : Nat) (target : Member)
+  | accept (actor : Member) (id now observedRevision : Nat)
+  | admit (actor : Member) (id now : Nat)
+  | revoke (actor : Member) (id : Nat)
+  | remove (actor target : Member)
+
+def Step.run (s : State) : Step → Option State
+  | .invite a i n e t => invite? a i n e t s
+  | .accept a i n o => accept? a i n o s
+  | .admit a i n => admit? a i n (100 + s.revision + 1) s
+  | .revoke a i => revoke? a i s
+  | .remove a t => remove? a t s
+
+def memberJson (m : Member) : String :=
+  "{\"identity\": " ++ toString m.identity ++ ", \"device\": " ++ toString m.device ++ "}"
+
+def statusJson : InvitationStatus → String
+  | .pending => "{\"state\": \"pending\"}"
+  | .acceptedPendingAdmission => "{\"state\": \"accepted_pending_admission\"}"
+  | .admitted r => "{\"state\": \"admitted\", \"revision\": " ++ toString r ++ "}"
+  | .revoked => "{\"state\": \"revoked\"}"
+
+def invitationJson (i : Invitation) : String :=
+  "{\"id\": " ++ toString i.id ++ ", \"target\": " ++ memberJson i.target
+    ++ ", \"source_revision\": " ++ toString i.sourceRevision
+    ++ ", \"status\": " ++ statusJson i.status ++ "}"
+
+def stateJson (s : State) : String :=
+  "{\"revision\": " ++ toString s.revision
+    ++ ", \"roster\": [" ++ String.intercalate ", " (s.roster.map memberJson)
+    ++ "], \"invitations\": [" ++ String.intercalate ", " (s.invitations.map invitationJson) ++ "]}"
+
+def stepHead : Step → String
+  | .invite a i n e t => "\"op\": \"invite\", \"actor\": " ++ memberJson a ++ ", \"id\": "
+      ++ toString i ++ ", \"now\": " ++ toString n ++ ", \"expires_at\": " ++ toString e
+      ++ ", \"target\": " ++ memberJson t
+  | .accept a i n o => "\"op\": \"accept\", \"actor\": " ++ memberJson a ++ ", \"id\": "
+      ++ toString i ++ ", \"now\": " ++ toString n ++ ", \"observed_revision\": " ++ toString o
+  | .admit a i n => "\"op\": \"admit\", \"actor\": " ++ memberJson a ++ ", \"id\": "
+      ++ toString i ++ ", \"now\": " ++ toString n
+  | .revoke a i => "\"op\": \"revoke\", \"actor\": " ++ memberJson a ++ ", \"id\": " ++ toString i
+  | .remove a t => "\"op\": \"remove\", \"actor\": " ++ memberJson a
+      ++ ", \"target\": " ++ memberJson t
+
+def stepJson (step : Step) (accepted : Bool) (after : State) : String :=
+  "      {" ++ stepHead step ++ ", \"accepted\": " ++ (if accepted then "true" else "false")
+    ++ ", \"state\": " ++ stateJson after ++ "}"
+
+def runTrace (start : State) (steps : List Step) : List String :=
+  (steps.foldl
+    (fun (acc : List String × State) step =>
+      let (lines, s) := acc
+      match step.run s with
+      | some s' => (lines ++ [stepJson step true s'], s')
+      | none => (lines ++ [stepJson step false s], s))
+    ([], start)).1
+
+def authority : Member := { identity := 1, device := 1 }
+def person (n : Nat) : Member := { identity := n, device := 1 }
+def start : State := genesis 9 authority 100
+
+/-- Invite, accept (twice), admit; then a second invitation issued at revision 1. -/
+def numberingTrace : List Step :=
+  [ .invite authority 7 0 10 (person 2),
+    .accept (person 2) 7 1 0,
+    .accept (person 2) 7 2 0,
+    .admit authority 7 3,
+    .invite authority 8 4 20 (person 3),
+    .accept (person 3) 8 5 1,
+    .admit authority 8 6 ]
+
+/-- Refusals: wrong actor, wrong target, stale source, expiry, revocation wins,
+an admitted invitation cannot be revoked, an existing member and a second device
+cannot be invited. -/
+def refusalTrace : List Step :=
+  [ .invite (person 2) 1 0 10 (person 3),
+    .invite authority 7 0 10 (person 2),
+    .invite authority 7 0 10 (person 3),
+    .accept (person 3) 7 1 0,
+    .accept (person 2) 7 1 4,
+    .accept (person 2) 7 10 0,
+    .admit authority 7 2,
+    .accept (person 2) 7 3 0,
+    .revoke (person 2) 7,
+    .revoke authority 7,
+    .admit authority 7 4,
+    .accept (person 2) 7 5 0,
+    .invite authority 8 6 20 (person 4),
+    .accept (person 4) 8 7 0,
+    .admit authority 8 8,
+    .revoke authority 8,
+    .invite authority 9 9 20 (person 4),
+    .invite authority 10 9 20 { identity := 4, device := 2 } ]
+
+/-- An invitation that expires between acceptance and admission cannot be admitted. -/
+def expiryTrace : List Step :=
+  [ .invite authority 5 0 3 (person 2),
+    .accept (person 2) 5 2 0,
+    .admit authority 5 3,
+    .accept (person 2) 5 3 0 ]
+
+/-- Eight members is the cap: the ninth invitation is refused, and so is the
+admission of a ninth member whose invitation was issued while there was room. -/
+def capTrace : List Step :=
+  ((List.range 6).flatMap (fun k =>
+    let n := k + 2
+    [ .invite authority n 0 100 (person n),
+      .accept (person n) n 1 k,
+      .admit authority n 2 ])) ++
+  [ .invite authority 20 3 100 (person 8),
+    .invite authority 21 3 100 (person 9),
+    .accept (person 8) 20 4 6,
+    .accept (person 9) 21 4 6,
+    .admit authority 20 5,
+    .admit authority 21 5,
+    .invite authority 22 6 100 (person 10) ]
+
+/-- Removal is one revision; the authority cannot be removed; a removed member
+can be invited again. -/
+def removalTrace : List Step :=
+  [ .invite authority 7 0 10 (person 2),
+    .accept (person 2) 7 1 0,
+    .admit authority 7 2,
+    .remove (person 2) authority,
+    .remove authority authority,
+    .remove authority (person 2),
+    .invite authority 8 3 20 (person 2),
+    .accept (person 2) 8 4 2,
+    .admit authority 8 5 ]
+
+def traces : List (String × List Step) :=
+  [ ("admission-numbering", numberingTrace), ("refusals", refusalTrace),
+    ("expiry", expiryTrace), ("member-cap", capTrace), ("removal", removalTrace) ]
+
+def traceJson (entry : String × List Step) : String :=
+  "    {\"name\": \"" ++ entry.1 ++ "\", \"authority\": " ++ memberJson authority
+    ++ ", \"steps\": [\n" ++ String.intercalate ",\n" (runTrace start entry.2) ++ "\n    ]}"
+
+def printGroupVectors : IO Unit := do
+  IO.println "{"
+  IO.println "  \"format\": \"group-v1\","
+  IO.println ("  \"max_members\": " ++ toString maxMembers ++ ",")
+  IO.println "  \"traces\": ["
+  IO.println (String.intercalate ",\n" (traces.map traceJson))
+  IO.println "  ]"
+  IO.println "}"
+
+end GroupVectors
+
 def main (args : List String) : IO UInt32 := do
   match args with
   | ["envelope"] => printEnvelopeVectors; return 0
   | ["session"] => printSessionVectors; return 0
   | ["user"] => printUserVectors; return 0
   | ["stream"] => printStreamVectors; return 0
+  | ["group"] => GroupVectors.printGroupVectors; return 0
   | _ =>
-    IO.eprintln "usage: vectors (envelope|session|user|stream)"
+    IO.eprintln "usage: vectors (envelope|session|user|stream|group)"
     return 1
