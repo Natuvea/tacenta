@@ -7,6 +7,20 @@ the order of a release). Dates are the day the tag was pushed. Release tags are
 cut in the release pipeline, not in this repository. Earlier tags (v1.0.0 to v1.1.2) predate this file; the
 commits carry their story.
 
+## Unreleased
+
+- **SDK record change.** The inbound `Message` record carries the relay
+  envelope class as `kind` (`Direct`, `Group` or `Receipt`): the UniFFI record
+  that Swift and Kotlin use gains a `kind` field, so code that constructs
+  `Message` values must pass it, and the WebAssembly `Message` gains a `kind`
+  string. The TypeScript head does not expose `kind` yet. The class is the
+  relay's outer label, not an authenticated property of the message.
+- A bounded experimental group profile (the `tacenta-group` crate and the
+  client's group-operation module: eight members, one device each, one
+  authority) is in the tree for tests and the group demo. No SDK head, the CLI
+  or the server reaches it. `docs/claims.md` states its limits and what it does
+  not yet do.
+
 ## v1.12.1 (2026-09-11)
 
 - tacenta-core moves to `fb89b15`.

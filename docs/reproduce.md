@@ -93,25 +93,55 @@ cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/po
 
 ## 4. The bounded group experiment
 
-Run the live bounded-profile trace, including cap-plus-one refusals, group and
-direct-message session sharing, prepared-handoff cancellation on removal,
-invitation admission/removal, and revocation:
+The experiment is limited to eight members, one device per person and one
+membership authority, and no SDK head reaches it; `docs/claims.md` says what it
+does and does not establish. Run the group crate's limit and negative-control
+suites and the live bounded-profile trace, which covers cap-plus-one refusals,
+group and direct-message session sharing, prepared-handoff cancellation on
+removal, invitation admission and removal, and revocation:
 
 ```bash
 cd tacenta
 tooling/run-group-chat-demo.sh
 ```
 
-To capture comparable cold and warm process-level measurements, pass an empty
-output directory. The runner records the revision, host, Rust toolchain, test
-logs, elapsed/user/system timing, maximum resident memory where the host
-supports it, deterministic 2/3/8-member checkpoint sizes, one native durable
-logical-intent transaction, and the sender restart plus recovered-outbox
-duration from the live test. These results are development evidence, not
-production budgets.
+Each step names the number of tests it must run. The script fails on a step
+that runs zero tests, a different number, a failure or an ignored test, so a
+renamed or removed test cannot leave it green. Change the expected counts with
+the tests they count.
+
+The Lean group model generates the trace vectors that the Rust types replay
+(`crates/tacenta-group/tests/model_vectors.rs`); CI regenerates and diffs them
+with the other vector sets:
+
+```bash
+(cd spec && lake exe vectors group) | diff -u contracts/vectors/group-v1.json -
+```
+
+To capture comparable cold and warm process-level measurements, pass an output
+directory. The runner records the product revision, the tacenta-core revision
+that `Cargo.lock` resolves, whether the tree had uncommitted changes, the host,
+the Rust toolchain and the load average; the demo's logs and its elapsed, user,
+system and maximum-resident figures, cold and warm; the deterministic 2, 3 and
+8 member roster and receiver-state sizes (real 32-byte identities: 219, 260 and
+465 roster bytes); and the three-client native transaction, sender restart and
+snapshot figures. A missing measurement stops it rather than being skipped.
+Snapshot bytes, commits per logical send, CPU and maximum resident set at 2, 3
+and 8 members need a per-size client probe; without it `scale.txt` says NOT
+MEASURED. The runs are not seeded, and the results are development evidence,
+not production budgets or 32, 128 or 512 member results.
 
 ```bash
 tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
+```
+
+To check that the group crate's tests notice a removed guard, run its
+single-change mutation harness (about three minutes with four workers). It
+needs the unmodified tree to pass, prints each mutant as killed or survived,
+and fails on a mutant that does not patch or build:
+
+```bash
+python3 tooling/group-mutation/mutate.py --workers 4
 ```
 
 ## 5. The repo gates
