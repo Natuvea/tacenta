@@ -1,5 +1,12 @@
 # 0117 — bounded group live dispatch
 
+> Implementation status at 75c9a20 (2026-09-29): the freeze is not latched.
+> After an unknown write the same operation can be called again and encrypts
+> again; the recovery this record requires is a rule for the caller, not
+> something the coordinator enforces.
+> <!-- TODO(client-fixes): drop this note once a frozen operation refuses
+> further work until its durable generation is recovered. -->
+
 ## Decision
 
 The live bounded-group sender separates pairwise preparation from relay

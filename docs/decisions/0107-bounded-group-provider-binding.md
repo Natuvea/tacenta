@@ -1,5 +1,12 @@
 # 0107 — bounded group provider binding
 
+> Implementation status at 75c9a20 (2026-09-29): the live receive path decrypts
+> with `party.decrypt`, which discards the provider outcome, so nothing outside
+> tests derives a member from it. The tests pass the authenticated identity and
+> the provider's state effect to the coordinator by hand.
+> <!-- TODO(client-fixes): drop this note once the receive path calls
+> `decrypt_with_outcome` and feeds the coordinator from it. -->
+
 ## Decision
 
 The client group adapter derives an authenticated `Member` only from the
