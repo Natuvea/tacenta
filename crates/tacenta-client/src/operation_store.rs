@@ -1,4 +1,4 @@
-//! Opaque durable-operation state for the group-chat work (0091, 0128, 0130).
+//! Opaque durable-operation state for the group-chat work (0091, 0132, 0134).
 //!
 //! This is intentionally independent of a group codec and of a concrete file
 //! store: a snapshot is versioned opaque values, and a store is a narrow
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const OPERATION_SNAPSHOT_VERSION: u8 = 2;
 
 /// One combined durable value: opaque provider state, group state and the
-/// bounded record collections of decision 0129.
+/// bounded record collections of decision 0133.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationSnapshot {
     pub(crate) version: u8,
@@ -180,7 +180,7 @@ pub trait OperationStore {
     fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome;
     fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError>;
 
-    /// Whether an earlier write left this store latched (0130): while it is,
+    /// Whether an earlier write left this store latched (0134): while it is,
     /// the coordinator starts no pairwise operation and publishes nothing. A
     /// plain store never latches; [`DurableStore`] does.
     fn is_frozen(&self) -> bool {
@@ -190,7 +190,7 @@ pub trait OperationStore {
     /// The generation the next candidate must carry, or `None` when the
     /// counter is exhausted. A latching store keeps it above every generation
     /// it has ever been asked to publish, so an unknown write is never
-    /// followed by a different snapshot under the same number (0130).
+    /// followed by a different snapshot under the same number (0134).
     fn next_generation(&self, current: u64) -> Option<u64> {
         current.checked_add(1)
     }
@@ -211,7 +211,7 @@ impl<T: OperationStore + ?Sized> OperationStore for Box<T> {
     }
 }
 
-/// The store handle a coordinator holds (0130).
+/// The store handle a coordinator holds (0134).
 ///
 /// A write that is `failed` or `unknown` latches it: it then refuses every
 /// commit, without forwarding it, and reports itself frozen so that the

@@ -2,7 +2,7 @@
 //! in-process directory and relay with a real provider. Each test that names a
 //! refusal also shows that the pairwise state was not touched: the exported
 //! state is byte-identical before and after, so the refusal came before any
-//! encryption (decision 0130).
+//! encryption (decision 0134).
 
 use super::*;
 use crate::group_control_outbox::Outbox as ControlOutbox;

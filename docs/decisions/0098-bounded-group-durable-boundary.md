@@ -55,11 +55,11 @@ recovery rule. This decision does not claim that the current direct-message
 client already supplies this atomicity; GC-06 must prove real integration.
 
 
-## Amendment (0127, 0128, 0130)
+## Amendment (0131, 0132, 0134)
 
 The cumulative-acknowledgement rule above is enforced on the live path only
-through `GroupClient::receive` (0127). "Never rewinds pairwise state" holds for
+through `GroupClient::receive` (0131). "Never rewinds pairwise state" holds for
 direct messages only while a `GroupClient` owns the client, because it writes
-provider state through on every pairwise operation (0128). "Failed and unknown
-freeze every affected operation" is a latch cleared only by recovery (0130).
+provider state through on every pairwise operation (0132). "Failed and unknown
+freeze every affected operation" is a latch cleared only by recovery (0134).
 Before these records none of the three held on the live client.

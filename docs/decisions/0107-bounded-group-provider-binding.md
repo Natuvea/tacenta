@@ -21,7 +21,7 @@ and passes that derived member to the durable receiver coordinator. A malformed
 group plaintext creates a terminal `Malformed` disposition recorded in a
 `TCGM` inbox record with the provider state effect, the plaintext length and
 its payload commitment (41 bytes with the tag; the plaintext itself is not
-retained, 0129),
+retained, 0133),
 committed together with the provider state. It creates no application event, but
 its required state transition is retained before an ACK may cross it.
 
@@ -43,10 +43,10 @@ state transition into an unacknowledged poison item.
 A multi-device profile or different core address representation requires a
 versioned member-binding grammar and migration rule.
 
-## Amendment (0127)
+## Amendment (0131)
 
 The derivation above is what the live path does: `GroupClient::receive` builds
 the member from the outcome of `decrypt_with_outcome` and the crypto device of
-the routed address. Before 0127 every live trace supplied the identity and the
+the routed address. Before 0131 every live trace supplied the identity and the
 state effect by hand, so this record described a binding that no production code
 performed.

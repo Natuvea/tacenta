@@ -57,7 +57,7 @@ application transaction model needs a versioned successor. This record defines
 no current client receive integration; GC-06 supplies it with the provider and
 operation store.
 
-## Amendment (0127)
+## Amendment (0131)
 
 The client receive integration this record left to GC-06 is `GroupClient::receive`
-(0127); the acknowledgement follows the commit of each item's disposition.
+(0131); the acknowledgement follows the commit of each item's disposition.

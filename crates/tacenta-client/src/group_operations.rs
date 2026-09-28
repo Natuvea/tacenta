@@ -4,11 +4,11 @@
 //! value only after the store reports `committed`. The `prepare_*` and
 //! `dispatch_*` functions drive the live client: they encrypt a canonical
 //! context exactly once and send exactly the committed bytes, refusing every
-//! case they can refuse before they encrypt (0130).
+//! case they can refuse before they encrypt (0134).
 //!
 //! **Who calls this.** [`crate::group_client::GroupClient`] is the non-test
 //! caller of every function here that is not compiled under `cfg(test)`
-//! (0127). The `cfg(test)` variants (`commit_group_plaintext`,
+//! (0131). The `cfg(test)` variants (`commit_group_plaintext`,
 //! `commit_prepared_ciphertext` and their like) exist only so unit tests can
 //! exercise one state machine without a client; they take an identity and a
 //! provider effect as arguments, which no production path does.
@@ -32,12 +32,12 @@ use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, S
 use crate::{Client, ErrorKind};
 
 const MAX_GROUP_CONTROL_RECORDS: usize = 64;
-/// Receive records kept in the snapshot's `inbox` (0129), newest last.
+/// Receive records kept in the snapshot's `inbox` (0133), newest last.
 const MAX_INBOX_RECORDS: usize = 64;
-/// Accepted-context commitments kept in the snapshot's `dedup` (0129): eight
+/// Accepted-context commitments kept in the snapshot's `dedup` (0133): eight
 /// members times the 64-sequence window of 0113.
 const MAX_DEDUP_RECORDS: usize = 512;
-/// Terminal logical sends whose records the `outbox` transcript keeps (0129).
+/// Terminal logical sends whose records the `outbox` transcript keeps (0133).
 const MAX_TERMINAL_LOGICAL_SENDS: usize = 16;
 /// The retained checkpoint kinds; a new one replaces the previous of its kind.
 const CHECKPOINT_TAGS: [&[u8; 4]; 4] = [b"TCGV", b"TCGB", b"TCGO", b"TCGX"];
@@ -69,7 +69,7 @@ impl From<GroupOperationError> for GroupLiveError {
 }
 
 /// Starts the candidate for the next publication. It refuses while the store is
-/// latched (0130) and takes its generation from the store, which keeps it above
+/// latched (0134) and takes its generation from the store, which keeps it above
 /// every generation that was ever in doubt.
 fn begin_candidate<S: OperationStore>(
     store: &S,
@@ -86,7 +86,7 @@ fn begin_candidate<S: OperationStore>(
 }
 
 /// A store that accepts and forgets, used to run a commit's own checks before
-/// the coordinator spends a pairwise encryption (0130). Running the real
+/// the coordinator spends a pairwise encryption (0134). Running the real
 /// function against it, rather than repeating its checks, cannot drift.
 struct DiscardStore;
 
@@ -512,7 +512,7 @@ where
 
 /// The shared encrypt-once step for one recipient's control payload. An exact
 /// live handoff for the payload is returned as it is: a retry never encrypts
-/// again. Everything that can refuse runs before the encryption (0130).
+/// again. Everything that can refuse runs before the encryption (0134).
 async fn prepare_control_handoff<P, S>(
     client: &mut Client<P>,
     store: &mut S,
@@ -735,7 +735,7 @@ where
         .map_err(|_| GroupLiveError::Policy)?;
     // Every check the real commit performs runs first, on copies, with a
     // placeholder ciphertext: a refusal after the encryption would burn ratchet
-    // state that nothing records (0130).
+    // state that nothing records (0134).
     {
         let mut view = state.view.clone();
         let mut receiver = state.receiver.clone();
@@ -864,7 +864,7 @@ where
         .await
         .map_err(|error| live_client_error(error.kind()))?;
     if handoff.disposition == ControlDisposition::ExhaustedUnknown {
-        // The third reservation was the final attempt (0106, 0130). The relay
+        // The third reservation was the final attempt (0106, 0134). The relay
         // accepted it, and that is reported as success; the durable state stays
         // `exhausted_unknown` because acceptance is recorded only from
         // `handed_off`. A fourth request is refused by `reserve` above.
@@ -1260,7 +1260,7 @@ where
     // Only a recipient with nothing prepared yet is encrypted for. An exact
     // prepared or handed-off record is returned as it is (a retry never
     // re-encrypts), and every terminal recipient is refused before any
-    // pairwise operation runs (0130).
+    // pairwise operation runs (0134).
     let progress = send
         .recipients()
         .iter()
@@ -1478,7 +1478,7 @@ where
         .await
         .map_err(|error| live_client_error(error.kind()))?;
     if handoff.disposition == RecipientDisposition::ExhaustedUnknown {
-        // The third reservation was the final attempt (0106, 0130); the relay
+        // The third reservation was the final attempt (0106, 0134); the relay
         // accepted it, and the durable state stays `exhausted_unknown`.
         return Ok(handoff);
     }
@@ -1684,7 +1684,7 @@ fn commit_group_payload_with_optional_outbox<S: OperationStore>(
     }
 }
 
-/// Commits a provider state that nothing else changes (0128): a direct
+/// Commits a provider state that nothing else changes (0132): a direct
 /// message's ratchet step, published before that step has an external effect.
 pub(crate) fn commit_provider_state<S: OperationStore>(
     store: &mut S,
@@ -1701,7 +1701,7 @@ pub(crate) fn commit_provider_state<S: OperationStore>(
 }
 
 /// Records a terminal or malformed item and the provider state that consumed
-/// it. The plaintext is not kept (0129).
+/// it. The plaintext is not kept (0133).
 pub(crate) fn commit_malformed_group_payload<S: OperationStore>(
     store: &mut S,
     snapshot: &mut OperationSnapshot,
@@ -1992,7 +1992,7 @@ fn outbox_record_id(entry: &[u8]) -> Result<Option<LogicalMessageId>, GroupOpera
     }
 }
 
-/// Keeps the outbox transcript within its bound (0129): every live logical
+/// Keeps the outbox transcript within its bound (0133): every live logical
 /// send and the sixteen most recent terminal ones. A send is kept or dropped
 /// whole, because the transcript is replayed from its `TCGI` record. Returns
 /// the outbox rebuilt from what remains when anything was dropped, so the live
@@ -2048,7 +2048,7 @@ fn append_group_control_records(
 ) {
     for record in records {
         // A checkpoint is self-contained and recovery reads only the latest of
-        // its kind, so it replaces the previous one (0129). A cancellation
+        // its kind, so it replaces the previous one (0133). A cancellation
         // checkpoint is per group.
         if let Some(tag) = CHECKPOINT_TAGS
             .iter()
@@ -2249,7 +2249,7 @@ fn encode_receive_record(
     Ok(record)
 }
 
-/// A malformed or refused plaintext leaves no plaintext behind (0129): the
+/// A malformed or refused plaintext leaves no plaintext behind (0133): the
 /// state effect, the length it had and its core payload commitment, 41 bytes
 /// with the tag.
 fn encode_malformed_record(
@@ -2279,7 +2279,7 @@ fn push_bounded(collection: &mut Vec<Vec<u8>>, item: Vec<u8>, bound: usize) {
 }
 
 /// Records one receive disposition in the bounded `inbox` and, for an accepted
-/// context, its commitment in the bounded `dedup` (0129). The encoded context
+/// context, its commitment in the bounded `dedup` (0133). The encoded context
 /// is kept only for an accepted context; every other disposition keeps the
 /// commitment and the disposition alone.
 fn record_receive(
@@ -3437,7 +3437,7 @@ mod tests {
         }
 
         // Every transition wrote a book checkpoint; each replaced the last, so
-        // the transcript holds one (0129) and the latest book recovers.
+        // the transcript holds one (0133) and the latest book recovers.
         assert_eq!(snapshot.group_controls.len(), 1);
         assert_eq!(recover_group_invitation_book(&snapshot, group_id), Ok(book));
     }
@@ -3747,7 +3747,7 @@ mod tests {
         assert_eq!(snapshot.inbox.len(), 1);
         assert_eq!(&snapshot.inbox[0][..5], b"TCGR\x01");
         // The dedup collection holds the commitment of the accepted context,
-        // not the context (0129).
+        // not the context (0133).
         assert_eq!(
             snapshot.dedup,
             vec![roster_payload_commitment(

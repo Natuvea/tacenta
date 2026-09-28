@@ -1,4 +1,4 @@
-# 0129 — bounded operation snapshot and control-outbox reclamation
+# 0133 — bounded operation snapshot and control-outbox reclamation
 
 Amends 0099, 0103, 0107, 0113, 0122 and 0124.
 
@@ -46,7 +46,7 @@ here.
 
 The control outbox refuses the ninth live handoff with an explicit
 `outbox_full`, exactly as the application outbox refuses the ninth live send.
-A refusal happens before any pairwise encryption (0130), so it never burns
+A refusal happens before any pairwise encryption (0134), so it never burns
 ratchet state.
 
 **Reachability of the eight-member profile.** With these rules an authority can

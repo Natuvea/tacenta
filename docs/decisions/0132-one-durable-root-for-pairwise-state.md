@@ -1,4 +1,4 @@
-# 0128 — one durable root for pairwise state
+# 0132 — one durable root for pairwise state
 
 Amends 0098 ("recovery never rewinds pairwise state") and 0091.
 
@@ -17,7 +17,7 @@ of that state is committed to it before the change has an external effect:
   commits it, and only then lets the item count toward the acknowledged prefix.
 
 `GroupClient::send_direct` is the direct-message call for such a client. The
-plain `Client::send` and `Client::receive` are not reachable on it (0127).
+plain `Client::send` and `Client::receive` are not reachable on it (0131).
 A client that has no `GroupClient` behaves exactly as before.
 
 **The failure this prevents.** A direct message and a group message share one

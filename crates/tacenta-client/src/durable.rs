@@ -7,7 +7,7 @@
 //! cannot fail on it: nothing here runs a provider, a relay or the
 //! coordinator. The live ordering is `group_client::GroupClient::receive` and
 //! the `prepare_*`/`dispatch_*` functions, and their evidence is the live
-//! traces in `group_client/tests.rs` (0091, 0127).
+//! traces in `group_client/tests.rs` (0091, 0131).
 
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, StoreError};
 

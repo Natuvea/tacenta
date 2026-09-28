@@ -1,4 +1,4 @@
-# 0127 — staged group receive and its entry point
+# 0131 — staged group receive and its entry point
 
 Amends 0096, 0098, 0099 and 0107, whose text described an acknowledgement
 order the live client did not follow.
@@ -35,7 +35,7 @@ the `commit_*` variants that only tests call are compiled under `cfg(test)`.
 **Entry point.** `group_client::GroupClient` (experimental, public, not in the
 SDK surface manifest, not exported by any binding) takes a `Client` by value
 together with an `OperationStore`, which it wraps in a `DurableStore` so that
-every store latches (0130). It is the only owner of the mailbox and of the
+every store latches (0134). It is the only owner of the mailbox and of the
 pairwise state while it lives, so the plain `Client::receive`, `drain` and
 `inbound` cannot be used to acknowledge group traffic ahead of a commit: the
 compiler, not a flag, keeps them out. Its methods are the non-test callers of
@@ -48,7 +48,7 @@ order over opaque bytes, which never touches a real provider or store), are
 compiled under `cfg(test)`; the blanket `allow(dead_code)` on the coordinator
 modules is gone. `open` on an empty store publishes the first snapshot with the
 client's provider state, so the durable root exists before the first operation
-(0128). A pin on the authority is kept by the coordinator: an invitation
+(0132). A pin on the authority is kept by the coordinator: an invitation
 bootstrap is recorded only from the pinned authority.
 
 **What is still not reachable or not done, exactly.**
@@ -71,7 +71,7 @@ bootstrap is recorded only from the pinned authority.
   the item, the durable provider state has already consumed its key, and the
   decrypt is refused. Redelivery of committed but unconsumed events (the
   GC-06 event-consumption boundary) is open, and so is the same window for a
-  direct message (0128).
+  direct message (0132).
 - If the cumulative acknowledgement itself fails (a transport error after every
   item of the prefix committed), `receive` returns that error and the events of
   that call are not returned to the caller. Nothing is lost durably: the relay
@@ -93,7 +93,7 @@ bootstrap is recorded only from the pinned authority.
   around the coordinator, and it grows the `Client` facade that the surface
   manifest tracks.
 - A wrapper type that owns the client. Chosen: no bypass, no change to the
-  facade, and the pairwise state has one owner (0128).
+  facade, and the pairwise state has one owner (0132).
 
 ## The five questions
 

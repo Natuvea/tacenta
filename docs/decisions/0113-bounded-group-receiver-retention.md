@@ -36,7 +36,7 @@ duplicate behavior.
 A later history or cross-revision receipt feature needs its own bounded,
 versioned event-retention rule; it cannot silently expand the receive window.
 
-## Amendment (0129)
+## Amendment (0133)
 
 The snapshot's `dedup` collection, which 0099 described as holding every
 context, is now itself bounded: at most 512 entries, each the 32-byte payload

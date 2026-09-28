@@ -29,7 +29,7 @@
 //! **Experimental group coordinator.** [`group_client::GroupClient`] owns a
 //! client and an operation store and is the only place the bounded group
 //! experiment's receive, send and membership operations are reachable (decisions
-//! 0127 to 0130). It is not part of the SDK surface manifest or of any binding,
+//! 0131 to 0134). It is not part of the SDK surface manifest or of any binding,
 //! and its shape may change.
 //!
 //! With explicit addresses:
@@ -71,12 +71,12 @@ pub use secure_store::{SecureStore, SecureStoreError};
 mod dial;
 // GC-03's deterministic harness models the acknowledgement order over opaque
 // bytes. It is a model, not the live path, and nothing outside its own tests
-// runs it (0091, 0127).
+// runs it (0091, 0131).
 #[cfg(test)]
 mod durable;
 mod group_control_outbox;
 mod group_operations;
-// The experimental group coordinator (0127): the one non-test owner of the
+// The experimental group coordinator (0131): the one non-test owner of the
 // mailbox, the pairwise state and the operation snapshot while it lives.
 pub mod group_client;
 mod operation_store;
@@ -3776,14 +3776,14 @@ struct Dialed {
 /// keeps them together.
 pub type DefaultClient = Client<DefaultProvider>;
 
-/// What one relay poll returned and has not yet acknowledged (0127).
+/// What one relay poll returned and has not yet acknowledged (0131).
 struct Fetched {
     /// The cursor position the batch begins at.
     from: u64,
     messages: Vec<tacenta_relay::StoredMessage>,
 }
 
-/// One fetched item after decryption with its provider outcome (0127).
+/// One fetched item after decryption with its provider outcome (0131).
 struct StagedItem {
     from: DeviceAddr,
     /// The crypto-layer address the item was decrypted for; its device is the
@@ -4452,7 +4452,7 @@ impl<P: CryptoProvider> Client<P> {
     /// contact, encrypts once and records the ratchet advance with the secure
     /// store. The returned bytes are what a retry sends again. A coordinator
     /// that owns the pairwise state exports it and commits it between this and
-    /// [`dispatch_prepared_send`](Client::dispatch_prepared_send) (0128).
+    /// [`dispatch_prepared_send`](Client::dispatch_prepared_send) (0132).
     async fn prepare_send_as(
         &mut self,
         to: &DeviceAddr,
@@ -4692,7 +4692,7 @@ impl<P: CryptoProvider> Client<P> {
     ///
     /// **This acknowledges before any group disposition exists**, so it is for
     /// direct messages only. Group traffic is received through
-    /// [`group_client::GroupClient`], which commits each item first (0127).
+    /// [`group_client::GroupClient`], which commits each item first (0131).
     async fn poll_batch(&mut self) -> Result<Vec<Received>> {
         let mut rng = rand::rngs::OsRng.unwrap_err();
         let Fetched { from, messages } = self.fetch_staged().await?;
@@ -4735,7 +4735,7 @@ impl<P: CryptoProvider> Client<P> {
     }
 
     /// Fetches what the relay holds for this device and acknowledges nothing
-    /// (0127). The caller processes the items in order and acknowledges the
+    /// (0131). The caller processes the items in order and acknowledges the
     /// prefix it has committed with
     /// [`acknowledge_fetched`](Client::acknowledge_fetched).
     async fn fetch_staged(&mut self) -> Result<Fetched> {
@@ -4750,7 +4750,7 @@ impl<P: CryptoProvider> Client<P> {
         Ok(Fetched { from, messages })
     }
 
-    /// Decrypts one fetched item with the provider's outcome (0127): the
+    /// Decrypts one fetched item with the provider's outcome (0131): the
     /// pairwise-authenticated peer identity and the crypto-state effect come
     /// from the provider, never from the caller. When the item changed the
     /// pairwise state the state is exported here, immediately after this item,
@@ -4808,7 +4808,7 @@ impl<P: CryptoProvider> Client<P> {
     }
 
     /// Replaces this client's identity, prekeys and sessions with a state
-    /// exported earlier, keeping its connections (0130). A coordinator does this
+    /// exported earlier, keeping its connections (0134). A coordinator does this
     /// on recovery: the in-memory pairwise state a frozen operation advanced is
     /// discarded, and the durable state is the only one that continues.
     async fn restore_state_in_place(&mut self, state: &[u8]) -> Result<()> {
@@ -4828,7 +4828,7 @@ impl<P: CryptoProvider> Client<P> {
 
     /// The acknowledgement stage is distinct from fetching and processing: a
     /// durable receiver commits every item's disposition, then acknowledges
-    /// the prefix it committed (0127).
+    /// the prefix it committed (0131).
     async fn acknowledge_fetched(&mut self, from: u64, count: usize) -> Result<()> {
         if count == 0 {
             return Ok(());

@@ -1,9 +1,9 @@
 //! Durable state for exact-ciphertext roster-control handoffs (0124).
 //!
 //! The outbox holds at most eight live handoffs and sixteen retained terminal
-//! handoffs, so a finished handoff never wedges the group (0129). The third
+//! handoffs, so a finished handoff never wedges the group (0133). The third
 //! reservation of a handoff is its final attempt and enters `exhausted_unknown`
-//! before it is sent, exactly as in the application outbox (0106, 0130).
+//! before it is sent, exactly as in the application outbox (0106, 0134).
 
 use tacenta_core::crypto::groups::payload_commitment;
 use tacenta_group::{Error as GroupError, GroupPayload, MAX_DEVICE_LEN, MAX_IDENTITY_LEN, Member};
@@ -137,7 +137,7 @@ impl Outbox {
     /// Reserves the next attempt for an exact prepared handoff. The third
     /// reservation is the final attempt: it returns the handoff with
     /// `exhausted_unknown` already recorded, so its bytes may be sent once and
-    /// no fourth reservation exists (0130).
+    /// no fourth reservation exists (0134).
     pub(crate) fn reserve(
         &mut self,
         recipient: &Member,
@@ -436,7 +436,7 @@ mod tests {
             .unwrap();
 
         // Two ordinary attempts, then the third reservation is the final one
-        // and is exhausted before it is sent (0106, 0130).
+        // and is exhausted before it is sent (0106, 0134).
         for attempt in 1..=2 {
             let handoff = outbox.reserve(&bob(), &payload).unwrap();
             assert_eq!(handoff.attempts_reserved, attempt);

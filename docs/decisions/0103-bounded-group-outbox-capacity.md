@@ -31,7 +31,7 @@ during offline fan-out or repeated membership changes.
 A measured production profile may choose different per-group and global
 backpressure budgets, with a versioned storage and scheduling policy.
 
-## Amendment (0129)
+## Amendment (0133)
 
 "Terminal records remain attributable in durable storage" is bounded: the
 records of the 16 most recent terminal logical sends are retained, and the

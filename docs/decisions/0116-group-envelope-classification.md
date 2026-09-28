@@ -6,7 +6,7 @@
 
 The client preserves the relay envelope class alongside each decrypted inbound
 payload. Direct messages, group payloads, and receipts are distinct routing
-classes. The group coordinator (`GroupClient::receive`, 0127) hands only
+classes. The group coordinator (`GroupClient::receive`, 0131) hands only
 `group`-classified plaintext to the group parsers; it never infers group
 semantics from the bytes of a direct message.
 

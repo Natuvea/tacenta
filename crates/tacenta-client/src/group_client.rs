@@ -1,4 +1,4 @@
-//! The experimental bounded group coordinator (decisions 0127, 0128, 0130).
+//! The experimental bounded group coordinator (decisions 0131, 0132, 0134).
 //!
 //! **Experimental.** This is the profile of the bounded group experiment: at
 //! most eight members, one device each, one authority, one group per client.
@@ -12,14 +12,14 @@
 //!
 //! - **Receive is staged.** [`receive`](GroupClient::receive) decrypts each item
 //!   with the provider's outcome, commits its disposition and the provider
-//!   state together, and only then acknowledges the committed prefix (0127).
+//!   state together, and only then acknowledges the committed prefix (0131).
 //!   The authenticated peer and the state effect come from the provider.
 //! - **One durable root.** Every pairwise operation, direct messages included,
 //!   commits the exported provider state before it has an external effect
-//!   (0128). A restart from the snapshot cannot rewind the ratchet.
+//!   (0132). A restart from the snapshot cannot rewind the ratchet.
 //! - **A latch.** A write that did not commit freezes the coordinator until
 //!   [`recover`](GroupClient::recover) reloads the durable snapshot and resets
-//!   the client's provider state to it (0130).
+//!   the client's provider state to it (0134).
 //!
 //! The bytes of every record here are product-owned and have no vectors yet;
 //! see the review's CR-12.
@@ -64,7 +64,7 @@ pub enum GroupError {
     Client(Error),
     /// A write did not commit, or an operation failed after it had consumed
     /// pairwise state. Nothing was published or sent after that point. Call
-    /// [`recover`](GroupClient::recover) before anything else (0130).
+    /// [`recover`](GroupClient::recover) before anything else (0134).
     Frozen,
     /// The call was refused by policy before any pairwise operation: nothing
     /// durable changed.
@@ -196,7 +196,7 @@ pub struct Inbound {
     /// The group-class items, in relay order.
     pub items: Vec<GroupReceipt>,
     /// Items of any other class, returned after their provider state was
-    /// committed (0128). Delivery is at-most-once.
+    /// committed (0132). Delivery is at-most-once.
     pub direct: Vec<Received>,
     /// Items the provider refused without changing state; dropped, as the plain
     /// client drops them.
@@ -275,7 +275,7 @@ pub struct GroupClient<P: CryptoProvider = DefaultProvider> {
     snapshot: OperationSnapshot,
     group: Option<GroupState>,
     /// Set when an operation failed after it had consumed pairwise state and
-    /// before that state was committed; cleared by `recover` (0130).
+    /// before that state was committed; cleared by `recover` (0134).
     poisoned: bool,
 }
 
@@ -285,7 +285,7 @@ impl<P: CryptoProvider> GroupClient<P> {
     /// snapshot (`connect_with_state`): its identity is checked against the
     /// snapshot's. A store that holds nothing gets its first snapshot here,
     /// carrying the client's provider state, so the durable root exists before
-    /// the first operation (0128).
+    /// the first operation (0132).
     pub async fn open(
         client: Client<P>,
         store: impl OperationStore + Send + 'static,
@@ -338,7 +338,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         self.snapshot.generation
     }
 
-    /// Whether the coordinator is frozen (0130).
+    /// Whether the coordinator is frozen (0134).
     pub fn is_frozen(&self) -> bool {
         self.poisoned || self.store.is_frozen()
     }
@@ -497,7 +497,7 @@ impl<P: CryptoProvider> GroupClient<P> {
     }
 
     /// Reloads the durable snapshot, resets the client's provider state to it
-    /// and rebuilds the group state, then lifts the latch (0130). Whatever a
+    /// and rebuilds the group state, then lifts the latch (0134). Whatever a
     /// frozen operation held in memory is discarded; a ciphertext it produced
     /// was never recorded and never sent.
     pub async fn recover(&mut self) -> Result<(), GroupError> {
@@ -519,7 +519,7 @@ impl<P: CryptoProvider> GroupClient<P> {
 
     /// Sends a direct message. The pairwise state it advances is committed
     /// before the ciphertext is put on the wire, and nothing is sent if that
-    /// commit does not succeed (0128).
+    /// commit does not succeed (0132).
     pub async fn send_direct(&mut self, to: &DeviceAddr, message: &[u8]) -> Result<(), GroupError> {
         if self.is_frozen() {
             return Err(GroupError::Frozen);
@@ -541,7 +541,7 @@ impl<P: CryptoProvider> GroupClient<P> {
     }
 
     /// Fetches what the relay holds, commits every item's disposition, and
-    /// acknowledges the committed prefix (0127). `now` is the explicit logical
+    /// acknowledges the committed prefix (0131). `now` is the explicit logical
     /// time invitations are evaluated at.
     pub async fn receive(&mut self, now: u64) -> Result<Inbound, GroupError> {
         if self.is_frozen() {
@@ -612,7 +612,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         if result.is_err() {
             // The item may have advanced the pairwise state in memory and the
             // commit that would record it did not happen: nothing continues on
-            // this state until `recover` resets it (0130).
+            // this state until `recover` resets it (0134).
             self.poisoned = true;
         }
         result

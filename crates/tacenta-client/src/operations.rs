@@ -3,7 +3,7 @@
 //! A prepared send owns the exact bytes that reached the transport boundary.
 //! Retrying it therefore cannot encrypt again or advance a ratchet a second
 //! time. It is private: the durable coordinator commits the state a prepared
-//! send advanced before it dispatches the bytes (0128).
+//! send advanced before it dispatches the bytes (0132).
 
 use tacenta_relay::{DeviceAddr, Request, encode_request};
 

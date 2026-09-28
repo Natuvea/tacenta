@@ -3,7 +3,7 @@
 //! Each `k_*` test is a killer: it passes on the code as it stands and fails
 //! when the single guard it names is changed. The bounds are written as
 //! numbers, not derived from the constants they check, so raising a constant
-//! fails a test (decision 0129).
+//! fails a test (decision 0133).
 
 use super::*;
 use crate::group_control_outbox::Disposition as ControlDisposition;
@@ -634,7 +634,7 @@ fn k_k10_k11_snapshot_recovery_refuses_an_unknown_version_and_trailing_bytes() {
     let _ = std::fs::remove_file(path);
 }
 
-// ---- the bounds of the snapshot, as literals (0129) -----------------------
+// ---- the bounds of the snapshot, as literals (0133) -----------------------
 
 #[test]
 fn rejected_traffic_from_any_peer_cannot_grow_the_snapshot_past_its_bounds() {
@@ -982,7 +982,7 @@ fn cancellation_by_roster_changes_counts_toward_the_sixteen_terminal_sends() {
     assert_eq!(recover_group_outbox(&snapshot, gid()).unwrap(), outbox);
 }
 
-// ---- the latch and the generations (0130) ---------------------------------
+// ---- the latch and the generations (0134) ---------------------------------
 
 #[test]
 fn a_durable_store_latches_after_an_unknown_write_and_never_reuses_its_generation() {
