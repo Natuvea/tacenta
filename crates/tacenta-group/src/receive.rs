@@ -34,6 +34,21 @@ pub enum ReceiveDisposition {
     Rejected(ReceiveRefusal),
 }
 
+/// Whether a receiver can accept application contexts (decision 0130).
+///
+/// A recovered `NotMember` or `Closed` receiver is a valid terminal state: it
+/// refuses every application context and carries no accepted or deferred
+/// entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiverStatus {
+    /// The local member is active in an open accepted roster.
+    Active,
+    /// The local member was removed from the accepted roster or never joined it.
+    NotMember,
+    /// The accepted roster is closed.
+    Closed,
+}
+
 /// A formerly deferred context after it was checked against an accepted roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevalidatedReceive {
@@ -84,6 +99,17 @@ impl GroupReceiver {
             accepted: Vec::new(),
             deferred: Vec::new(),
             next_event_id: 0,
+        }
+    }
+
+    /// Whether this receiver can currently accept application contexts.
+    pub fn status(&self) -> ReceiverStatus {
+        if self.roster.closed {
+            ReceiverStatus::Closed
+        } else if self.is_active(&self.local) {
+            ReceiverStatus::Active
+        } else {
+            ReceiverStatus::NotMember
         }
     }
 
@@ -258,14 +284,18 @@ impl GroupReceiver {
             return Err(Error::Conflict);
         }
         let local = take_member(&mut cursor)?;
-        if !roster.members.iter().any(|member| member == &local) || roster.closed {
-            return Err(Error::NotMember);
-        }
+        // Decision 0130: a removed member's or closed group's state is a valid
+        // terminal state. It refuses every application context and must hold
+        // no accepted or deferred entries.
+        let terminal = roster.closed || !roster.members.iter().any(|member| member == &local);
         let next_event_id = take_u64(&mut cursor)?;
         let accepted_count =
             usize::try_from(take_u32(&mut cursor)?).map_err(|_| Error::Malformed)?;
         if accepted_count > MAX_MEMBERS * DEDUP_WINDOW as usize {
             return Err(Error::Malformed);
+        }
+        if terminal && accepted_count != 0 {
+            return Err(Error::NonCanonical);
         }
         let mut accepted = Vec::with_capacity(accepted_count);
         for _ in 0..accepted_count {
@@ -303,6 +333,9 @@ impl GroupReceiver {
             usize::try_from(take_u32(&mut cursor)?).map_err(|_| Error::Malformed)?;
         if deferred_count > MAX_DEFERRED {
             return Err(Error::Malformed);
+        }
+        if terminal && deferred_count != 0 {
+            return Err(Error::NonCanonical);
         }
         let mut deferred = Vec::with_capacity(deferred_count);
         for _ in 0..deferred_count {

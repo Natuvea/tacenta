@@ -20,7 +20,9 @@ pub use invitation::{
     InvitationRevocation, InvitationStatus,
 };
 pub use payload::GroupPayload;
-pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};
+pub use receive::{
+    GroupReceiver, ReceiveDisposition, ReceiveRefusal, ReceiverStatus, RevalidatedReceive,
+};
 pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
 pub use send::{
     GroupOutbox, LogicalMessageId, LogicalSend, OutboxDisposition, RecipientDisposition,

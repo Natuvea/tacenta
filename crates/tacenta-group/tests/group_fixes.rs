@@ -442,3 +442,148 @@ fn a_sequence_that_cannot_be_followed_reports_exhaustion() {
         Err(Error::Conflict)
     );
 }
+
+// ---------------------------------------------------------------------------
+// CR-06: a removed member's or closed group's receiver state is recoverable
+// (decision 0130)
+// ---------------------------------------------------------------------------
+
+const ROSTER_DIGEST: [u8; DIGEST_LEN] = [9; DIGEST_LEN];
+
+fn roster_commitment(_: &[u8]) -> [u8; DIGEST_LEN] {
+    ROSTER_DIGEST
+}
+
+fn payload_commitment(_: &[u8]) -> [u8; DIGEST_LEN] {
+    [1; DIGEST_LEN]
+}
+
+fn context(revision: u64, sequence: u64) -> ApplicationContext {
+    ApplicationContext::new(
+        group(),
+        revision,
+        ROSTER_DIGEST,
+        named("alice"),
+        named("bob"),
+        sequence,
+        b"hello".to_vec(),
+    )
+    .unwrap()
+}
+
+fn bob_receiver_at_r2() -> GroupReceiver {
+    let mut receiver = GroupReceiver::new(
+        roster_at(2, named("alice"), false, vec![named("alice"), named("bob")]),
+        ROSTER_DIGEST,
+        named("bob"),
+    );
+    assert_eq!(
+        receiver.receive(&context(2, 0), &named("alice"), [1; DIGEST_LEN]),
+        ReceiveDisposition::Accepted { event_id: 0 }
+    );
+    receiver
+}
+
+fn restore(receiver: &GroupReceiver) -> Result<GroupReceiver, Error> {
+    GroupReceiver::decode_state(
+        &receiver.encode_state().unwrap(),
+        roster_commitment,
+        payload_commitment,
+    )
+}
+
+#[test]
+fn receiver_state_of_a_removed_member_round_trips_and_refuses_application_contexts() {
+    let mut receiver = bob_receiver_at_r2();
+    assert_eq!(receiver.status(), ReceiverStatus::Active);
+    let successor = roster_at(3, named("alice"), false, vec![named("alice")]);
+    receiver
+        .install_accepted_roster(successor, ROSTER_DIGEST)
+        .unwrap();
+    assert_eq!(receiver.status(), ReceiverStatus::NotMember);
+
+    let mut restored = restore(&receiver).expect("a removed member's state must be recoverable");
+    assert_eq!(restored, receiver);
+    assert_eq!(restored.status(), ReceiverStatus::NotMember);
+    for revision in [2, 3, 4] {
+        assert_eq!(
+            restored.receive(&context(revision, 1), &named("alice"), [2; DIGEST_LEN]),
+            ReceiveDisposition::Rejected(ReceiveRefusal::NotActive),
+            "revision {revision}"
+        );
+    }
+}
+
+#[test]
+fn receiver_state_of_a_closed_group_round_trips_and_refuses_application_contexts() {
+    let mut receiver = bob_receiver_at_r2();
+    let closed = roster_at(3, named("alice"), true, vec![named("alice"), named("bob")]);
+    receiver
+        .install_accepted_roster(closed, ROSTER_DIGEST)
+        .unwrap();
+    assert_eq!(receiver.status(), ReceiverStatus::Closed);
+
+    let mut restored = restore(&receiver).expect("a closed group's state must be recoverable");
+    assert_eq!(restored, receiver);
+    assert_eq!(restored.status(), ReceiverStatus::Closed);
+    assert_eq!(
+        restored.receive(&context(3, 1), &named("alice"), [2; DIGEST_LEN]),
+        ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+    );
+}
+
+#[test]
+fn a_recovered_terminal_receiver_keeps_its_stable_event_counter_and_can_be_readmitted() {
+    let mut receiver = bob_receiver_at_r2();
+    receiver
+        .install_accepted_roster(
+            roster_at(3, named("alice"), false, vec![named("alice")]),
+            ROSTER_DIGEST,
+        )
+        .unwrap();
+    let mut restored = restore(&receiver).unwrap();
+    restored
+        .install_accepted_roster(
+            roster_at(4, named("alice"), false, vec![named("alice"), named("bob")]),
+            ROSTER_DIGEST,
+        )
+        .unwrap();
+    assert_eq!(restored.status(), ReceiverStatus::Active);
+    assert_eq!(
+        restored.receive(&context(4, 0), &named("alice"), [3; DIGEST_LEN]),
+        ReceiveDisposition::Accepted { event_id: 1 }
+    );
+}
+
+#[test]
+fn a_terminal_receiver_state_that_carries_entries_is_refused() {
+    // Take a live state that holds an accepted entry, then mark its embedded
+    // roster closed. A closed roster must carry no accepted entries.
+    let live = bob_receiver_at_r2();
+    let mut bytes = live.encode_state().unwrap();
+    let roster_domain = b"Tacenta Group Roster v1".len();
+    let receiver_domain = b"Tacenta Group Receiver State v1".len();
+    let roster_start = receiver_domain + 4;
+    let authority = named("alice");
+    let closed_at = roster_start
+        + roster_domain
+        + 4
+        + GROUP_ID_LEN
+        + 8
+        + 4
+        + DIGEST_LEN
+        + 4
+        + authority.identity().len()
+        + 4
+        + authority.device().len()
+        + 4;
+    assert_eq!(
+        bytes[closed_at], 0,
+        "the offset must point at the closed byte"
+    );
+    bytes[closed_at] = 1;
+    assert_eq!(
+        GroupReceiver::decode_state(&bytes, roster_commitment, payload_commitment).map(|_| ()),
+        Err(Error::NonCanonical)
+    );
+}
