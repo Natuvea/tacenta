@@ -1,6 +1,6 @@
 # 0127 — bounded group roster member order
 
-> Clarifies 0092.
+> Clarifies 0092. Amended by 0135.
 
 ## Decision
 

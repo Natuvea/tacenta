@@ -1,5 +1,7 @@
 # 0109 — bounded group relay acceptance
 
+> Amended by 0135.
+
 ## Decision
 
 After a relay accepts an exact group handoff, the client records a `TCGA`

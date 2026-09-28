@@ -1,5 +1,7 @@
 # 0106 — bounded group handoff reservation
 
+> Amended by 0134 and 0135.
+
 ## Decision
 
 Before dispatching a prepared group ciphertext, the client records a `TCGH`

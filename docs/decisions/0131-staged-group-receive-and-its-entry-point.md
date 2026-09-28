@@ -1,7 +1,7 @@
 # 0131 — staged group receive and its entry point
 
 Amends 0096, 0098, 0099 and 0107, whose text described an acknowledgement
-order the live client did not follow.
+order the live client did not follow. Amended by 0135.
 
 ## Decision
 

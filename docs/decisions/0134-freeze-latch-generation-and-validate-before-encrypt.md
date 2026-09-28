@@ -1,6 +1,6 @@
 # 0134 — freeze latch, monotonic generations, validate before encrypt
 
-Amends 0091, 0098, 0106, 0117 and 0124.
+Amends 0091, 0098, 0106, 0117 and 0124. Amended by 0135.
 
 ## Decision
 
