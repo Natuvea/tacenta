@@ -319,4 +319,21 @@ mod retry_and_scope_tests {
         assert_eq!(now.generation, 2);
         assert!(now.active.is_empty());
     }
+
+    /// The statement names the account by its directory handle, which is
+    /// lower-case. A caller that spells the username differently must still get
+    /// a statement for `acme/alice`, not for a handle no directory entry has.
+    #[tokio::test]
+    async fn a_differently_spelled_username_is_signed_under_the_canonical_handle() {
+        let (store, service, t) = fixture();
+        let statement = service
+            .link_device_binding(&t, " Alice ", 0, [1; 32], b(1, 1))
+            .await
+            .unwrap();
+        assert_eq!(decode(&service, &statement).account_handle, "acme/alice");
+        assert_eq!(
+            store.handle(&t, "alice").await.unwrap().as_deref(),
+            Some("acme/alice")
+        );
+    }
 }

@@ -602,3 +602,25 @@ async fn idempotency_is_scoped_and_conflicts_are_typed_on_postgres() {
         Some(first)
     );
 }
+
+/// The handle a hosted inventory statement names is the directory's, which is
+/// lower-case whatever spelling the caller used.
+#[tokio::test]
+async fn the_handle_uses_the_normalized_username_on_postgres() {
+    let _serial = db_serial();
+    let Some(store) = store().await else {
+        eprintln!("skipping: set TACENTA_TEST_DATABASE_URL to run the Postgres tests");
+        return;
+    };
+    let (tenant, _) = store
+        .sign_up_tenant("Acme", "admin@acme.example", "correct horse")
+        .await
+        .unwrap();
+    for spelling in ["alice", "Alice", " ALICE "] {
+        assert_eq!(
+            store.handle(&tenant.id, spelling).await.unwrap().as_deref(),
+            Some("acme/alice"),
+            "{spelling:?}"
+        );
+    }
+}

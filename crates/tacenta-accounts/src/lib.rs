@@ -562,10 +562,11 @@ impl Accounts {
     /// to address the user, `"<tenant-username>/<username>"` (e.g.
     /// `acme/alice`). `None` if the tenant is unknown. This is where the
     /// account layer maps its per-tenant identity onto the tenant-agnostic
-    /// directory (decision record 0033).
+    /// directory (decision record 0033). The username is normalized like every
+    /// other account lookup, so any spelling of it gives the one handle.
     pub fn handle(&self, tenant: &TenantId, username: &str) -> Option<String> {
         let tenant_username = &self.tenants.get(tenant)?.username;
-        Some(format!("{tenant_username}/{username}"))
+        Some(format!("{tenant_username}/{}", normalize(username)))
     }
 
     /// The stored device inventory for an existing account. A newly-created
@@ -921,6 +922,21 @@ mod tests {
             .sign_up_tenant("acme", "admin@acme.example", "correct horse")
             .unwrap();
         (t.id, key)
+    }
+
+    #[test]
+    fn the_directory_handle_uses_the_normalized_username() {
+        // Accounts are stored under the trimmed, lower-cased username, and so
+        // is the directory entry, so every spelling must give the one handle.
+        let mut accounts = Accounts::new();
+        let (tenant, _) = tenant(&mut accounts);
+        for spelling in ["alice", "Alice", " ALICE "] {
+            assert_eq!(
+                accounts.handle(&tenant, spelling).as_deref(),
+                Some("acme/alice"),
+                "{spelling:?}"
+            );
+        }
     }
 
     #[test]

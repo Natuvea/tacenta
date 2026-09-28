@@ -417,7 +417,9 @@ impl PgAccounts {
     }
 
     /// The directory handle for a `(tenant, username)`,
-    /// `"<tenant-username>/<username>"`, or `None` if the tenant is unknown.
+    /// `"<tenant-username>/<username>"`, or `None` if the tenant is unknown. The
+    /// username is normalized like every other account lookup, so any spelling
+    /// of it gives the one handle.
     pub async fn handle(
         &self,
         tenant: &TenantId,
@@ -428,7 +430,7 @@ impl PgAccounts {
                 .bind(tenant.as_str())
                 .fetch_optional(&self.pool)
                 .await?;
-        Ok(tenant_username.map(|t| format!("{t}/{username}")))
+        Ok(tenant_username.map(|t| format!("{t}/{}", crate::normalize(username))))
     }
 
     /// Read a user's durable device inventory. Existing accounts without a

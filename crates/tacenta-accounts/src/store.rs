@@ -291,6 +291,7 @@ impl AccountStore {
     }
 
     /// The directory handle for a `(tenant, username)`, if the tenant exists.
+    /// The username is normalized, so any spelling of it gives the one handle.
     pub async fn handle(
         &self,
         tenant: &TenantId,
