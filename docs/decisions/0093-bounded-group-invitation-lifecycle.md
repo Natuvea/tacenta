@@ -1,5 +1,7 @@
 # 0093 — bounded group invitation lifecycle
 
+> Amended by 0128.
+
 ## Decision
 
 The bounded group experiment records an invitation as a product policy record

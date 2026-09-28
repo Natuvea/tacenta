@@ -1,5 +1,7 @@
 # 0095 — bounded group logical sends and retries
 
+> Amended by 0129.
+
 ## Decision
 
 A bounded group logical send is an immutable product record keyed by

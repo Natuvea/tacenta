@@ -1,5 +1,7 @@
 # 0114 — bounded group receiver state codec
 
+> Amended by 0130.
+
 ## Decision
 
 The bounded receiver has a versioned local-state codec containing its accepted

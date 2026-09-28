@@ -1,5 +1,7 @@
 # 0092 — bounded group roster inputs
 
+> Amended by 0127.
+
 ## Decision
 
 The bounded group experiment has a product-owned, canonical roster preimage.
