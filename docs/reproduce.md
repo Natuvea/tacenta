@@ -87,7 +87,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 # The Postgres store is behind a feature; compile-check it (its integration
-# tests need a database -- see the note below).
+# tests need a database -- see the note below). CI runs this same command.
 cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/postgres" --all-targets -- -D warnings
 ```
 

@@ -18,6 +18,10 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # The Postgres store is behind a feature none of the commands here turn
+      # on (decision 0039). This keeps it compiling and lint-clean; its
+      # database tests are not run here.
+      - run: cargo clippy --locked -p tacenta-accounts -p tacenta-server --features tacenta-server/postgres --all-targets -- -D warnings
       - run: cargo test --locked --workspace
 
   # The lifecycle carve-out is a product dependency change.  Keep a native
