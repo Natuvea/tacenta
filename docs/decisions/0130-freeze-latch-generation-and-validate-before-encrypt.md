@@ -5,7 +5,10 @@ Amends 0091, 0098, 0106, 0117 and 0124.
 ## Decision
 
 **Freeze is a latch.** Any commit that is not `committed` (`failed` or
-`unknown`) latches the store the coordinator holds. While it is latched no
+`unknown`) latches the store the coordinator holds: `GroupClient::open` wraps
+every `OperationStore` it is given in a `DurableStore`, so no store escapes it.
+The free functions of `group_operations` take any store and latch only when the
+store does; a plain test store does not. While it is latched no
 snapshot is published, no pairwise operation starts and no dispatch happens:
 every preparation, reservation, dispatch and receive returns `frozen` before it
 encrypts, decrypts or sends. The latch is cleared only by `recover`, which reads
@@ -57,7 +60,8 @@ follow the rule above.
   the retry budget documented in 0124 to two sends.
 - Record acceptance of the final attempt. Needs a group-crate change
   (`record_relay_accepted` from `exhausted_unknown` when three attempts are
-  reserved, and the matching `TCGA` recovery); named in the report, not done here.
+  reserved, and the matching `TCGA` recovery, which today requires
+  `handed_off`); named in the report, not done here.
 
 ## The five questions
 

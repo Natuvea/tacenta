@@ -25,15 +25,24 @@ for the terminal entries that remain, which is the evidence 0126 requires for a
 cancelled control.
 
 Plaintext that failed authentication or parsing is not retained. A malformed or
-refused group payload leaves a `TCGM` record of exactly 37 bytes: the state
-effect, the plaintext length as a big-endian `u32`, and its 32-byte payload
-commitment. A `TCGR` receive record carries the encoded application context
+refused group payload leaves a `TCGM` record of exactly 41 bytes: the tag, the
+state effect, the plaintext length as a big-endian `u32`, and its 32-byte
+payload commitment. A `TCGR` receive record carries the encoded application context
 only for an accepted context (at most the 2,048-byte context bound of 0104);
 for duplicate, deferred and refused dispositions it carries the commitment and
 the disposition and no context bytes. The receiver's own bounded state
 (`application_state`, 0113 and 0114) remains the authority for deduplication
 and deferral; the `inbox` and `dedup` collections are audit records, and no
 recovery reads them.
+
+The application outbox transcript is replayed one logical send at a time, with
+the latest cancellation applied to each send before the next is inserted. The
+earlier whole-transcript replay cancelled only afterwards, so sends that a roster
+change had already cancelled still counted toward the live cap of eight during
+the replay, and a group with more than eight sends across a cancellation could
+not be recovered even though it had been running correctly. That defect existed
+before this record; the compaction above depends on the replay, so it is fixed
+here.
 
 The control outbox refuses the ninth live handoff with an explicit
 `outbox_full`, exactly as the application outbox refuses the ninth live send.
@@ -80,7 +89,7 @@ every control handoff dispatched.
 2. **Is the behaviour owned by a written specification?** This record; the
    record grammar is product-owned and still has no vectors (CR-12).
 3. **Can the security claim be reproduced?** Tests use these literals directly:
-   64, 512, 8, 16, 24 and 37, none derived from a constant.
+   64, 512, 8, 16, 24 and 41, none derived from a constant.
 4. **Does it preserve wire compatibility with a named profile?** No wire bytes
    change. The unreleased control-outbox state format moves to v2.
 5. **Product coupling entering the core?** No.

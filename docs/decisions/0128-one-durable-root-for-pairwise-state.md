@@ -65,8 +65,12 @@ also a reuse of one message key for two plaintexts.
    `export_state` and `encrypt`.
 2. **Is the behaviour owned by a written specification?** This record.
 3. **Can the security claim be reproduced?** `group_client::tests::
-   a_direct_message_between_group_commits_survives_a_restart` reproduces the
-   loss at head form and shows both messages received after the change.
+   a_direct_message_between_group_commits_survives_a_restart` runs the sequence
+   above against a real relay and provider, with and without the interleaved
+   direct message, and requires the second group message to be received in both.
+   With the write-through removed it receives 0 where 1 is expected, the number
+   the review recorded. `a_received_direct_message_is_committed_before_it_is_acknowledged`
+   covers the receive side.
 4. **Does it preserve wire compatibility with a named profile?** Yes; no wire
    byte changes.
 5. **Product coupling entering the core?** No; nothing in the core changes.

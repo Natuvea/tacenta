@@ -34,30 +34,48 @@ the `commit_*` variants that only tests call are compiled under `cfg(test)`.
 
 **Entry point.** `group_client::GroupClient` (experimental, public, not in the
 SDK surface manifest, not exported by any binding) takes a `Client` by value
-together with an `OperationStore`. It is the only owner of the mailbox and of
-the pairwise state while it lives, so the plain `Client::receive`,
-`drain` and `inbound` cannot be used to acknowledge group traffic ahead of a
-commit: the compiler, not a flag, keeps them out. Its methods are the
-non-test callers of the coordinator functions: `open`, `recover`,
-`create_group`, `join_group`, `await_group`, `send_direct`, `receive`,
-`send_group`, `install_roster`, `dispatch_control`, `invite`,
-`accept_invitation`, `revoke_invitation`.
+together with an `OperationStore`, which it wraps in a `DurableStore` so that
+every store latches (0130). It is the only owner of the mailbox and of the
+pairwise state while it lives, so the plain `Client::receive`, `drain` and
+`inbound` cannot be used to acknowledge group traffic ahead of a commit: the
+compiler, not a flag, keeps them out. Its methods are the non-test callers of
+the coordinator functions: `open`, `recover`, `create_group`, `join_group`,
+`await_group`, `send_direct`, `receive`, `receive_next`, `send_group`,
+`dispatch_pending_group_sends`, `install_roster`, `dispatch_pending_controls`,
+`invite`, `accept_invitation` and `revoke_invitation`. The `commit_*` variants
+that only tests call, and the GC-03 fault harness (a model of the acknowledgement
+order over opaque bytes, which never touches a real provider or store), are
+compiled under `cfg(test)`; the blanket `allow(dead_code)` on the coordinator
+modules is gone. `open` on an empty store publishes the first snapshot with the
+client's provider state, so the durable root exists before the first operation
+(0128). A pin on the authority is kept by the coordinator: an invitation
+bootstrap is recorded only from the pinned authority.
 
-**What is still not reachable, exactly.**
+**What is still not reachable or not done, exactly.**
 
-- A member whose source roster is not revision zero cannot derive a
-  `RosterView` from an invitation bootstrap: the group crate constructs a view
-  only from a genesis roster or from a serialized checkpoint. Such a bootstrap
-  is recorded and refused as unusable (a group-crate follow-up is named in the
-  report).
+- An invitee does not derive its roster view from a bootstrap. The bootstrap is
+  recorded (`await_group`, then `receive`) and reported with its source roster;
+  the caller then attaches the genesis roster with `join_group`. Deriving the
+  view durably in the commit of the bootstrap record, and from a source roster
+  that is not revision zero, needs a group-crate constructor (a view can today
+  be built only from a genesis roster or a serialized checkpoint); the report
+  names it.
+- The receiver state of a member that a roster removed, or of a closed group,
+  cannot be restored by the group crate (CR-06). `join_group` after a restart
+  substitutes an inert receiver over the accepted roster for such a member,
+  which refuses every application context as `not_active`, as it would have; its
+  dedup history is not restored.
 - The delivery cursor of the snapshot is written by nobody. An event returned by
   `receive` is committed before it is returned, but a crash between the commit
   and the caller's use of the event does not redeliver it: the relay redelivers
   the item, the durable provider state has already consumed its key, and the
   decrypt is refused. Redelivery of committed but unconsumed events (the
-  GC-06 event-consumption boundary) is open.
-- The server-visible `kind` is a routing label, not an authenticated field
-  (see the amendment to 0116).
+  GC-06 event-consumption boundary) is open, and so is the same window for a
+  direct message (0128).
+- The envelope `kind` is a routing label, not an authenticated field (see the
+  amendment to 0116).
+- Expiry is evaluated at the explicit logical time the caller passes; there is
+  no clock mapping (GC-04, CR-17).
 
 ## Considered
 
@@ -81,8 +99,11 @@ non-test callers of the coordinator functions: `open`, `recover`,
    review names the missing vectors for them; this record does not close it).
 3. **Can the security claim be reproduced?** The live traces in
    `crates/tacenta-client` (`group_client::tests`) run a real provider, relay
-   and directory; the wrong-sender and wrong-device refusals there take their
-   identity from the provider outcome.
+   and directory: `a_crash_between_receive_and_commit_redelivers_the_group_message`,
+   `recovery_resets_the_provider_state_so_the_redelivery_decrypts_again` and
+   `the_live_receive_takes_the_peer_and_effect_from_the_provider_outcome`. The
+   wrong-sender and wrong-device refusals there take their identity from the
+   provider outcome.
 4. **Does it preserve wire compatibility with a named profile?** Yes: no wire
    byte changes.
 5. **Is this protocol functionality, or product coupling trying to enter the

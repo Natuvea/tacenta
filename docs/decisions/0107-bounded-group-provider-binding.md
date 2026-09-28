@@ -13,7 +13,8 @@ After pairwise decryption, the adapter decodes the bounded application context
 and passes that derived member to the durable receiver coordinator. A malformed
 group plaintext creates a terminal `Malformed` disposition recorded in a
 `TCGM` inbox record with the provider state effect, the plaintext length and
-its payload commitment (37 bytes; the plaintext itself is not retained, 0129),
+its payload commitment (41 bytes with the tag; the plaintext itself is not
+retained, 0129),
 committed together with the provider state. It creates no application event, but
 its required state transition is retained before an ACK may cross it.
 
