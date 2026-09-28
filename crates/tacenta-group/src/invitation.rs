@@ -1,6 +1,8 @@
 //! Product policy for the bounded invitation lifecycle.
 
-use crate::{DIGEST_LEN, Error, GroupId, Member, POLICY_VERSION_V1, RESERVED_REVISION, Roster};
+use crate::{
+    DIGEST_LEN, Error, GroupId, MAX_MEMBERS, Member, POLICY_VERSION_V1, RESERVED_REVISION, Roster,
+};
 
 const INVITATION_BOOK_STATE_DOMAIN: &[u8] = b"Tacenta Group Invitation Book State v1";
 const INVITATION_BOOTSTRAP_DOMAIN: &[u8] = b"Tacenta Group Invitation Bootstrap v1";
@@ -561,9 +563,12 @@ impl InvitationBook {
         if now >= invitation.expires_at {
             return Err(Error::Expired);
         }
+        // Decision 0128: one device per identity, so any active member with the
+        // target's identity (the exact member or another device of it) blocks
+        // the invitation.
         if active_members
             .iter()
-            .any(|member| member == &invitation.target)
+            .any(|member| member.identity() == invitation.target.identity())
         {
             return Err(Error::Conflict);
         }
@@ -576,6 +581,9 @@ impl InvitationBook {
                 return Ok(&self.invitations[position]);
             }
             return Err(Error::Conflict);
+        }
+        if active_members.len() >= MAX_MEMBERS {
+            return Err(Error::TooManyMembers);
         }
         if self.invitations.len() == MAX_INVITATION_RECORDS {
             return Err(Error::OutboxFull);
@@ -657,12 +665,20 @@ impl InvitationBook {
         invitation.expire_if_due(now);
         match invitation.status {
             InvitationStatus::AcceptedPendingAdmission => {
+                // An admission is a successor of the source roster or of a
+                // later one (decision 0128).
+                if accepted_revision <= invitation.source_revision {
+                    return Err(Error::StaleSource);
+                }
                 invitation.status = InvitationStatus::Admitted {
                     revision: accepted_revision,
                 };
                 Ok(invitation)
             }
-            InvitationStatus::Admitted { .. } => Ok(invitation),
+            InvitationStatus::Admitted { revision } if revision == accepted_revision => {
+                Ok(invitation)
+            }
+            InvitationStatus::Admitted { .. } => Err(Error::Conflict),
             InvitationStatus::Pending => Err(Error::WrongDisposition),
             InvitationStatus::Revoked => Err(Error::Revoked),
             InvitationStatus::Expired => Err(Error::Expired),
