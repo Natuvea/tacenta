@@ -79,6 +79,9 @@ pub enum Error {
     Closed,
     RetryExhausted,
     OutboxFull,
+    StaleRevision,
+    SequenceOrder,
+    SequenceExhausted,
 }
 
 impl fmt::Display for Error {
@@ -107,6 +110,9 @@ impl fmt::Display for Error {
             Self::Closed => "bounded group is closed",
             Self::RetryExhausted => "bounded group retry budget is exhausted",
             Self::OutboxFull => "bounded group outbox is full",
+            Self::StaleRevision => "bounded group send is older than the applied roster revision",
+            Self::SequenceOrder => "bounded group send sequence is not above the retained maximum",
+            Self::SequenceExhausted => "bounded group send sequence space is exhausted",
         })
     }
 }

@@ -294,3 +294,151 @@ fn the_successor_roster_carries_the_cap_and_one_device_rules_admission_needs() {
         Err(Error::NonCanonical)
     );
 }
+
+// ---------------------------------------------------------------------------
+// CR-12 (c) and (d): stale sends and sequence allocation (decision 0129)
+// ---------------------------------------------------------------------------
+
+fn send_at(revision: u64, sender: &Member, sequence: u64, payload: &[u8]) -> LogicalSend {
+    let recipient = named("bob");
+    let mut members = vec![sender.clone(), recipient.clone()];
+    members.sort_by(|left, right| {
+        left.identity()
+            .cmp(right.identity())
+            .then_with(|| left.device().cmp(right.device()))
+    });
+    let roster = roster_at(revision, sender.clone(), false, members);
+    LogicalSend::new(
+        &roster,
+        [5; DIGEST_LEN],
+        sender.clone(),
+        sequence,
+        vec![recipient],
+        payload.to_vec(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_outbox_refuses_a_send_older_than_the_revision_it_applied() {
+    let alice = named("alice");
+    let mut outbox = GroupOutbox::new(group());
+    outbox.cancel_for_newer_roster(2);
+    assert_eq!(
+        outbox.record(send_at(1, &alice, 0, b"late")),
+        Err(Error::StaleRevision)
+    );
+    assert!(outbox.sends().is_empty());
+    assert_eq!(
+        outbox.record(send_at(2, &alice, 0, b"current")),
+        Ok(OutboxDisposition::Inserted)
+    );
+    assert_eq!(
+        outbox.record(send_at(3, &alice, 0, b"ahead")),
+        Ok(OutboxDisposition::Inserted)
+    );
+}
+
+#[test]
+fn the_applied_revision_never_moves_back() {
+    let alice = named("alice");
+    let mut outbox = GroupOutbox::new(group());
+    outbox.cancel_for_newer_roster(3);
+    outbox.cancel_for_newer_roster(2);
+    assert_eq!(
+        outbox.record(send_at(2, &alice, 0, b"late")),
+        Err(Error::StaleRevision)
+    );
+}
+
+#[test]
+fn an_exact_replay_of_a_retained_send_is_still_a_duplicate_after_the_roster_moves() {
+    let alice = named("alice");
+    let mut outbox = GroupOutbox::new(group());
+    outbox.record(send_at(1, &alice, 0, b"first")).unwrap();
+    outbox.cancel_for_newer_roster(2);
+    assert_eq!(
+        outbox.record(send_at(1, &alice, 0, b"first")),
+        Ok(OutboxDisposition::Duplicate)
+    );
+    assert_eq!(
+        outbox.record(send_at(1, &alice, 0, b"changed")),
+        Err(Error::Conflict)
+    );
+}
+
+#[test]
+fn next_sequence_starts_at_zero_and_follows_the_highest_retained_send() {
+    let alice = named("alice");
+    let mut outbox = GroupOutbox::new(group());
+    assert_eq!(outbox.next_sequence(1, &alice), Ok(0));
+    outbox.record(send_at(1, &alice, 0, b"a")).unwrap();
+    assert_eq!(outbox.next_sequence(1, &alice), Ok(1));
+    outbox.record(send_at(1, &alice, 7, b"b")).unwrap();
+    assert_eq!(outbox.next_sequence(1, &alice), Ok(8));
+}
+
+#[test]
+fn sequences_are_allocated_per_revision_and_per_sender() {
+    let alice = named("alice");
+    let carol = named("carol");
+    let mut outbox = GroupOutbox::new(group());
+    outbox.record(send_at(1, &alice, 4, b"a")).unwrap();
+    assert_eq!(outbox.next_sequence(1, &alice), Ok(5));
+    assert_eq!(outbox.next_sequence(2, &alice), Ok(0));
+    assert_eq!(outbox.next_sequence(1, &carol), Ok(0));
+}
+
+#[test]
+fn a_new_send_must_use_a_sequence_above_every_retained_one() {
+    let alice = named("alice");
+    let mut outbox = GroupOutbox::new(group());
+    outbox.record(send_at(1, &alice, 5, b"five")).unwrap();
+    for sequence in [0, 3, 4] {
+        assert_eq!(
+            outbox.record(send_at(1, &alice, sequence, b"reused")),
+            Err(Error::SequenceOrder),
+            "sequence {sequence}"
+        );
+    }
+    // The retained ID keeps its own rules: an exact replay is a duplicate and
+    // changed data is a conflict, not an ordering error.
+    assert_eq!(
+        outbox.record(send_at(1, &alice, 5, b"five")),
+        Ok(OutboxDisposition::Duplicate)
+    );
+    assert_eq!(
+        outbox.record(send_at(1, &alice, 5, b"other")),
+        Err(Error::Conflict)
+    );
+    assert_eq!(
+        outbox.record(send_at(1, &alice, 6, b"six")),
+        Ok(OutboxDisposition::Inserted)
+    );
+    // Another sender or another revision has its own counter.
+    assert_eq!(
+        outbox.record(send_at(1, &named("carol"), 0, b"carol")),
+        Ok(OutboxDisposition::Inserted)
+    );
+    assert_eq!(
+        outbox.record(send_at(2, &alice, 0, b"new revision")),
+        Ok(OutboxDisposition::Inserted)
+    );
+}
+
+#[test]
+fn a_sequence_that_cannot_be_followed_reports_exhaustion() {
+    let alice = named("alice");
+    let mut outbox = GroupOutbox::new(group());
+    outbox
+        .record(send_at(1, &alice, u64::MAX, b"last"))
+        .unwrap();
+    assert_eq!(
+        outbox.next_sequence(1, &alice),
+        Err(Error::SequenceExhausted)
+    );
+    assert_eq!(
+        outbox.record(send_at(1, &alice, u64::MAX, b"other")),
+        Err(Error::Conflict)
+    );
+}
