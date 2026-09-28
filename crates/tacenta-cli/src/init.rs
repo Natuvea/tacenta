@@ -69,7 +69,7 @@ fn readme(language: &str, build: &str, run: &str) -> File {
              the sample. The key is a secret: keep this directory out of version control,\n\
              or move the key into your app's configuration before committing.\n\n\
              The SDK is not on a package registry yet, so it is built from a checkout of\n\
-             the `tacenta` repository, as https://tacenta.com/sdk/{language} describes:\n\n\
+             the `tacenta` repository, as https://tacenta.com/sdk/{language}/ describes:\n\n\
              ```bash\n{build}\n```\n\n\
              Then, from this directory:\n\n\
              ```bash\n{run}\n```\n\n\

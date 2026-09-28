@@ -132,9 +132,9 @@ async fn try_cmd(explicit_key: Option<String>) -> Result<(), String> {
     // before the harder step of writing app code.
     println!("\n  next:");
     println!("    chat with your own words   tacenta chat");
-    println!("    build it into an app       https://tacenta.com/sdk");
-    println!("    what is proven             https://tacenta.com/assurance");
-    println!("    tell us what broke         https://tacenta.com/sdk#feedback");
+    println!("    build it into an app       https://tacenta.com/sdk/");
+    println!("    what is proven             https://tacenta.com/assurance/");
+    println!("    tell us what broke         https://tacenta.com/sdk/#feedback");
     Ok(())
 }
 
@@ -219,9 +219,9 @@ async fn tenant(api_key: &str) -> Result<Tacenta, String> {
 
 fn print_chat_next() {
     println!("\n  next:");
-    println!("    build it into an app   https://tacenta.com/sdk");
-    println!("    what is proven         https://tacenta.com/assurance");
-    println!("    tell us what broke     https://tacenta.com/sdk#feedback");
+    println!("    build it into an app   https://tacenta.com/sdk/");
+    println!("    what is proven         https://tacenta.com/assurance/");
+    println!("    tell us what broke     https://tacenta.com/sdk/#feedback");
 }
 
 /// A one-line map of the getting-started path with the current step marked, so
@@ -719,8 +719,8 @@ fn init_cmd(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         "    build and run it          see {}/README.md",
         dir.display()
     );
-    println!("    the {language} page         https://tacenta.com/sdk/{language}");
-    println!("    tell us what broke        https://tacenta.com/sdk#feedback");
+    println!("    the {language} page         https://tacenta.com/sdk/{language}/");
+    println!("    tell us what broke        https://tacenta.com/sdk/#feedback");
     Ok(())
 }
 

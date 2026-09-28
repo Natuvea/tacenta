@@ -924,13 +924,11 @@ mod tests {
         );
     }
 
-    /// **A v1 prekey store must still upgrade.** `from_bytes` accepts v1, v2
-    /// and v3; `to_bytes` only ever writes the current version. So a v1 blob
-    /// decodes fine and re-encodes as the current version, which a naive
-    /// canonicity check would refuse -- breaking upgrade for every store
-    /// written before the last-resort fingerprints existed.
+    /// A v1 prekey store fails closed. It predates the replay evidence needed
+    /// to bind a last-resort handshake to its current secret key, so importing
+    /// it would make a persisted store claim protections it cannot provide.
     #[test]
-    fn a_v1_prekey_store_still_imports() {
+    fn a_v1_prekey_store_is_refused_without_mutation() {
         let mut rng = rand::rngs::OsRng.unwrap_err();
         let mut alice = OpenParty::generate("alice", 1, &mut rng).expect("generate");
         now(alice.publish_bundle(&mut rng)).unwrap();
@@ -947,10 +945,13 @@ mod tests {
         v1.truncate(v1.len() - 6);
 
         let mut fresh = OpenParty::generate("alice2", 1, &mut rng).expect("generate");
+        now(fresh.publish_bundle(&mut rng)).expect("fresh bundle");
+        let before = fresh.export_prekeys().expect("fresh export");
         assert!(
-            fresh.import_prekeys(&v1).is_ok(),
-            "a v1 store must upgrade, not be refused as non-canonical"
+            fresh.import_prekeys(&v1).is_err(),
+            "a v1 store lacks the replay evidence required for safe import"
         );
+        assert_eq!(fresh.export_prekeys().expect("unchanged export"), before);
     }
 
     #[test]
