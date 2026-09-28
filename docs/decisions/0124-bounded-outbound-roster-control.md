@@ -29,3 +29,10 @@ ciphertext can lose the authenticated control boundary across a crash.
 
 A production group protocol may replace pairwise fan-out with signed epoch
 distribution, but must keep an explicit durable control-delivery boundary.
+
+## Amendment (0129, 0130)
+
+The control outbox no longer keeps a finished handoff for the life of the
+group: at most 8 live and 16 retained terminal handoffs (0129). The
+three-attempt limit follows the group outbox exactly: the third reservation is
+the final attempt and enters `exhausted_unknown` (0106, 0130).

@@ -30,3 +30,12 @@ during offline fan-out or repeated membership changes.
 
 A measured production profile may choose different per-group and global
 backpressure budgets, with a versioned storage and scheduling policy.
+
+## Amendment (0129)
+
+"Terminal records remain attributable in durable storage" is bounded: the
+records of the 16 most recent terminal logical sends are retained, and the
+records of older terminal sends are dropped in the commit that first exceeds
+that bound. The live bound of eight is unchanged, and terminal records never
+consume a live slot. The control outbox follows the same rule with its own
+bounds (8 live, 16 retained terminal).
