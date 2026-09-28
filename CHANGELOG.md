@@ -7,6 +7,23 @@ the order of a release). Dates are the day the tag was pushed. Release tags are
 cut in the release pipeline, not in this repository. Earlier tags (v1.0.0 to v1.1.2) predate this file; the
 commits carry their story.
 
+## Unreleased
+
+- Experimental, not wired to any client, server route or SDK surface: hosted
+  device-inventory storage and signing (decision 0127).
+  - `tacenta-accounts` stores a per-account device inventory (in memory, and in
+    Postgres behind the `postgres` feature with migrations 0005 and 0006),
+    with exact-predecessor generations and idempotent retries.
+  - `tacenta-server` gains an inventory issuer, whose signing key file is
+    created owner-only and once and is refused if others can read it, and a
+    service that signs the committed current state and refuses a superseded
+    retry. On Windows the key file's permissions are not enforced.
+  - The directory handle of an account is now built from its normalized
+    username; `handle` used to echo the spelling it was given.
+  - tacenta-core moves to `5a8f90c1`, which carries the inventory statements.
+  - CI compile-checks and lints the `postgres` feature. The database tests
+    still do not run in CI.
+
 ## v1.12.1 (2026-09-11)
 
 - tacenta-core moves to `fb89b15`.
