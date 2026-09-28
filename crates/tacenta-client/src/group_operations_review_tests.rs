@@ -1109,3 +1109,71 @@ fn compaction_and_recovery_leave_another_groups_records_alone() {
     assert_eq!(recovered_other.sends().len(), 2);
     assert_eq!(recovered_other, other_outbox);
 }
+
+/// A store that reports itself frozen but would accept every write, to show the
+/// coordinator refuses before it commits and not only when the store does.
+struct FrozenButWilling {
+    commits: usize,
+}
+
+impl OperationStore for FrozenButWilling {
+    fn commit(&mut self, _snapshot: &OperationSnapshot) -> CommitOutcome {
+        self.commits += 1;
+        CommitOutcome::Committed
+    }
+    fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
+        Ok(None)
+    }
+    fn is_frozen(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_frozen_store_is_refused_before_any_commit_is_attempted() {
+    let mut store = FrozenButWilling { commits: 0 };
+    let mut snapshot = OperationSnapshot::empty(1);
+    let mut outbox = GroupOutbox::new(gid());
+    assert_eq!(
+        commit_provider_state(&mut store, &mut snapshot, vec![1]),
+        Err(GroupOperationError::Frozen)
+    );
+    assert_eq!(
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send_number(1)),
+        Err(GroupOperationError::Frozen)
+    );
+    assert_eq!(store.commits, 0);
+    assert_eq!(snapshot.generation, 1);
+}
+
+#[test]
+fn a_send_that_exhausts_its_attempts_is_terminal_and_compacted_at_that_reservation() {
+    let mut store = committed();
+    let mut snapshot = OperationSnapshot::empty(0);
+    let mut outbox = GroupOutbox::new(gid());
+    // Seventeen sends each reach `exhausted_unknown` at their third
+    // reservation, which is the only commit that makes them terminal.
+    for sequence in 0..17u64 {
+        let send = send_number(sequence);
+        let id = send.id.clone();
+        commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+        commit_outbox_prepared_ciphertext(
+            &mut store,
+            &mut snapshot,
+            &mut outbox,
+            &id,
+            &bob(),
+            vec![sequence as u8; 40],
+            vec![1],
+        )
+        .unwrap();
+        for _ in 0..3 {
+            commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &bob())
+                .unwrap();
+        }
+    }
+    assert_eq!(outbox.sends().len(), 16);
+    assert!(outbox.send(&send_number(0).id).is_err());
+    assert!(outbox.send(&send_number(1).id).is_ok());
+    assert_eq!(recover_group_outbox(&snapshot, gid()).unwrap(), outbox);
+}

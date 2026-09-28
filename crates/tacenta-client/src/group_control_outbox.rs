@@ -536,4 +536,117 @@ mod tests {
             Ok(outbox)
         );
     }
+
+    fn decode_after_patching(
+        state: &mut [u8],
+        attempts_from_end: usize,
+        attempts: u8,
+    ) -> Result<Outbox, GroupError> {
+        let at = state.len() - attempts_from_end;
+        state[at] = attempts;
+        Outbox::decode_state(state)
+    }
+
+    #[test]
+    fn a_state_with_an_impossible_attempt_count_is_refused() {
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let payload = GroupPayload::Roster(roster).encode().unwrap();
+        // Each entry ends with attempts, disposition and an eight-byte sequence.
+        let attempts_from_end = 10;
+
+        let mut handed_off = Outbox::default();
+        handed_off
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        handed_off.reserve(&bob(), &payload).unwrap();
+        let mut state = handed_off.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(handed_off));
+        // Handed off with the final attempt's count would be exhausted.
+        assert_eq!(
+            decode_after_patching(&mut state, attempts_from_end, 3),
+            Err(GroupError::Malformed)
+        );
+
+        let mut exhausted = Outbox::default();
+        exhausted
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        for _ in 0..3 {
+            exhausted.reserve(&bob(), &payload).unwrap();
+        }
+        let mut state = exhausted.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(exhausted));
+        // Exhausted before three attempts were reserved cannot have happened.
+        assert_eq!(
+            decode_after_patching(&mut state, attempts_from_end, 2),
+            Err(GroupError::Malformed)
+        );
+    }
+
+    #[test]
+    fn the_entry_bounds_hold_on_encode_and_on_decode() {
+        let roster = |revision: u64| {
+            GroupPayload::Roster(
+                Roster::new(
+                    GroupId::new(*b"bounded-group-id"),
+                    revision,
+                    [0; DIGEST_LEN],
+                    alice(),
+                    POLICY_VERSION_V1,
+                    false,
+                    vec![alice(), bob()],
+                )
+                .unwrap(),
+            )
+            .encode()
+            .unwrap()
+        };
+        // Nine live handoffs cannot be recorded, and cannot be encoded either.
+        let mut outbox = Outbox::default();
+        for revision in 1..=8 {
+            outbox
+                .record_prepared(bob(), roster(revision), vec![revision as u8])
+                .unwrap();
+        }
+        let mut over = outbox.clone();
+        over.handoffs.push(Handoff {
+            recipient: bob(),
+            payload: roster(9),
+            ciphertext: vec![9],
+            attempts_reserved: 0,
+            disposition: Disposition::Prepared,
+            sequence: 9,
+        });
+        assert_eq!(over.encode_state(), Err(GroupError::OutboxFull));
+        // Seventeen terminal handoffs cannot be encoded.
+        let mut terminal = Outbox::default();
+        for revision in 1..=17u64 {
+            terminal.handoffs.push(Handoff {
+                recipient: bob(),
+                payload: roster(revision),
+                ciphertext: vec![revision as u8],
+                attempts_reserved: 1,
+                disposition: Disposition::RelayAccepted,
+                sequence: revision,
+            });
+        }
+        assert_eq!(terminal.encode_state(), Err(GroupError::OutboxFull));
+        // A state that claims more than twenty-four entries is refused before
+        // any entry is read.
+        let mut claim = DOMAIN.to_vec();
+        claim.push(25);
+        assert_eq!(Outbox::decode_state(&claim), Err(GroupError::OutboxFull));
+        let mut claim = DOMAIN.to_vec();
+        claim.push(24);
+        assert_eq!(Outbox::decode_state(&claim), Err(GroupError::Malformed));
+    }
 }

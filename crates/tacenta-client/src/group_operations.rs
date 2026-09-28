@@ -277,7 +277,6 @@ pub(crate) fn commit_logical_intent<S: OperationStore>(
     let intent = send
         .encode_intent()
         .map_err(|_| GroupOperationError::Policy)?;
-    let group_id = send.id.group_id;
     let mut candidate_outbox = outbox.clone();
     let disposition = candidate_outbox
         .record(send)
@@ -290,9 +289,6 @@ pub(crate) fn commit_logical_intent<S: OperationStore>(
     candidate_snapshot
         .outbox
         .push(encode_intent_record(&intent)?);
-    if let Some(compacted) = compact_group_outbox(&mut candidate_snapshot, group_id)? {
-        candidate_outbox = compacted;
-    }
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }
@@ -1230,9 +1226,6 @@ pub(crate) fn commit_outbox_prepared_ciphertext<S: OperationStore>(
         .outbox
         .push(encode_prepared_record(&context, &commitment, ciphertext)?);
     candidate_snapshot.provider_state = provider_state;
-    if let Some(compacted) = compact_group_outbox(&mut candidate_snapshot, id.group_id)? {
-        candidate_outbox = compacted;
-    }
     if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
         return Err(GroupOperationError::Frozen);
     }

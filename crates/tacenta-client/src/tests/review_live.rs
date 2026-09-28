@@ -813,3 +813,76 @@ async fn an_exhausted_generation_counter_refuses_every_preparation_before_it_enc
     );
     assert_eq!(before, alice.export_state().await.unwrap());
 }
+
+#[tokio::test]
+async fn a_latched_store_refuses_a_control_and_an_installation_before_they_encrypt() {
+    let (directory, relay) = start_server().await;
+    let mut alice = connect(directory, relay, "+alice").await;
+    let bob = connect(directory, relay, "+bob").await;
+    let (a, b) = (member(&alice), member(&bob));
+    let (genesis, digest) = genesis_for(&a);
+    // A write in doubt latches the store; nothing that follows may encrypt.
+    let mut store = DurableStore::new(Scripted::new([CommitOutcome::Unknown]));
+    let mut snapshot = OperationSnapshot::empty(0);
+    assert!(
+        crate::group_operations::commit_provider_state(&mut store, &mut snapshot, vec![1]).is_err()
+    );
+    assert!(store.is_frozen());
+    let before = alice.export_state().await.unwrap();
+
+    let mut control = ControlOutbox::default();
+    let r1 = successor(&a, 1, digest, vec![a.clone(), b.clone()]);
+    let result = prepare_outbound_roster_control(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        &mut control,
+        &b,
+        bob.address(),
+        r1.clone(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(GroupLiveError::Frozen)),
+        "{:?}",
+        result.as_ref().map(|_| ())
+    );
+    assert_eq!(
+        before,
+        alice.export_state().await.unwrap(),
+        "a control was encrypted while latched"
+    );
+
+    let mut view = RosterView::accept_genesis(&a, genesis.clone(), digest).unwrap();
+    let mut receiver = GroupReceiver::new(genesis, digest, a.clone());
+    let result = prepare_authority_roster_control(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        AuthorityControlState {
+            view: &mut view,
+            receiver: &mut receiver,
+            logical_sends: &mut [],
+            group_outbox: None,
+            outbox: &mut control,
+            invitation_book: None,
+            admission: None,
+            control_now: 0,
+        },
+        &a,
+        (&b, bob.address()),
+        r1,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(GroupLiveError::Frozen)),
+        "{:?}",
+        result.as_ref().map(|_| ())
+    );
+    assert_eq!(
+        before,
+        alice.export_state().await.unwrap(),
+        "an installation was encrypted while latched"
+    );
+    assert_eq!(view.roster().revision, 0);
+}

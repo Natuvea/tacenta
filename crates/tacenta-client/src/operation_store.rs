@@ -409,4 +409,70 @@ mod tests {
             Some(migrated)
         );
     }
+
+    /// Counts what reaches it and answers from a script.
+    struct Counting {
+        commits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        outcomes: std::collections::VecDeque<CommitOutcome>,
+        durable: Option<OperationSnapshot>,
+    }
+
+    impl OperationStore for Counting {
+        fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+            self.commits
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let outcome = self
+                .outcomes
+                .pop_front()
+                .unwrap_or(CommitOutcome::Committed);
+            if outcome == CommitOutcome::Committed {
+                self.durable = Some(snapshot.clone());
+            }
+            outcome
+        }
+        fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
+            Ok(self.durable.clone())
+        }
+    }
+
+    #[test]
+    fn a_latched_durable_store_does_not_forward_a_commit_to_the_store_under_it() {
+        let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut store = DurableStore::new(Counting {
+            commits: commits.clone(),
+            outcomes: [CommitOutcome::Unknown].into(),
+            durable: None,
+        });
+        assert_eq!(
+            store.commit(&OperationSnapshot::empty(1)),
+            CommitOutcome::Unknown
+        );
+        assert!(store.is_frozen());
+        assert_eq!(
+            store.commit(&OperationSnapshot::empty(2)),
+            CommitOutcome::Failed
+        );
+        assert_eq!(
+            commits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second commit reached the store under the latch"
+        );
+    }
+
+    #[test]
+    fn recovery_raises_the_generation_floor_to_what_the_store_holds() {
+        let mut durable = OperationSnapshot::empty(10);
+        durable.provider_state = vec![1];
+        let mut store = DurableStore::new(Counting {
+            commits: Default::default(),
+            outcomes: Default::default(),
+            durable: Some(durable),
+        });
+        // A caller whose own copy is at 3 still gets a number above 10.
+        assert_eq!(store.next_generation(3), Some(4));
+        assert!(store.recover().unwrap().is_some());
+        assert_eq!(store.next_generation(3), Some(11));
+        assert_eq!(store.next_generation(20), Some(21));
+        assert_eq!(store.next_generation(u64::MAX), None);
+    }
 }

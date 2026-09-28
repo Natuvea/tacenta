@@ -8,6 +8,7 @@ use crate::{Config, DefaultClient};
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use tacenta_core::crypto::Address;
 use tacenta_group::{RecipientDisposition, RosterRefusal};
 use tacenta_wire::Kind;
 
@@ -36,7 +37,6 @@ impl SharedStore {
         self.0.lock().unwrap().snapshot.clone()
     }
 
-    #[allow(dead_code)]
     fn attempted_generations(&self) -> Vec<u64> {
         self.0.lock().unwrap().attempted.clone()
     }
@@ -235,6 +235,10 @@ async fn recovery_resets_the_provider_state_so_the_redelivery_decrypts_again() {
         RosterDisposition::Accepted
     );
     assert_eq!(bob.roster().unwrap().revision, 1);
+    // The store was asked for generation 1 (the first snapshot), then for 2
+    // (the write that failed), and the retry after recovery used a higher
+    // number than the one that was in doubt.
+    assert_eq!(bob_store.attempted_generations(), vec![1, 2, 3]);
 }
 
 fn route_of(client: &DefaultClient) -> DeviceAddr {
@@ -848,4 +852,291 @@ async fn a_removed_member_restarts_with_an_inert_receiver() {
             ..
         }]
     ));
+}
+
+#[tokio::test]
+async fn a_freeze_in_the_middle_of_a_batch_acknowledges_only_the_committed_prefix() {
+    let (directory, relay) = start_server().await;
+    let mut alice = plain(directory, relay, "+alice").await;
+    let bob_config = config(directory, relay, "+bob", 1);
+    let bob_store = SharedStore::default();
+    let mut bob = coordinator(directory, relay, "+bob", &bob_store).await;
+    alice
+        .send_as(bob.address(), b"first", Kind::Dm)
+        .await
+        .unwrap();
+    alice
+        .send_as(bob.address(), b"second", Kind::Dm)
+        .await
+        .unwrap();
+
+    // The first item commits; the write of the second is in doubt and lost.
+    bob_store.script([CommitOutcome::Committed, CommitOutcome::Unknown], false);
+    let inbound = bob.receive(0).await.unwrap();
+    assert!(inbound.frozen);
+    assert_eq!(inbound.direct.len(), 1);
+    assert_eq!(inbound.direct[0].plaintext, b"first");
+    drop(bob);
+
+    // The first was acknowledged with its commit; only the second comes again.
+    let mut bob = restart(&bob_config, &bob_store).await;
+    let inbound = bob.receive(0).await.unwrap();
+    assert_eq!(inbound.direct.len(), 1);
+    assert_eq!(inbound.direct[0].plaintext, b"second");
+    assert_eq!(inbound.dropped, 0);
+}
+
+fn staged(
+    kind: MessageKind,
+    plaintext: Option<Vec<u8>>,
+    authenticated_identity: Option<Vec<u8>>,
+    effect: CryptoStateEffect,
+    provider_state: Vec<u8>,
+) -> crate::StagedItem {
+    crate::StagedItem {
+        from: DeviceAddr::new("+peer", 1),
+        peer: Address::new("+peer", 1),
+        kind,
+        plaintext,
+        authenticated_identity,
+        effect,
+        provider_state,
+    }
+}
+
+#[tokio::test]
+async fn a_terminal_provider_failure_commits_its_state_and_an_unchanged_one_commits_nothing() {
+    let (directory, relay) = start_server().await;
+    let store = SharedStore::default();
+    let mut bob = coordinator(directory, relay, "+bob", &store).await;
+    let generation = bob.generation();
+
+    // The provider refused the ciphertext and changed nothing: nothing to keep.
+    let mut inbound = Inbound::default();
+    bob.commit_item(
+        staged(
+            MessageKind::Group,
+            None,
+            None,
+            CryptoStateEffect::Unchanged,
+            Vec::new(),
+        ),
+        0,
+        &mut inbound,
+    )
+    .unwrap();
+    assert_eq!(inbound.dropped, 1);
+    assert_eq!(bob.generation(), generation);
+
+    // It refused the ciphertext and reached a terminal state that must be kept.
+    bob.commit_item(
+        staged(
+            MessageKind::Group,
+            None,
+            None,
+            CryptoStateEffect::Terminal,
+            vec![7, 7, 7],
+        ),
+        0,
+        &mut inbound,
+    )
+    .unwrap();
+    assert_eq!(inbound.dropped, 2);
+    let durable = store.durable().unwrap();
+    assert_eq!(durable.generation, generation + 1);
+    assert_eq!(durable.provider_state, vec![7, 7, 7]);
+    assert_eq!(durable.inbox.len(), 1);
+    assert_eq!(&durable.inbox[0][..5], b"TCGM\x02");
+    assert_eq!(durable.inbox[0].len(), 41, "no plaintext is kept");
+}
+
+#[tokio::test]
+async fn a_group_item_without_an_authenticated_peer_is_refused_not_attributed() {
+    let (directory, relay) = start_server().await;
+    let alice = plain(directory, relay, "+alice").await;
+    let alice_member = member_of(&alice);
+    let (mut bob, store) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let r1 = bob
+        .next_roster(vec![alice_member.clone(), bob_member])
+        .unwrap();
+    let control = GroupPayload::Roster(r1).encode().unwrap();
+    let mut inbound = Inbound::default();
+    bob.commit_item(
+        staged(
+            MessageKind::Group,
+            Some(control),
+            None,
+            CryptoStateEffect::Advanced,
+            vec![5],
+        ),
+        0,
+        &mut inbound,
+    )
+    .unwrap();
+    assert!(matches!(
+        inbound.items.as_slice(),
+        [GroupReceipt {
+            outcome: GroupOutcome::Refused,
+            ..
+        }]
+    ));
+    assert_eq!(bob.roster().unwrap().revision, 0);
+    assert_eq!(store.durable().unwrap().provider_state, vec![5]);
+}
+
+#[tokio::test]
+async fn a_bootstrap_from_a_peer_that_is_not_the_pinned_authority_is_refused() {
+    let (directory, relay) = start_server().await;
+    let alice = plain(directory, relay, "+alice").await;
+    let mut mallory = plain(directory, relay, "+mallory").await;
+    let store = SharedStore::default();
+    let mut bob = coordinator(directory, relay, "+bob", &store).await;
+    bob.await_group(gid(), member_of(&alice)).unwrap();
+    let bob_member = bob.member().unwrap();
+
+    // A bootstrap that is well formed and names Mallory as its own authority.
+    let mallory_member = member_of(&mallory);
+    let genesis = genesis_of(&mallory_member);
+    let digest = roster_commitment(&genesis.encode().unwrap());
+    let invitation = Invitation::new(
+        InvitationId::new([9; 16]),
+        gid(),
+        bob_member,
+        0,
+        digest,
+        POLICY_VERSION_V1,
+        100,
+    )
+    .unwrap();
+    let bootstrap =
+        GroupPayload::InvitationBootstrap(InvitationBootstrap::new(invitation, genesis).unwrap())
+            .encode()
+            .unwrap();
+    mallory
+        .send_as(bob.address(), &bootstrap, Kind::Group)
+        .await
+        .unwrap();
+    let inbound = bob.receive(1).await.unwrap();
+    assert!(matches!(
+        inbound.items.as_slice(),
+        [GroupReceipt {
+            outcome: GroupOutcome::Refused,
+            ..
+        }]
+    ));
+    assert!(bob.invitations().is_empty());
+}
+
+#[tokio::test]
+async fn an_installed_roster_is_only_fanned_out_when_it_is_installed_again() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _) = joined(directory, relay, "+bob", &alice_member).await;
+    let (mut carol, _) = joined(directory, relay, "+carol", &alice_member).await;
+    let (bob_member, carol_member) = (bob.member().unwrap(), carol.member().unwrap());
+    let r1 = alice
+        .next_roster(vec![
+            alice_member.clone(),
+            bob_member.clone(),
+            carol_member.clone(),
+        ])
+        .unwrap();
+    let first = alice
+        .install_roster(r1.clone(), &[(bob_member.clone(), route(&bob))], None, 0)
+        .await
+        .unwrap();
+    assert_eq!(first.disposition, RosterDisposition::Accepted);
+
+    // The same successor again reaches a recipient that was left out; it is
+    // not a second local transition.
+    let again = alice
+        .install_roster(r1, &[(carol_member.clone(), route(&carol))], None, 0)
+        .await
+        .unwrap();
+    assert_eq!(again.disposition, RosterDisposition::Duplicate);
+    assert_eq!(again.delivered, vec![carol_member]);
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+    assert_eq!(
+        sole_roster_disposition(&carol.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+}
+
+#[tokio::test]
+async fn a_freeze_while_preparing_a_group_send_is_reported_not_swallowed() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (bob, _) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(r1, &[(bob_member.clone(), route(&bob))], None, 0)
+        .await
+        .unwrap();
+
+    // The intent commits; the recipient's preparation is in doubt.
+    alice_store.script([CommitOutcome::Committed, CommitOutcome::Unknown], false);
+    let result = alice
+        .send_group(&[(bob_member.clone(), route(&bob))], b"doubtful".to_vec())
+        .await;
+    assert!(matches!(result, Err(GroupError::Frozen)));
+    assert!(alice.is_frozen());
+    assert!(matches!(
+        alice
+            .send_group(&[(bob_member, route(&bob))], b"later".to_vec())
+            .await,
+        Err(GroupError::Frozen)
+    ));
+}
+
+#[tokio::test]
+async fn a_snapshot_of_another_identity_is_not_adopted() {
+    let (directory, relay) = start_server().await;
+    let store = SharedStore::default();
+    let alice = coordinator(directory, relay, "+alice", &store).await;
+    drop(alice);
+    let result = GroupClient::open(plain(directory, relay, "+carol").await, store.clone()).await;
+    assert!(matches!(result.err(), Some(GroupError::Recovery)));
+}
+
+#[tokio::test]
+async fn recovery_forgets_the_sessions_of_the_state_it_discards() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    let mut bob = plain(directory, relay, "+bob").await;
+    let bob_route = bob.address().clone();
+
+    // The first send opens a session and encrypts, and the commit fails: the
+    // session exists only in the memory that recovery is about to discard.
+    alice_store.script([CommitOutcome::Failed], false);
+    assert!(matches!(
+        alice.send_direct(&bob_route, b"one").await,
+        Err(GroupError::Frozen)
+    ));
+    assert!(alice.client.has_open_session(&bob_route));
+    alice.recover().await.unwrap();
+    assert!(
+        !alice.client.has_open_session(&bob_route),
+        "a session the durable state does not hold is still recorded"
+    );
+
+    // So the next send opens a new session rather than encrypting for a
+    // session that is gone.
+    alice.send_direct(&bob_route, b"two").await.unwrap();
+    let received = bob.receive().await.unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].plaintext, b"two");
 }
