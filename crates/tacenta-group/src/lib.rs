@@ -618,9 +618,11 @@ mod tests {
 
     #[test]
     fn development_member_cap_accepts_eight_and_refuses_ninth() {
-        let members: Vec<_> = (0..=MAX_MEMBERS)
-            .map(|index| Member::new(vec![index as u8], vec![1]))
+        // Literal counts: raising MAX_MEMBERS must fail this test (CR-08).
+        let members: Vec<_> = (0..9u8)
+            .map(|index| Member::new(vec![index], vec![1]))
             .collect();
+        assert_eq!(members.len(), 9);
         assert!(
             Roster::new(
                 group(),

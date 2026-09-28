@@ -505,6 +505,17 @@ mod tests {
     }
 
     #[test]
+    fn the_private_receiver_limits_are_pinned_by_literal() {
+        // tests/limits.rs exercises each edge through the public API. These
+        // four are private, and the state bound is above every valid state, so
+        // the literals are the only thing that pins them.
+        assert_eq!(DEDUP_WINDOW, 64);
+        assert_eq!(FUTURE_REVISIONS, 2);
+        assert_eq!(MAX_DEFERRED, 4);
+        assert_eq!(MAX_RECEIVER_STATE_LEN, 262_144);
+    }
+
+    #[test]
     fn current_messages_deduplicate_with_stable_event_ids() {
         let mut receiver = receiver();
         assert_eq!(

@@ -736,6 +736,11 @@ mod tests {
     }
 
     #[test]
+    fn the_invitation_record_cap_is_pinned_by_literal() {
+        assert_eq!(MAX_INVITATION_RECORDS, 32);
+    }
+
+    #[test]
     fn bootstrap_and_acceptance_codecs_bind_one_exact_invitation_source() {
         let bootstrap = InvitationBootstrap::new(invitation(7), source_roster()).unwrap();
         let bytes = bootstrap.encode().unwrap();
