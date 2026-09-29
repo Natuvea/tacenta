@@ -32,12 +32,16 @@ implemented in `GroupClient::receive`; nothing in the envelope enforces it.
 
 The Rust client and its FFI/WASM projections expose the same class, documented
 as a routing label, and so does the TypeScript head's `Message.kind`. The
-TypeScript change is a source edit that was **type-checked only as a fragment**
-under `tsc` (4.9.5 and 5.9.3) against a hand-written stub of the WebAssembly
-declarations. It was not built with `wasm-pack` against the generated bindings,
-its end-to-end test (`node --test`) was not run, and no test in the package
-reads `Message.kind`. `m.kind as MessageKind` is an unchecked assertion. Existing
-direct sends continue to create the `direct` class.
+TypeScript change was checked against the real generated bindings: `wasm-pack`
+built the module with the harness feature, `tsc` compiled the head against the
+generated declarations, and the package's end-to-end test (`node --test`) now
+sends one message and reads `kind`. It was run on one machine (macOS, aarch64)
+and by hand, not in the pull-request CI, which does not build the WebAssembly
+package; the release pipeline runs the test. The generated declaration types
+`Message.kind` as `string`, so `m.kind as MessageKind` is an unchecked assertion.
+Only the `direct` class is checked, because the others are not reachable from
+this head without a group sender, and the Swift and Kotlin bindings were not
+built. Existing direct sends continue to create the `direct` class.
 
 ## Considered
 
