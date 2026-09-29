@@ -1,5 +1,11 @@
 # 0096 — bounded group receive disposition
 
+> Status (2026-09-29, after 0131): through `GroupClient` the relay
+> acknowledgement waits for each item's committed disposition. The plain
+> `Client::receive`, `drain` and `inbound` still acknowledge the fetched prefix
+> first, so group traffic that arrives through them has no disposition. That is
+> correct for direct messages, and no SDK head exposes `GroupClient`.
+
 ## Decision
 
 After successful pairwise processing, the bounded group receiver creates one
@@ -49,3 +55,8 @@ A new revision window, multi-device profile, durable-store implementation, or
 application transaction model needs a versioned successor. This record defines
 no current client receive integration; GC-06 supplies it with the provider and
 operation store.
+
+## Amendment (0131)
+
+The client receive integration this record left to GC-06 is `GroupClient::receive`
+(0131); the acknowledgement follows the commit of each item's disposition.

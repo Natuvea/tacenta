@@ -1,8 +1,21 @@
 //! The product-facing route to the standalone core's group helpers.
 //!
-//! This branch carries only the hosted device-inventory statements; the
-//! bounded group commitments live on the group branch and join this file when
-//! the two land.
+//! Two things live here. At the top level, the bounded group commitments: product
+//! code supplies already canonical roster or application-context bytes, and
+//! parsing, identity binding and membership policy stay outside this adapter. In
+//! [`inventory`], the hosted device-inventory statements.
+
+/// Computes the standalone core's domain-separated commitment of a canonical
+/// bounded group roster preimage.
+pub fn roster_commitment(preimage: &[u8]) -> [u8; 32] {
+    open_tacenta::groups::roster_commitment(preimage)
+}
+
+/// Computes the standalone core's domain-separated commitment of a canonical
+/// bounded group application context.
+pub fn payload_commitment(context: &[u8]) -> [u8; 32] {
+    open_tacenta::groups::payload_commitment(context)
+}
 
 /// Canonical hosted device-inventory statements. The standalone core owns the
 /// encoding and issuer-signature verification; product services own account
@@ -27,5 +40,18 @@ pub mod inventory {
             .public_key()
             .as_bytes()
             .to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{payload_commitment, roster_commitment};
+
+    #[test]
+    fn the_adapter_uses_distinct_core_domains() {
+        assert_ne!(
+            roster_commitment(b"same canonical value"),
+            payload_commitment(b"same canonical value")
+        );
     }
 }

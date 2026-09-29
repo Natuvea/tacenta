@@ -1,5 +1,7 @@
 # 0091 — durable client operations
 
+Amended by 0132, 0134 and 0143.
+
 ## Decision
 
 The client will persist a versioned combined operation snapshot before any

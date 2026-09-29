@@ -39,8 +39,14 @@ In scope:
 
 Out of scope, because they do not exist rather than because we do not care:
 
-- **Group messaging (sender keys)** and **Sesame / multi-device session
-  management**. Not implemented.
+- **Group messaging as a product** (sender keys, more than eight members, more
+  than one device per person, a production membership authority) and **Sesame /
+  multi-device session management**. Not implemented. The tree holds a bounded
+  experimental group profile (eight members, one device each, one authority;
+  `docs/claims.md`); no SDK head, the CLI or the server reaches it, and it is
+  not a supported feature. Because it is in the tree, what `docs/claims.md`
+  says about that profile is in scope like any other claim: a defect against it,
+  or a claim it overstates, is a finding.
 - **Message-layer interoperability with other implementations** is out of
   scope.
 
@@ -52,6 +58,16 @@ rediscovering it. At the time of writing:
 - XEdDSA is a custom implementation with no published known-answer vectors.
 - The decoder's 32-bit behaviour is checked by reading and by 64-bit tests;
   there is no 32-bit runtime regression test.
+- The bounded experimental group profile has the gaps its section of
+  `docs/claims.md` lists, among them: a roster control that never arrives leaves
+  a member behind (there is no catch-up request); the operation snapshot is
+  unsealed, has no rollback detection across coordinators (a running coordinator
+  refuses to recover from a store behind what it committed) and assumes one
+  writer per store; a registered peer that is not in the group can take the two
+  deferral slots a just-admitted member's first message needs; accepted
+  group plaintext stays in that snapshot until the caller acknowledges it; a
+  direct message received under `GroupClient` has an at-most-once window; and its
+  Lean model, vectors and theorems have had no human review.
 
 Reporting a sharper version of any of these — in particular a concrete exploit
 path — is genuinely useful and welcome.

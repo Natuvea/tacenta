@@ -498,6 +498,187 @@ not in our proofs' dependency cone.
   release pipeline (decision 0090); not yet published to a registry.
   A packaged xcframework / `.aar`, async export, and an example app are
   downstream work.
+- **Bounded group experiment** (`tacenta-group`, and `GroupClient` with the
+  group-operation modules of `tacenta-client`): an experimental development
+  profile, and these are its limits. **At most eight members, one device per
+  person, one membership authority** (the group's creator, whose leave closes
+  the group), application payloads of at most 1,024 bytes, one group per client
+  and per store, and pairwise fan-out with no shared sender keys. It is Rust
+  values and policy driven by tests: **no SDK head, the CLI or the server reaches
+  it**. `GroupClient` is public in `tacenta-client` and is outside
+  `sdk/surface.json`; the surface test scans only the `Client` and `Tacenta` impl
+  blocks, so it neither sees it nor excuses it.
+  What has tests: canonical roster and context values; invitation, admission,
+  revocation and removal policy; the outbox (stale sends refused, monotonic
+  sequences, a final attempt recorded when the relay accepts it); bounded replay
+  and future-message queues; the restart codecs, which a structure-aware mutation
+  test checks for panics, oversized allocations and non-canonical input; the Lean
+  model's traces (`contracts/vectors/group-v1.json`), which the Rust types replay;
+  and, through `GroupClient` with a real provider, relay and directory: a
+  receive that commits each item's disposition together with the provider state
+  before it acknowledges the relay prefix, takes the authenticated peer and the
+  state effect from the provider's outcome, and offers a committed group event
+  again, with its event ID, until the caller has acknowledged it (the next
+  `receive`, or `acknowledge_delivery`, acknowledges what the previous call
+  handed over) and reports an event it cannot offer once (0144, 0148), with a
+  relay connection that a dropped `receive` future leaves in step (0148);
+  direct messages written through to the same snapshot; a latch on any write that
+  is not `committed`; a refusal to `open` a client whose state is not the
+  snapshot's, to commit over a snapshot the coordinator has not seen (0143) and
+  to `recover` from a store that holds an older snapshot than the coordinator
+  committed (0147); validation before encryption; a roster install that tells
+  the member it removes wherever that member is listed, whatever a registered
+  stranger has sent the authority first (0141, 0145); roster controls that arrive
+  ahead of their predecessor, or before the coordinator has a roster, kept and
+  applied in order within the bounds below (0142, 0146); and boundary traces: a member removed while a message is in
+  flight (authority and recipient side), replay of a delivered ciphertext before
+  and after a restore, the dedup window, the future window and queue, the outbox
+  and invitation-book caps, and a ninth member refused on the roster, invitation
+  and admission paths, and a live group grown from one to eight members.
+  The limits are pinned by literal numbers at both edges: eight members, 1,024
+  payload bytes, the 64-sequence dedup window, the two-revision future window,
+  four deferred contexts (two of them open to senders the roster does not list
+  yet, one per identity) and four held roster controls, eight live and sixteen retained sends and
+  control handoffs, thirty-two invitations, thirty-two relay items per receive
+  call, and the snapshot's 64 inbox, 512 dedup and 64 control records. **Four
+  bounds sit above every valid value and are pinned by their constant and by the
+  largest valid case only**, because no valid input reaches them: the roster
+  preimage (4,096 bytes against a largest valid 3,048), the application context
+  (2,048 against 1,784), the receiver state (262,144 against 207,347) and the
+  payload input (8,192 against 3,526).
+  A repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
+  three-client invitation, restart, admission, removal, revocation and
+  direct-message trace through the in-process directory, relay and crypto
+  provider, and runs the suites above. **What a green run establishes**, against
+  an unedited manifest, is that the tests it names exist, ran and passed, with
+  none ignored, failed or marked `should_panic`, that their names and counts equal
+  the checked-in manifest (`tooling/group-chat-demo-tests.txt`), and that no test
+  is claimed by two steps. It does **not** establish that a test still checks what
+  its name says (a body that returns early, asserts `true`, asserts in a task or a
+  thread nobody joins, catches its own panic, returns under
+  `cfg!(debug_assertions)`, or is empty, under a listed name, passes); it does
+  not detect a change made together with the manifest edit that lists it (a
+  rename, a deletion, or a regression whose only killer test is removed from the
+  source and the manifest in one commit; a step removed from both the script and
+  the manifest); it does not know whether the output is libtest's or the binary is
+  built from the tree (forged output, a test target with `harness = false`, a
+  `cargo` earlier on PATH, a stale binary all pass). It reads libtest's notice for
+  a test that has run more than 60 seconds as a note and does not fail on it; it
+  used to fail the step closed, which a loaded machine reached.
+  Its live traces keep operation state in an
+  in-memory store whose writes always succeed; the native file-backed store is
+  exercised by one step and by unit tests, and it is neither sealed nor
+  protected against rollback, and it reports every write error as `failed` and
+  never as `unknown`.
+  **Measured** on one host (`docs/reproduce.md` has the tables and the
+  conditions): a logical send of 1,000 bytes to every other member costs 4, 7 and
+  22 whole-snapshot commits at 2, 3 and 8 members, and **from an empty outbox**
+  the snapshot is 191,748, 221,355 and 371,724 bytes. **In steady state it is
+  larger and slower**: at 8 members after 17 sends, with sixteen terminal sends
+  retained, a snapshot of 1,728,009 bytes and 587 to 596 ms for one logical send,
+  against 371,724 bytes and 269 to 277 ms for the first. The times are of one run
+  at a load average of 15 and move with the load (502 to 510 ms in steady state at
+  a load of about 1, 515 to 517 ms at 4 to 5, in earlier runs); the bytes and the
+  commit counts do not. The bounds above are on record
+  counts and on the size of each record; they do not bound the snapshot in bytes
+  at a stated figure. The provider state inside the snapshot holds a session for
+  every peer that ever sent a decryptable message and has no eviction (one review
+  measured about 731 bytes per hostile peer; another, under the directory's
+  default registration limit, saw no growth), and every commit, including one for
+  a junk message from any registered peer, rewrites the whole snapshot. These
+  are development figures, not budgets. This is **tested, not proven**.
+  **What is not true yet** at this revision:
+  - **One writer per store.** The snapshot is the durable root only while one
+    coordinator writes it. A second coordinator on the same store (an
+    application and an extension, a restored backup) would encrypt at a ratchet
+    position the first has used; since 0143 `open` refuses a client whose state
+    is not the snapshot's and a commit is refused when the store holds a snapshot
+    the coordinator has not seen, so the second writer's commit is refused, it
+    freezes and it does not send what it encrypted (it can still encrypt in memory
+    at a position the first has used before that commit). A store put back to an
+    older snapshot under a running coordinator is fenced the same way, and since
+    0147 `recover` refuses to adopt the older snapshot (`GroupError::Rollback`) and
+    stays frozen; the way on is a new coordinator over state the caller vouches for,
+    whose peers drop what is sent at the positions they have seen. That is a fence,
+    not a supported configuration: the default check is read-then-write, the native
+    store's lock is advisory and local, a new coordinator has no memory of what
+    the previous one committed, so rollback goes undetected across coordinators, and
+    a party that can write the store can write anything (it is unsealed).
+  - **No catch-up.** A roster control that never arrives (lost by the relay,
+    dropped with an offline device's queue, abandoned by the authority) leaves a
+    member behind: nothing asks for it again and the authority records relay
+    acceptance, not receipt. A control is applied at once when it is one revision
+    ahead of the member's roster, held when it is two to five ahead, and refused
+    when it is more than five ahead; at most four are held, one per revision. A
+    coordinator with no roster view keeps the four lowest revisions it is sent and
+    reaches at most four revisions past the roster it joins from (0146). A message
+    to a pending invitee that beats the roster that admits it is lost (the receiver
+    of a non-member holds nothing).
+    Controls that arrive ahead of their predecessor are kept (0142), so a
+    reordering, a retry order or a batch that holds the bootstrap and a successor
+    is followed as far as those bounds allow; past them, or when a control never
+    arrives, the member is stranded, so the limits are delivery and distance as well
+    as order.
+  - **What a peer that is not in the group can still do.** The first message of a
+    just-admitted member that reaches another member before the roster that admits
+    it is kept unless two registered strangers that know the group ID took the two
+    deferral slots open to senders the roster does not list: nothing a member has
+    before the roster arrives tells a just-admitted member from another peer, and
+    the member's second early message is refused (0146). A stranger cannot
+    stop an install from telling the member it removes (0145); it can fill the
+    control transcript, and every junk message costs a whole-snapshot rewrite.
+    A member that holds a removal it cannot apply yet still sends to the member
+    the removal removes until the predecessor arrives (0146).
+  - The acknowledgement waits for the commit only through `GroupClient`. The
+    plain `Client::receive`, `drain` and `inbound`, which the FFI and
+    WebAssembly heads export, still acknowledge the fetched prefix before any
+    disposition exists, so group traffic that arrives through those calls is not
+    durable.
+  - **Delivery is at-least-once for group events and at-most-once for direct
+    messages.** A committed group event is offered again, with the same ID, until
+    the caller has acknowledged it: `receive` acknowledges what the previous
+    completed call handed over when it is called again, and `acknowledge_delivery`
+    does it at once (0144); a process that stops after an event was handed over and
+    before the acknowledgement sees it again. An event that was evicted from the
+    retained records before it was handed over cannot be offered again (further
+    failing calls that keep committing mail are needed): the call that finds the
+    loss reports it in `lost_events`, the next call acknowledges it, and a process
+    that stops before that reports it again (0148). A direct message received
+    under `GroupClient` is committed and handed over once: a crash between the
+    commit and the caller's use of it loses it, and its plaintext is not kept.
+    Accepted group plaintext stays in the unsealed snapshot until the caller
+    acknowledges it, and the sender's outbox keeps the contexts of its eight live
+    and sixteen retained sends.
+  - Under `GroupClient` every direct send and each received direct message costs
+    one whole-snapshot commit.
+  - **A dropped future.** A `receive` future that is dropped leaves the relay
+    connection in step, and one dropped while its frame was being written makes the
+    connection refuse further requests so that the client reconnects (0148). The
+    directory and account connections are not cancel-safe (a dropped lookup inside
+    `send_group` or `install_roster` can leave a response for the next call), and a
+    future dropped between a decrypt and its commit is not covered.
+  - `GroupReceiveInput` is not sealed: its fields are `pub(crate)`, so review
+    keeps other code from building one by hand. `join_group` takes the roster and
+    authority the local application passes, and does not compare them with the
+    recorded bootstrap.
+  - A terminal send or control older than the sixteen most recent is dropped
+    from the local snapshot, so its evidence is no longer kept. An unreachable
+    route for one recipient is reported as `Frozen` and stops the fan-out for the
+    recipients after it in that call.
+  - The byte layouts of the group payloads, invitation records, receiver, view,
+    book, control-outbox and held-controls state and the `TCG*` transcript
+    records have no specification page or byte vector. `group-v1.json` is a
+    policy trace, not a byte vector. The Lean model differs from the code in at
+    least the nineteen ways `docs/decisions/0137` lists (the list may be
+    incomplete), the receiver, outbox and coordinator
+    mechanisms have no model counterpart, the vector replay compares only
+    acceptance, revision, roster and invitation status, and the model, the
+    vectors and their theorems (whose axiom sets are pinned in
+    `spec/Tacenta/Assurance.lean`) have had no human review. Expiry takes an
+    explicit logical time with no clock mapping.
+  It is not a shipped group-chat protocol or a production membership system;
+  sender-key, production authority, sequencing, multi-device, sealed-sender,
+  franking and scale work remain open.
 - Style gates: rustfmt and clippy at `-D warnings`.
 
 ## Assumed — the trusted base

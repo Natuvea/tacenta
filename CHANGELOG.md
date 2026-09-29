@@ -9,6 +9,33 @@ commits carry their story.
 
 ## Unreleased
 
+- A bounded experimental group profile (the `tacenta-group` crate and, in
+  `tacenta-client`, the experimental `GroupClient` with its group-operation
+  modules: eight members, one device each, one authority) is in the tree for
+  tests and the group demo. `GroupClient` acknowledges group traffic only after
+  its disposition is committed; the plain `Client::receive` is unchanged. No SDK
+  head, the CLI or the server reaches it, and `GroupClient` is outside the SDK
+  surface manifest. `docs/claims.md` states its limits and what it does not yet
+  do. Its experimental API also changed: `GroupClient::open` refuses a client
+  whose state is not the snapshot's (`GroupError::StateMismatch`); the
+  `OperationStore` port gains `durable_generation` and `commit_after`, and a
+  coordinator's commit is refused when the store holds a snapshot it has not
+  seen, and `recover` refuses a store that holds an older snapshot than the
+  coordinator committed (`GroupError::Rollback`); `receive` offers a committed
+  group event again, with its event ID, until the caller has acknowledged it: the
+  next `receive`, or `acknowledge_delivery`, acknowledges what the previous call
+  handed over (`Inbound::redelivered`, `Inbound::lost_events`, which the call that
+  finds a loss reports and the next call clears, `GroupClient::delivery_cursor`); `install_roster` tells the member it removes
+  wherever it is listed and reports `Install::unprepared`; a roster control that
+  arrives ahead of its predecessor is kept (`GroupOutcome::RosterDeferred`,
+  `GroupClient::held_roster_controls`; a coordinator with no roster view keeps
+  the four lowest revisions it is sent, and a sender the roster does not list
+  holds one deferred context per identity); `GroupReceiver::events_issued` is
+  new. `Connection::request` in `tacenta-transport` no longer answers a request
+  with the response of one whose future was dropped, and refuses further requests
+  once one was dropped half way through its frame (`BrokenPipe`).
+  Client export order is now a function of the state (`export_state` writes the
+  peer sessions in address order).
 - Experimental, not wired to any client, server route or SDK surface: hosted
   device-inventory storage and signing (decision 0140).
   - `tacenta-accounts` stores a per-account device inventory (in memory, and in
