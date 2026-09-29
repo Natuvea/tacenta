@@ -26,14 +26,36 @@
 #     step, and its size equals the count pinned there. A rename, a deletion,
 #     an addition, a macro-generated test, or a deletion paired with an
 #     addition changes the set and fails the step; every missing and every
-#     unexpected name is printed.
-# So a green run establishes that the named tests exist, ran and passed, and
-# that the names and counts equal the manifest. It does NOT establish that a
-# test still checks what its name says: a body that returns early, asserts
-# `true`, asserts inside a task nobody joins, or is empty, under a name the
-# manifest lists, passes. Only review or mutation testing answers that
-# (tooling/group-mutation does it for the group crate's tests; nothing here
-# does it for the client's).
+#     unexpected name is printed;
+#   - no test is listed for two steps, so the headline, which sums the steps,
+#     counts each test once.
+# So a green run establishes that, against an unedited manifest, the named
+# tests exist, ran and passed. That is all it establishes.
+#
+# What it does NOT establish, each shown by an attack that ends green (the
+# second verification of the second fix round ran 29 of them, and the
+# repository's tests do not repeat them):
+#   - that a test still checks what its name says. A body that returns early,
+#     asserts `true`, asserts inside a task nobody joins or a thread nobody
+#     joins, catches its own panic, is empty, or returns under
+#     `cfg!(debug_assertions)`, under a name the manifest lists, passes. Only
+#     review or mutation testing answers that (tooling/group-mutation does it for
+#     the group crate's tests; nothing here does it for the client's);
+#   - that the manifest was not edited with the change it checks. A rename, a
+#     deletion or an addition made together with the edit of the manifest that
+#     lists it passes, and so does a real regression whose only killer test is
+#     deleted from the source and from the manifest in one commit. The same
+#     holds for a step deleted from both this script and the manifest. The
+#     manifest is the reference; a change to it is visible only in review;
+#   - that the output is libtest's or that the tests were built from the
+#     source in the tree. A test that prints `test NAME ... ok` and a result line
+#     itself, a test target with `harness = false` that prints them, a `cargo`
+#     earlier on PATH that replays recorded output, and a stale binary (a source
+#     file whose modification time is older than the build) all pass. The script
+#     trusts the toolchain and the build;
+#   - that it survives load. libtest prints a notice for a test that has been
+#     running for more than 60 seconds; the script cannot parse that line and
+#     fails the step closed, so a slow runner can fail a run with nothing wrong.
 #
 # A deliberate change to the tests is made in one commit: change the tests, run
 # this script with --update-manifest, and review the manifest's diff.
@@ -113,6 +135,10 @@ if [ "$mode" = check ]; then
       key = $2 " " $3 " " $4
       if (key in seen) err("test " $4 " is listed twice for step " $2)
       seen[key] = 1
+      binary_and_name = $3 " " $4
+      if ((binary_and_name in owner) && owner[binary_and_name] != $2)
+        err("test " $4 " is listed for steps " owner[binary_and_name] " and " $2)
+      owner[binary_and_name] = $2
       listed[$2]++
       next
     }
@@ -369,6 +395,18 @@ step client-guards "client guards: operation store, control outbox, group operat
   cargo test --locked -p tacenta-client --lib guard_tests
 
 if [ "$mode" = update ]; then
+  # A test that two steps ran would be counted twice; refuse to record it.
+  awk '
+    $1 == "test" {
+      key = $3 " " $4
+      if ((key in owner) && owner[key] != $2) {
+        print "group demo: test " $4 " ran in steps " owner[key] " and " $2 | "cat >&2"
+        bad = 1
+      }
+      owner[key] = $2
+    }
+    END { exit bad }
+  ' "$work/new-manifest" || fail "a test ran in two steps; narrow the filters of one of them"
   {
     cat <<'EOF'
 # The tests each step of tooling/run-group-chat-demo.sh must run, by test binary
