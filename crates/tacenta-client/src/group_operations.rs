@@ -2815,6 +2815,10 @@ mod review_tests;
 mod guard_tests;
 
 #[cfg(test)]
+#[path = "group_operations_deferred_guard_tests.rs"]
+mod deferred_guard_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,

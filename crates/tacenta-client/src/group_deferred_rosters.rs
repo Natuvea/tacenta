@@ -326,3 +326,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "group_deferred_rosters_guard_tests.rs"]
+mod guard_tests;
