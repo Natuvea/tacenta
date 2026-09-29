@@ -766,3 +766,7 @@ mod tests {
 #[cfg(test)]
 #[path = "operation_store_guard_tests.rs"]
 mod guard_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "operation_store_generation_guard_tests.rs"]
+mod generation_guard_tests;
