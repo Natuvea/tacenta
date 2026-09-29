@@ -100,13 +100,6 @@ async function wrap<T>(call: () => T | Promise<T>): Promise<T> {
   }
 }
 
-/**
- * The relay envelope class of a received message. It is the relay's outer
- * label, not an authenticated property of the message: a relay (or a peer)
- * can label a message as it likes, so branch on it for routing only.
- */
-export type MessageKind = "direct" | "group" | "receipt";
-
 /** A message received by a client. */
 export class Message {
   constructor(
@@ -114,8 +107,6 @@ export class Message {
     public readonly from: string,
     /** The decrypted bytes. */
     public readonly plaintext: Uint8Array,
-    /** The relay envelope class; not an authenticated property of the message. */
-    public readonly kind: MessageKind = "direct",
   ) {}
 
   /** The plaintext as UTF-8 text. */
@@ -179,7 +170,7 @@ export class Client {
   /** Fetch and decrypt what is waiting. */
   async receive(): Promise<Message[]> {
     const raw = await wrap(() => this.inner.receive());
-    return raw.map((m) => new Message(m.from, m.plaintext, m.kind as MessageKind));
+    return raw.map((m) => new Message(m.from, m.plaintext));
   }
 
   /**

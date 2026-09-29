@@ -30,13 +30,12 @@ that the payload's own authentication would not have permitted. That the
 coordinator consumes only group-classified plaintext is a caller convention,
 implemented in `GroupClient::receive`; nothing in the envelope enforces it.
 
-The Rust client and its FFI/WASM projections expose the same class, documented
-as a routing label, and so does the TypeScript head's `Message.kind`. The
-TypeScript change is a source edit that was **type-checked only as a fragment**
-under `tsc` (4.9.5 and 5.9.3) against a hand-written stub of the WebAssembly
-declarations. It was not built with `wasm-pack` against the generated bindings,
-its end-to-end test (`node --test`) was not run, and no test in the package
-reads `Message.kind`. `m.kind as MessageKind` is an unchecked assertion. Existing
+The Rust client exposes the class (`tacenta_client::MessageKind`), documented as
+a routing label. **This change does not project it into the Swift, Kotlin,
+WebAssembly or TypeScript heads.** Doing so changes the public `Message` record
+(the UniFFI record gains a field, so code that constructs `Message` values must
+pass it) and needs a TypeScript package that has been built against the
+generated bindings and tested; both are held for a separate pull request. Existing
 direct sends continue to create the `direct` class.
 
 ## Considered

@@ -495,11 +495,7 @@ not in our proofs' dependency cone.
   (wasm): the client compiles to WebAssembly (`crates/tacenta-wasm`) over
   the WebSocket carriage the gateway serves, and `sdk/typescript` is the
   TypeScript head on it, with an end-to-end test in Node run by the
-  release pipeline (decision 0090); not yet published to a registry. That test
-  does not read `Message.kind`, the envelope class this record added to the
-  TypeScript `Message` (decision 0116): that change was type-checked only as a
-  fragment against a hand-written stub of the WebAssembly declarations, and was
-  neither built against the generated bindings nor run.
+  release pipeline (decision 0090); not yet published to a registry.
   A packaged xcframework / `.aar`, async export, and an example app are
   downstream work.
 - **Bounded group experiment** (`tacenta-group`, and `GroupClient` with the
