@@ -1,7 +1,13 @@
-//! Tests for the five group crate changes the client's coordinator needed
-//! (decision 0135). Each test fails on the code before its change and passes
-//! after it; the git history of this file and of `src/` shows both states. They
-//! use only the public API of `tacenta-group`.
+//! Tests for the group crate changes the client's coordinator needed (decision
+//! 0135; its sixth item lives in the client). Most tests fail on the code before
+//! their change and pass after it; the git history of this file and of `src/`
+//! shows both states. Five are guards that hold before and after, and pin what a
+//! change must leave alone: `acceptance_still_needs_a_handoff`,
+//! `recovery_of_an_exhausted_recipient_without_an_acceptance_stays_exhausted`,
+//! `recovery_still_refuses_an_acceptance_with_no_handoff`,
+//! `recovery_without_an_applied_revision_keeps_the_cap_and_the_old_meaning` and
+//! `a_source_at_revision_zero_follows_the_genesis_rules`. They use only the
+//! public API of `tacenta-group`.
 
 use tacenta_group::*;
 

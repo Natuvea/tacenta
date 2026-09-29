@@ -1,9 +1,11 @@
 //! Tests that pin the guards of the coordinator to literals.
 //!
-//! Each `k_*` test is a killer: it passes on the code as it stands and fails
-//! when the single guard it names is changed. The bounds are written as
-//! numbers, not derived from the constants they check, so raising a constant
-//! fails a test (decision 0133).
+//! Each `k_*` test passes on the code as it stands and is meant to fail when the
+//! single guard it names is changed. Three of them (`k_c12`, `k_c18` and `k_k01`)
+//! are named for mutants that survive alone, because another layer refuses the
+//! same input (0134, 0135); they pin the behaviour through those layers. The
+//! bounds are written as numbers, not derived from the constants they check, so
+//! raising a constant fails a test (decision 0133).
 
 use super::*;
 use crate::group_control_outbox::Disposition as ControlDisposition;

@@ -1,7 +1,9 @@
-//! Regression tests for the cold-read findings CR-06 and CR-12 (decisions
-//! 0136 to 0139). Each test fails on the code at 75c9a20 and passes after the
-//! fix; the git history of this file and of `src/` shows both states. They use
-//! only the public API of `tacenta-group`.
+//! Regression tests for the roster order, invitation admission, stale send,
+//! sequence and terminal receiver state fixes (decisions 0136 to 0139). Most fail
+//! on the code at 75c9a20 and pass after the fix; the git history of this file and
+//! of `src/` shows both states. Some are guards that hold before and after, and
+//! pin behaviour a fix must not change. They use only the public API of
+//! `tacenta-group`.
 
 use tacenta_group::*;
 

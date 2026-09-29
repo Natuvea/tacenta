@@ -1,6 +1,9 @@
-//! Killers added after the group-crate mutation rerun that followed the
-//! CR-06/CR-12 fixes (`tooling/group-mutation`). Each names the mutant it
-//! kills; the rerun's report lists the survivors that stay, with reasons.
+//! Tests added after a group-crate mutation rerun (`tooling/group-mutation`).
+//! Each names the mutant it was written for. Two of them,
+//! `gc_l10_a_roster_that_lists_a_member_twice_is_refused` and
+//! `gc_s11_recovery_refuses_a_handoff_record_that_skips_an_attempt`, are named for
+//! mutants that survive alone because a second check returns the same error; they
+//! fail only when both checks are removed.
 
 use tacenta_group::*;
 
