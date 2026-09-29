@@ -209,8 +209,10 @@ state the model holds afterwards (a refused step leaves the state unchanged).
 The Rust `tacenta-group` types replay every step; see decision 0137. The model
 has no exact-retry rule for a duplicate invitation ID (it refuses any
 duplicate), so the traces only repeat an ID with a different target, which both
-sides refuse. Revocation carries no logical time in the model, and removal of a
-non-member has no Rust counterpart in the invitation book, so neither appears.
+sides refuse. Revocation carries no logical time in the model, and the model
+refuses the removal of a non-member where the Rust roster view accepts a
+successor with the same members (decision 0137, items 2 and 3), so neither kind
+of step appears. Other steps, including `remove` and `revoke` of members, do.
 -/
 
 namespace GroupVectors
