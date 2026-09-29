@@ -1,6 +1,6 @@
 # 0145 — the roster an install replaced is a checkpoint, not a lookup in the control transcript
 
-> Amends 0141.
+> Amends 0133 (one more checkpoint record) and 0141.
 
 0141 lets `install_roster` tell the member an install removes, wherever that
 member is listed, by finding the roster the installed successor replaced: the

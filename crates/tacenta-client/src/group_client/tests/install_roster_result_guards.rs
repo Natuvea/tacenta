@@ -11,8 +11,8 @@
 //! - R088: the shortcut for a control that was already sent applies before the successor is installed.
 //! - R091, R093: a recipient whose control is exhausted, or whose send the relay did not take, is
 //!   reported `unprepared` instead of `pending`.
-//! - R094: a recipient that could not be prepared after the install is reported `pending` instead of
-//!   `unprepared`.
+//! - R094: a recipient that could not be prepared after the install (a full control outbox) is
+//!   reported `pending` instead of `unprepared`.
 //!
 //! The ids (`R###`) are those of the single-change mutation run against 341e2b0.
 
@@ -85,6 +85,8 @@ struct Behind {
     alice_member: Member,
     bob_member: Member,
     bob_route: DeviceAddr,
+    directory: SocketAddr,
+    relay: SocketAddr,
 }
 
 async fn behind_the_proxy() -> Behind {
@@ -107,6 +109,8 @@ async fn behind_the_proxy() -> Behind {
         alice_member,
         bob_member,
         bob_route,
+        directory,
+        relay,
     }
 }
 
@@ -191,31 +195,48 @@ async fn three_members() -> (GroupClient, [(Member, DeviceAddr); 2]) {
 }
 
 /// R094: in `install_roster`, `unprepared.push(recipient.clone())` for a recipient that cannot be
-/// prepared once the successor is installed becomes `pending.push(..)`. Here the roster record of
-/// the replaced roster is gone from the retained control records, so the member the install removes
-/// can no longer be told, and that is not a control waiting for the relay.
+/// prepared once the successor is installed becomes `pending.push(..)`. Nothing was committed for
+/// such a recipient, and a control waiting for the relay is another thing: it is sent by
+/// `dispatch_pending_controls`, which cannot help here. The control outbox holds seven live handoffs
+/// (installs the relay did not take), so Bob's control fits in the commit that installs the eighth
+/// successor and Carol's finds the outbox full (0141).
 #[tokio::test]
-async fn r094_a_removed_member_that_can_no_longer_be_told_is_unprepared_not_pending() {
-    let (mut alice, [(bob, bob_route), (carol, carol_route)]) = three_members().await;
-    alice
-        .snapshot
-        .group_controls
-        .retain(|record| !record.starts_with(b"TCGC"));
-    let r2 = alice
-        .next_roster(vec![alice.member().unwrap(), carol.clone()])
+async fn r094_a_recipient_that_cannot_be_prepared_after_the_install_is_unprepared_not_pending() {
+    let mut b = behind_the_proxy().await;
+    b.cut.store(true, Ordering::SeqCst);
+    let bob = (b.bob_member.clone(), b.bob_route.clone());
+    for revision in 1..=7 {
+        let next = b
+            .alice
+            .next_roster(vec![b.alice_member.clone(), b.bob_member.clone()])
+            .unwrap();
+        let install = b
+            .alice
+            .install_roster(next, std::slice::from_ref(&bob), None, 0)
+            .await
+            .unwrap();
+        assert_eq!(install.pending, [b.bob_member.clone()], "{revision}");
+    }
+    let (carol_client, _carol_store) =
+        joined(b.directory, b.relay, "+carol", &b.alice_member).await;
+    let carol = (carol_client.member().unwrap(), route(&carol_client));
+    let eighth = b
+        .alice
+        .next_roster(vec![
+            b.alice_member.clone(),
+            b.bob_member.clone(),
+            carol.0.clone(),
+        ])
         .unwrap();
-    let install = alice
-        .install_roster(
-            r2,
-            &[(carol.clone(), carol_route), (bob.clone(), bob_route)],
-            None,
-            0,
-        )
+    let install = b
+        .alice
+        .install_roster(eighth, &[bob, carol.clone()], None, 0)
         .await
         .unwrap();
-    assert_eq!(install.delivered, [carol], "{install:?}");
-    assert_eq!(install.unprepared, [bob], "{install:?}");
-    assert!(install.pending.is_empty());
+    assert_eq!(install.pending, [b.bob_member.clone()], "{install:?}");
+    assert_eq!(install.unprepared, [carol.0], "{install:?}");
+    assert!(install.delivered.is_empty());
+    assert_eq!(b.alice.roster().unwrap().revision, 8, "it is installed");
 }
 
 /// R088: in `install_roster`, `if installed && let Ok(existing) = ..` loses `installed &&`, so the

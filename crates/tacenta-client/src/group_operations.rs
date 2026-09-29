@@ -41,7 +41,8 @@ const MAX_DEDUP_RECORDS: usize = 512;
 /// Terminal logical sends whose records the `outbox` transcript keeps (0133).
 const MAX_TERMINAL_LOGICAL_SENDS: usize = 16;
 /// The retained checkpoint kinds; a new one replaces the previous of its kind.
-const CHECKPOINT_TAGS: [&[u8; 4]; 5] = [b"TCGV", b"TCGB", b"TCGO", b"TCGX", b"TCGQ"];
+/// `TCGX`, `TCGQ` and `TCGS` are per group (0133, 0142, 0145).
+const CHECKPOINT_TAGS: [&[u8; 4]; 6] = [b"TCGV", b"TCGB", b"TCGO", b"TCGX", b"TCGQ", b"TCGS"];
 
 /// A group preparation cannot cross its durable boundary.  The caller freezes
 /// the affected operation and recovers its snapshot before it tries again.
@@ -222,39 +223,45 @@ fn recipient_can_receive_installed_roster_control(
             .any(|member| member == recipient)
 }
 
-/// The members of the roster that `view`'s accepted roster replaced (0141).
+/// The members of the roster that `view`'s accepted roster replaced (0141, 0145).
 ///
-/// The successor names its predecessor's digest, and the predecessor's preimage
-/// is one of the roster records the snapshot keeps in `group_controls` (`TCGC`,
-/// 0122), so the set is found by digest and survives a restart with no state of
-/// its own. It is empty when the record is no longer among the retained control
-/// records (or never existed, as for a genesis roster).
+/// The commit that accepted the roster wrote that roster's preimage as a
+/// checkpoint (`TCGS`), which the record bound never evicts, so the set survives
+/// a restart and cannot be crowded out by traffic from a peer. The record is
+/// accepted only when it is for the view's group and its commitment is the
+/// accepted roster's predecessor digest. The set is empty when there is no such
+/// record: a view attached from a roster the caller passed has no replaced
+/// roster.
 pub(crate) fn replaced_roster_members(
     snapshot: &OperationSnapshot,
     view: &RosterView,
 ) -> Vec<Member> {
-    let predecessor = view.roster().predecessor_digest;
-    for record in snapshot.group_controls.iter().rev() {
-        let Some(rest) = record.strip_prefix(b"TCGC") else {
-            continue;
-        };
-        let Some((length, rest)) = rest.split_at_checked(4) else {
-            continue;
-        };
-        let Ok(length) = <[u8; 4]>::try_from(length) else {
-            continue;
-        };
-        let Some(preimage) = rest.get(..u32::from_be_bytes(length) as usize) else {
-            continue;
-        };
-        if roster_commitment(preimage) != predecessor {
-            continue;
-        }
-        if let Ok(roster) = Roster::decode(preimage) {
-            return roster.members;
-        }
+    let group_id = view.roster().group_id;
+    let scope = [b"TCGS".as_slice(), group_id.as_bytes()].concat();
+    let Some(rest) = snapshot
+        .group_controls
+        .iter()
+        .rev()
+        .find(|record| record.starts_with(&scope))
+        .and_then(|record| record.strip_prefix(scope.as_slice()))
+    else {
+        return Vec::new();
+    };
+    let Some((length, preimage)) = rest.split_at_checked(4) else {
+        return Vec::new();
+    };
+    let Ok(length) = <[u8; 4]>::try_from(length) else {
+        return Vec::new();
+    };
+    if preimage.len() != u32::from_be_bytes(length) as usize
+        || roster_commitment(preimage) != view.roster().predecessor_digest
+    {
+        return Vec::new();
     }
-    Vec::new()
+    match Roster::decode(preimage) {
+        Ok(roster) if roster.group_id == group_id => roster.members,
+        _ => Vec::new(),
+    }
 }
 
 /// Whether `recipient` may be sent `successor` by `authority` (0141): a member
@@ -1958,6 +1965,18 @@ fn commit_roster_transition<S: OperationStore>(
             candidate.group_id,
             candidate.revision,
         ));
+        // The roster this transition replaces is what a later `install_roster`
+        // needs to tell the members the roster removes (0141). It is a
+        // checkpoint written with the transition, so it cannot be missing when
+        // the successor is installed and no traffic can evict it (0145).
+        control_records.push(encode_replaced_roster_record(
+            candidate.group_id,
+            &state
+                .view
+                .roster()
+                .encode()
+                .map_err(|_| GroupOperationError::Policy)?,
+        )?);
     }
     if let Some((provider_state, _)) = &state.provider {
         candidate_snapshot.provider_state = provider_state.clone();
@@ -2333,7 +2352,7 @@ fn append_group_control_records(
             .iter()
             .find(|tag| record.starts_with(tag.as_slice()))
         {
-            let scope = if *tag == b"TCGX" || *tag == b"TCGQ" {
+            let scope = if *tag == b"TCGX" || *tag == b"TCGQ" || *tag == b"TCGS" {
                 4 + tacenta_group::GROUP_ID_LEN
             } else {
                 4
@@ -2365,6 +2384,10 @@ fn append_group_control_records(
             .group_controls
             .iter()
             .rposition(|record| record.starts_with(b"TCGQ"));
+        let latest_replaced_roster = snapshot
+            .group_controls
+            .iter()
+            .rposition(|record| record.starts_with(b"TCGS"));
         let eviction = snapshot
             .group_controls
             .iter()
@@ -2374,7 +2397,8 @@ fn append_group_control_records(
                     && Some(index) != latest_invitation_book
                     && Some(index) != latest_control_outbox
                     && Some(index) != latest_group_outbox_cancellation
-                    && Some(index) != latest_deferred_rosters)
+                    && Some(index) != latest_deferred_rosters
+                    && Some(index) != latest_replaced_roster)
                     .then_some(index)
             })
             .expect("the retained checkpoints fit inside the control record bound");
@@ -2407,6 +2431,21 @@ fn latest_group_outbox_cancellation(
         }
     }
     Ok(latest)
+}
+
+/// The checkpoint of the roster an accepted transition replaced (`TCGS`, 0145):
+/// the tag, the group ID and the roster's preimage, length-prefixed.
+fn encode_replaced_roster_record(
+    group_id: tacenta_group::GroupId,
+    preimage: &[u8],
+) -> Result<Vec<u8>, GroupOperationError> {
+    let length = u32::try_from(preimage.len()).map_err(|_| GroupOperationError::Policy)?;
+    let mut record = Vec::with_capacity(4 + tacenta_group::GROUP_ID_LEN + 4 + preimage.len());
+    record.extend_from_slice(b"TCGS");
+    record.extend_from_slice(group_id.as_bytes());
+    record.extend_from_slice(&length.to_be_bytes());
+    record.extend_from_slice(preimage);
+    Ok(record)
 }
 
 fn encode_group_outbox_cancellation_record(
@@ -2821,6 +2860,10 @@ mod deferred_guard_tests;
 #[cfg(test)]
 #[path = "group_operations_delivery_guard_tests.rs"]
 mod delivery_guard_tests;
+
+#[cfg(test)]
+#[path = "group_operations_replaced_roster_tests.rs"]
+mod replaced_roster_tests;
 
 #[cfg(test)]
 mod tests {

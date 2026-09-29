@@ -75,15 +75,15 @@ fn config_of_alice(t: &Three) -> Config {
 }
 
 /// Alice (authority) with `n` other members, all at revision 1.
-struct Crew {
-    alice: GroupClient,
-    alice_store: SharedStore,
-    alice_config: Config,
-    alice_member: Member,
-    others: Vec<(GroupClient, SharedStore, Member, DeviceAddr)>,
+pub(super) struct Crew {
+    pub(super) alice: GroupClient,
+    pub(super) alice_store: SharedStore,
+    pub(super) alice_config: Config,
+    pub(super) alice_member: Member,
+    pub(super) others: Vec<(GroupClient, SharedStore, Member, DeviceAddr)>,
 }
 
-async fn crew(n: usize) -> Crew {
+pub(super) async fn crew(n: usize) -> Crew {
     let (directory, relay) = start_server().await;
     let alice_config = config(directory, relay, "+alice", 1);
     let alice_store = SharedStore::default();
@@ -123,11 +123,11 @@ async fn crew(n: usize) -> Crew {
 }
 
 impl Crew {
-    fn member(&self, index: usize) -> Member {
+    pub(super) fn member(&self, index: usize) -> Member {
         self.others[index].2.clone()
     }
 
-    fn recipient(&self, index: usize) -> (Member, DeviceAddr) {
+    pub(super) fn recipient(&self, index: usize) -> (Member, DeviceAddr) {
         (self.others[index].2.clone(), self.others[index].3.clone())
     }
 }

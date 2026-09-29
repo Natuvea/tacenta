@@ -174,6 +174,7 @@ mod roster_installation;
 mod route_and_authority_guards;
 mod scale_probe;
 mod send_and_control_dispatch;
+mod stranger_traffic;
 
 #[tokio::test]
 async fn a_crash_between_receive_and_commit_redelivers_the_group_message() {

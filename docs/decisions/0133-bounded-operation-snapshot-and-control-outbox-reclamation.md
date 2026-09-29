@@ -1,6 +1,6 @@
 # 0133 — bounded operation snapshot and control-outbox reclamation
 
-Amends 0099, 0103, 0107, 0113, 0122 and 0124. Amended by 0135 and 0144.
+Amends 0099, 0103, 0107, 0113, 0122 and 0124. Amended by 0135, 0144 and 0145.
 
 ## Decision
 
@@ -10,7 +10,7 @@ group members.
 
 | Collection | Bound |
 |---|---|
-| `group_controls` | 64 records (unchanged from 0122), and at most one each of the checkpoint records `TCGV`, `TCGB`, `TCGO`, `TCGX` and, since 0142, `TCGQ` (the held roster controls): a new checkpoint replaces the previous one of its kind in the same candidate snapshot |
+| `group_controls` | 64 records (unchanged from 0122), and at most one each of the checkpoint records `TCGV`, `TCGB`, `TCGO`, `TCGX` and, since 0142 and 0145, `TCGQ` (the held roster controls) and `TCGS` (the roster the accepted roster replaced): a new checkpoint replaces the previous one of its kind in the same candidate snapshot |
 | `inbox` | 64 records, newest kept |
 | `dedup` | 512 entries, newest kept. An entry is the 32-byte payload commitment of an accepted context; 512 is 8 members times the 64-sequence window of 0113, the most the receiver itself can retain |
 | `outbox` | the records of at most 8 live logical sends (0103) and of the 16 most recent terminal logical sends. When a commit leaves more terminal sends, the records of the oldest are dropped in that same commit |
