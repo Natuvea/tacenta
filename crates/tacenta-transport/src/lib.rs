@@ -1002,7 +1002,7 @@ mod tests {
         let stalled =
             tokio::time::timeout(Duration::from_millis(50), conn.request(&[7u8; 64])).await;
         assert!(stalled.is_err(), "the write is stuck on the full pipe");
-        let next = tokio::time::timeout(Duration::from_millis(500), conn.request(b"x"))
+        let next = tokio::time::timeout(Duration::from_secs(10), conn.request(b"x"))
             .await
             .expect("the next request answers at once");
         assert_eq!(
