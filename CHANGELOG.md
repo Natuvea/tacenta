@@ -24,7 +24,18 @@ commits carry their story.
   its disposition is committed; the plain `Client::receive` is unchanged. No SDK
   head, the CLI or the server reaches it, and `GroupClient` is outside the SDK
   surface manifest. `docs/claims.md` states its limits and what it does not yet
-  do.
+  do. Its experimental API also changed: `GroupClient::open` refuses a client
+  whose state is not the snapshot's (`GroupError::StateMismatch`); the
+  `OperationStore` port gains `durable_generation` and `commit_after`, and a
+  coordinator's commit is refused when the store holds a snapshot it has not
+  seen; `receive` offers a committed group event again, with its event ID, until
+  `acknowledge_delivery` (`Inbound::redelivered`, `Inbound::lost_events`,
+  `GroupClient::delivery_cursor`); `install_roster` tells the member it removes
+  wherever it is listed and reports `Install::unprepared`; a roster control that
+  arrives ahead of its predecessor is kept (`GroupOutcome::RosterDeferred`,
+  `GroupClient::held_roster_controls`); `GroupReceiver::events_issued` is new.
+  Client export order is now a function of the state (`export_state` writes the
+  peer sessions in address order).
 
 ## v1.12.1 (2026-09-11)
 
