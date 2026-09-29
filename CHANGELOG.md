@@ -14,9 +14,14 @@ commits carry their story.
   that Swift and Kotlin use gains a `kind` field, so code that constructs
   `Message` values must pass it, and the WebAssembly `Message` gains a `kind`
   string. The TypeScript head's `Message` carries it as `kind` (`"direct"`,
-  `"group"` or `"receipt"`; a constructor default of `"direct"` keeps code that
-  builds `Message` values compiling). The class is the relay's outer label, not
-  an authenticated property of the message.
+  `"group"` or `"receipt"`; a constructor default of `"direct"` is meant to keep
+  code that builds `Message` values with two arguments compiling). **The
+  TypeScript change is unverified in this repository:** it was type-checked only
+  as a fragment under `tsc` (4.9.5 and 5.9.3) against a hand-written stub of the
+  WebAssembly declarations. The package was not built with `wasm-pack` against
+  the generated bindings, its end-to-end test was not run, and no test reads
+  `Message.kind`. The class is the relay's outer label, not an authenticated
+  property of the message.
 - A bounded experimental group profile (the `tacenta-group` crate and, in
   `tacenta-client`, the experimental `GroupClient` with its group-operation
   modules: eight members, one device each, one authority) is in the tree for
