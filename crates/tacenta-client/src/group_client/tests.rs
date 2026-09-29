@@ -161,6 +161,7 @@ mod boundaries;
 mod delivery_and_receive_next_guards;
 mod durable_root;
 mod freeze_and_recovery;
+mod held_roster_controls;
 mod install_roster_result_guards;
 mod invitation_payload_refusals;
 mod recovery_rebuild;
