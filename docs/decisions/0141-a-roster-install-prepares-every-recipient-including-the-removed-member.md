@@ -1,6 +1,7 @@
 # 0141 — a roster install prepares every recipient, including the member it removes
 
-> Amends 0124, 0125 and 0131.
+> Amends 0124, 0125 and 0131. Amended by 0145 (point 2 finds the replaced roster in a
+> checkpoint, not in the transcript).
 
 `GroupClient::install_roster` installs a successor roster locally and sends it
 to a list of recipients (0124). The install and the first recipient's exact
@@ -23,14 +24,14 @@ that is now installed. That made the outcome depend on the order of the list.
 2. **The member an install removes is a recipient of it, wherever it is
    listed.** Once the successor is installed the recipient check for the
    remaining recipients also admits the members of the roster the installed
-   successor replaced. That roster is found by digest, not remembered: the
-   successor names its predecessor's digest, and the predecessor's preimage is
-   one of the roster records the coordinator keeps in `group_controls` (0122,
-   `TCGC`). It therefore survives a restart with no new state. It is the
-   immediate predecessor only, and it is available while its record is among the
-   64 retained control records; if it has been evicted, the removed member is
-   not covered and the call is refused up front (point 1) instead of leaving the
-   recipient in `pending`.
+   successor replaced. That roster is found by digest, not remembered in memory:
+   the successor names its predecessor's digest, and the predecessor's preimage
+   is kept in a checkpoint record (`TCGS`, 0145) that the commit installing the
+   successor writes. It therefore survives a restart. It is the immediate
+   predecessor only. (As first written this point read the preimage from the
+   roster records of the control transcript, `TCGC`, which 64 later control
+   records evict; a peer that is not in the group could cause them, and the first
+   call was not refused up front as this point said. 0145 replaces the lookup.)
 
 3. **A recipient that already holds this control is served from it.** A retry
    of `install_roster` for an installed successor finds an existing handoff:
@@ -84,9 +85,8 @@ revision-1 traffic that was refused and never learned it was out.
 
 ## Limits this record leaves, exactly
 
-- Only the immediate predecessor's members are covered, and only while its
-  record is retained. A member removed two installs ago, or whose record was
-  evicted by 64 later control records, cannot be sent a notice by this call.
+- Only the immediate predecessor's members are covered (0145). A member removed
+  two installs ago cannot be sent a notice by this call.
 - A removed member that never receives the control (relay loss, an unreachable
   device) is not followed up: there is no catch-up or acknowledgement protocol
   (0142 states the limit for members).
