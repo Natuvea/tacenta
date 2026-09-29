@@ -159,6 +159,7 @@ async fn joined(
 
 mod boundaries;
 mod delivery_and_receive_next_guards;
+mod drain_faults_and_receiver_schedule;
 mod durable_root;
 mod freeze_and_recovery;
 mod held_roster_controls;
