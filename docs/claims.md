@@ -577,10 +577,13 @@ not in our proofs' dependency cone.
   **Measured** on one host (`docs/reproduce.md` has the tables and the
   conditions): a logical send of 1,000 bytes to every other member costs 4, 7 and
   22 whole-snapshot commits at 2, 3 and 8 members, and **from an empty outbox**
-  the snapshot is 191,542, 221,149 and 371,518 bytes. **In steady state it is
+  the snapshot is 191,748, 221,355 and 371,724 bytes. **In steady state it is
   larger and slower**: at 8 members after 17 sends, with sixteen terminal sends
-  retained, a snapshot of 1,727,803 bytes and 502 to 519 ms for one logical send, against
-  371,518 bytes and 258 to 268 ms for the first. The bounds above are on record
+  retained, a snapshot of 1,728,009 bytes and 587 to 596 ms for one logical send,
+  against 371,724 bytes and 269 to 277 ms for the first. The times are of one run
+  at a load average of 15 and move with the load (502 to 510 ms in steady state at
+  a load of about 1, 515 to 517 ms at 4 to 5, in earlier runs); the bytes and the
+  commit counts do not. The bounds above are on record
   counts and on the size of each record; they do not bound the snapshot in bytes
   at a stated figure. The provider state inside the snapshot holds a session for
   every peer that ever sent a decryptable message and has no eviction (one review

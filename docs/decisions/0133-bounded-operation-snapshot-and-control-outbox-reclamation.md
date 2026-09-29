@@ -81,10 +81,16 @@ every control handoff dispatched.
   The guards that decide whether a control may be prepared (recipient
   authorization, invitation status, roster acceptance) are independent of that
   evidence; the evidence itself, not a decision, is what is dropped.
-- The snapshot is still rewritten whole on every commit, so its bounded size is
-  its per-commit cost. With the bounds above the collections other than provider
-  state and the receiver state (bounded to 256 KiB by 0114) stay in the low
-  hundreds of kilobytes.
+- The snapshot is still rewritten whole on every commit, so its size is its
+  per-commit cost, and the bounds above are on record counts and on the size of
+  each record, not on the snapshot in bytes. Measured (`docs/reproduce.md`): at
+  eight members the first send from an empty outbox leaves a snapshot of about
+  372 KB, of which 259 KB is provider state; after seventeen sends, with sixteen
+  terminal sends retained, it is 1.73 MB, of which the provider state is still
+  259 KB and the receiver state (bounded to 256 KiB by 0114) is 589 bytes, so
+  about 1.47 MB is the outbox and the other collections. (As first written this
+  bullet said they "stay in the low hundreds of kilobytes"; the steady state does
+  not.)
 - Records that older ADRs describe as retained "in durable storage" without a
   bound are now retained under the bounds above.
 

@@ -103,8 +103,10 @@ was refused up front.
 - The checkpoint is a decrypted roster in the unsealed snapshot. The snapshot
   already holds the accepted roster (`TCGV`) and, until this record, the replaced
   roster in the transcript.
-- The snapshot grows by the checkpoint: 489 bytes at eight members
-  (`docs/reproduce.md` has the measured sizes).
+- The snapshot grows by the checkpoint: 24 bytes of framing and the replaced
+  roster, 489 bytes when it has eight members with 32-byte identities, and 206
+  bytes in the measured group, where the replaced roster is the one-member
+  genesis (`docs/reproduce.md`).
 
 ## The five questions
 
