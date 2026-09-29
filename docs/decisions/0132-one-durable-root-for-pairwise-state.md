@@ -46,7 +46,9 @@ also a reuse of one message key for two plaintexts.
 
 - Each direct send and each received direct item rewrites the whole snapshot.
   The measured commit cost is fsync-dominated (about 8 ms) at a 190 to 430 KB
-  snapshot, so a direct exchange now costs one commit per message where it cost
+  snapshot (the size of the first send from an empty outbox; the commit latency of
+  a snapshot of a group in use, about four times larger, was not measured,
+  `docs/reproduce.md`), so a direct exchange now costs one commit per message where it cost
   none. This is the price of a single root; a journal would lower it (0091).
 - Under a `GroupClient`, application delivery of a direct message is
   at-most-once, with a window: the state commit precedes the acknowledgement,

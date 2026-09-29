@@ -1,5 +1,7 @@
 # 0107 — bounded group provider binding
 
+> Amended by 0133 (the collections it retains are bounded).
+
 > Status (2026-09-29, after 0131): `GroupClient::receive` decrypts with
 > `decrypt_with_outcome` and takes the authenticated peer and the state effect
 > from it; no caller supplies either. The plain `Client::receive` still decrypts

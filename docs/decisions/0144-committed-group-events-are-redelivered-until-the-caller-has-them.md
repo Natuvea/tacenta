@@ -58,7 +58,9 @@ stable ID" was not met, and 0131 and `docs/claims.md` said so.
    holds). Retention is the 64 newest `inbox` records, and one `receive` call now
    processes at most 32 relay items, so the events of one failed call always fit;
    they can be evicted only by further failing calls that keep committing mail
-   without ever handing it over.
+   without ever handing it over. (`redelivery::a_lost_event_is_reported_once_and_then_cleared`
+   evicts an event that way, by crashing after every call while a peer floods
+   junk; before 0148 the only test of eviction removed records by hand.)
 
 6. **Not changed.** A direct message is committed and then handed over exactly
    once (0132): its plaintext is not kept, and a crash between the commit and the

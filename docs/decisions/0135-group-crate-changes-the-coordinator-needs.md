@@ -109,10 +109,12 @@ changes together, so the workarounds go.
    `crates/tacenta-client/src/tests/review_live.rs` (the final attempt in both
    outboxes) and `group_client::tests` (an invitee joining at a later revision,
    the ordering of `next_roster`, a removed member restarting with its own
-   receiver). `tooling/run-group-chat-demo.sh` runs them and fails if one is
-   renamed, removed or ignored, or if a step's test names or count differ from
-   `tooling/group-chat-demo-tests.txt`. It does not check that a test's body
-   still asserts what its name says.
+   receiver). `tooling/run-group-chat-demo.sh` runs them and, against an
+   unedited `tooling/group-chat-demo-tests.txt`, fails if one is renamed,
+   removed or ignored, or if a step's test names or count differ from the
+   manifest. It does not check that a test's body still asserts what its name
+   says, and it does not see a change made together with the manifest edit that
+   lists it; its header and `docs/claims.md` list what else it cannot see.
 4. **Does it preserve wire compatibility with a named profile?** Yes. No record
    layout changes: a `TCGA` record for a final attempt has the bytes it always
    had; older code refused to replay it, and nothing was released.

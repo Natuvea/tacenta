@@ -41,8 +41,10 @@ that is now installed. That made the outcome depend on the order of the list.
 
 4. **`Install` says what a retry needs.** `delivered`: the relay accepted it.
    `pending`: a control is committed and not accepted; `dispatch_pending_controls`
-   sends it (a recipient whose third and final attempt was not confirmed also
-   stays here and is not retried, 0134). `unprepared` (new): nothing was
+   sends it when it is still waiting for the relay. A recipient whose handoff is
+   final also stays here and nothing sends it again: its third and final attempt
+   was not confirmed (0134), or the control was cancelled, for example by the
+   revocation of that recipient's invitation. `unprepared` (new): nothing was
    committed for this recipient (a transient failure while preparing, or a full
    control outbox); call `install_roster` again with the same successor. Before
    this record a recipient in `pending` could be one for whom nothing was
@@ -67,8 +69,9 @@ retry failed the same way. Removing Bob and Carol with recipients `[bob,
 carol]` told only Bob. The lane tests listed the removed member first, which is
 why they passed; the order of members in a roster is the canonical byte order
 (0136), unrelated to who is removed, so which order an application produces is
-luck. No confidentiality is lost (the senders stop encrypting to a removed
-member once they apply the roster), but the removed member kept sending
+luck. Members that have applied the roster stop encrypting to a removed
+member, but a member that has not (it never received the control, or holds it
+for a missing predecessor, 0146) still does; the removed member kept sending
 revision-1 traffic that was refused and never learned it was out.
 
 ## Considered

@@ -1,5 +1,7 @@
 # 0117 — bounded group live dispatch
 
+> Amended by 0135 (the group crate changes the dispatch needs) and 0134.
+
 > Status (2026-09-29, after 0134): the freeze is a latch for the store that
 > `GroupClient::open` wraps. After a write that is not `committed`, every later
 > preparation, dispatch and receive returns `frozen` before it encrypts or sends,
