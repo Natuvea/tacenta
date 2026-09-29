@@ -165,6 +165,7 @@ mod held_roster_controls;
 mod held_roster_controls_guards;
 mod install_roster_result_guards;
 mod invitation_payload_refusals;
+mod open_export_and_acknowledgement_guards;
 mod recovery_rebuild;
 mod redelivery;
 mod roster_fanout;
