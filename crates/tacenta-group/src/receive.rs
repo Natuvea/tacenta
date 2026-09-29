@@ -102,6 +102,14 @@ impl GroupReceiver {
         }
     }
 
+    /// How many events this receiver has issued: the next stable event ID
+    /// (decision 0144). Every accepted context, and every deferred one that a
+    /// roster later accepts, takes the next ID, so the IDs issued so far are
+    /// `0..events_issued()`. It survives the state codec and a removal.
+    pub fn events_issued(&self) -> u64 {
+        self.next_event_id
+    }
+
     /// Whether this receiver can currently accept application contexts.
     pub fn status(&self) -> ReceiverStatus {
         if self.roster.closed {
@@ -513,6 +521,34 @@ mod tests {
         assert_eq!(FUTURE_REVISIONS, 2);
         assert_eq!(MAX_DEFERRED, 4);
         assert_eq!(MAX_RECEIVER_STATE_LEN, 262_144);
+    }
+
+    #[test]
+    fn events_issued_counts_accepted_events_and_survives_the_state_codec() {
+        let mut receiver = receiver();
+        assert_eq!(receiver.events_issued(), 0);
+        receiver.receive(&context(2, 1), &alice(), [1; DIGEST_LEN]);
+        receiver.receive(&context(2, 2), &alice(), [2; DIGEST_LEN]);
+        // A duplicate, a conflict and a deferral issue no ID.
+        receiver.receive(&context(2, 2), &alice(), [2; DIGEST_LEN]);
+        receiver.receive(&context(2, 2), &alice(), [3; DIGEST_LEN]);
+        receiver.receive(&context(3, 9), &alice(), [4; DIGEST_LEN]);
+        assert_eq!(receiver.events_issued(), 2);
+        let encoded = receiver.encode_state().unwrap();
+        let recovered = GroupReceiver::decode_state(
+            &encoded,
+            |_| [9; DIGEST_LEN],
+            |bytes| {
+                let ctx = ApplicationContext::decode(bytes).unwrap();
+                match (ctx.revision, ctx.logical_sequence) {
+                    (2, 1) => [1; DIGEST_LEN],
+                    (2, 2) => [2; DIGEST_LEN],
+                    _ => [4; DIGEST_LEN],
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(recovered.events_issued(), 2);
     }
 
     #[test]

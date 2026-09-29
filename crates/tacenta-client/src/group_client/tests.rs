@@ -159,6 +159,7 @@ async fn joined(
 
 mod boundaries;
 mod durable_root;
+mod redelivery;
 mod roster_fanout;
 mod scale_probe;
 

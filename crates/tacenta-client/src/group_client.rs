@@ -1,4 +1,4 @@
-//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0141, 0143).
+//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0141, 0143, 0144).
 //!
 //! **Experimental.** This is the profile of the bounded group experiment: at
 //! most eight members, one device each, one authority, one group per client.
@@ -13,7 +13,10 @@
 //! - **Receive is staged.** [`receive`](GroupClient::receive) decrypts each item
 //!   with the provider's outcome, commits its disposition and the provider
 //!   state together, and only then acknowledges the committed prefix (0131).
-//!   The authenticated peer and the state effect come from the provider.
+//!   The authenticated peer and the state effect come from the provider. A
+//!   committed group event that the caller was not handed, or has not
+//!   acknowledged, is offered again with its event ID (0144); a direct message
+//!   is handed over once.
 //! - **One durable root.** Every pairwise operation, direct messages included,
 //!   commits the exported provider state before it has an external effect
 //!   (0132). A restart from the snapshot cannot rewind the ratchet.
@@ -55,7 +58,7 @@ use crate::group_control_outbox::Outbox as ControlOutbox;
 use crate::group_operations::{
     AuthorityControlState, AuthorityInvitationState, GroupLiveError, GroupOperationError,
     GroupPayloadDisposition, GroupReceiveInput, InstalledControlState, InvitationAdmission,
-    commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
+    commit_delivery_cursor, commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
     commit_group_invitation_revocation, commit_group_invitation_transition,
     commit_group_payload_with_outbox, commit_logical_intent, commit_malformed_group_payload,
     commit_provider_state, dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
@@ -63,7 +66,7 @@ use crate::group_operations::{
     prepare_installed_roster_control, prepare_outbound_invitation_control,
     prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_invitation_book,
     recover_group_outbox, recover_group_receiver, recover_group_roster_view,
-    roster_control_recipient_is_entitled,
+    roster_control_recipient_is_entitled, undelivered_events,
 };
 use crate::{Client, Error, MailSignal, MessageKind, Received};
 
@@ -215,6 +218,14 @@ pub struct GroupReceipt {
 /// and acknowledged.
 #[derive(Clone, Debug, Default)]
 pub struct Inbound {
+    /// Events committed by an earlier call, or by an earlier process, that the
+    /// caller was not handed or has not acknowledged, with the event IDs they
+    /// had, in ID order (0144). The application deduplicates by event ID.
+    pub redelivered: Vec<GroupEvent>,
+    /// Events that were issued and are no longer retained, so they cannot be
+    /// redelivered (0144); zero unless calls kept failing while mail kept
+    /// arriving.
+    pub lost_events: u64,
     /// The group-class items, in relay order.
     pub items: Vec<GroupReceipt>,
     /// Items of any other class, returned after their provider state was
@@ -231,9 +242,11 @@ pub struct Inbound {
 }
 
 impl Inbound {
-    /// The newly accepted application messages across every item, in order.
+    /// The application messages this call has to offer, in order: the events
+    /// redelivered from earlier calls, then the newly accepted ones across every
+    /// item.
     pub fn events(&self) -> Vec<&GroupEvent> {
-        let mut events = Vec::new();
+        let mut events: Vec<&GroupEvent> = self.redelivered.iter().collect();
         for receipt in &self.items {
             match &receipt.outcome {
                 GroupOutcome::Event(event) => events.push(event),
@@ -309,6 +322,10 @@ pub struct GroupClient<P: CryptoProvider = DefaultProvider> {
     /// Set when an operation failed after it had consumed pairwise state and
     /// before that state was committed; cleared by `recover` (0134).
     poisoned: bool,
+    /// One more than the highest event ID a completed `receive` in this process
+    /// has handed to its caller: the most the delivery cursor may advance to
+    /// (0144).
+    handed_over: u64,
 }
 
 impl<P: CryptoProvider> GroupClient<P> {
@@ -349,6 +366,7 @@ impl<P: CryptoProvider> GroupClient<P> {
             snapshot,
             group: None,
             poisoned: false,
+            handed_over: 0,
         })
     }
 
@@ -583,13 +601,56 @@ impl<P: CryptoProvider> GroupClient<P> {
             .map_err(transport_or_client)
     }
 
+    /// The number of group events the caller has been handed and needs no more:
+    /// events with an ID below it are delivered (0144).
+    pub fn delivery_cursor(&self) -> u64 {
+        self.snapshot.delivery_cursor
+    }
+
+    /// Records that the caller has the events every completed `receive` handed
+    /// over, and drops their plaintext from the snapshot (0144). `receive` does
+    /// this itself when it is called again; call it directly once the events are
+    /// stored, for example before a clean shutdown, so that they are not
+    /// offered again after a restart. It commits one snapshot when there is
+    /// something to acknowledge, and a commit that does not succeed freezes the
+    /// coordinator like any other.
+    pub fn acknowledge_delivery(&mut self) -> Result<(), GroupError> {
+        if self.is_frozen() {
+            return Err(GroupError::Frozen);
+        }
+        if self.handed_over > self.snapshot.delivery_cursor {
+            commit_delivery_cursor(&mut self.store, &mut self.snapshot, self.handed_over)?;
+        }
+        Ok(())
+    }
+
     /// Fetches what the relay holds, commits every item's disposition, and
     /// acknowledges the committed prefix (0131). `now` is the explicit logical
     /// time invitations are evaluated at.
+    ///
+    /// The call first acknowledges what the previous completed call handed over
+    /// (0144), then returns the events committed earlier and not acknowledged
+    /// yet in [`Inbound::redelivered`], with the IDs they had. It processes at
+    /// most 32 relay items; the rest stay at the relay for the next call.
     pub async fn receive(&mut self, now: u64) -> Result<Inbound, GroupError> {
         if self.is_frozen() {
             return Err(GroupError::Frozen);
         }
+        self.acknowledge_delivery()?;
+        let mut inbound = Inbound::default();
+        let undelivered = undelivered_events(&self.snapshot);
+        let issued = self
+            .group
+            .as_ref()
+            .and_then(|state| state.receiver.as_ref())
+            .map_or(0, GroupReceiver::events_issued);
+        inbound.lost_events = issued
+            .saturating_sub(self.snapshot.delivery_cursor)
+            .saturating_sub(undelivered.len() as u64);
+        inbound.redelivered = undelivered
+            .iter()
+            .map(|(event_id, context)| GroupEvent::new(*event_id, context))
+            .collect();
         let fetched = match self.client.fetch_staged().await {
             Err(Error::Io(_)) => {
                 self.client.reconnect_with_patience().await?;
@@ -597,10 +658,9 @@ impl<P: CryptoProvider> GroupClient<P> {
             }
             other => other?,
         };
-        let mut inbound = Inbound::default();
         let mut processed = 0usize;
         let mut stopped = None;
-        for message in &fetched.messages {
+        for message in fetched.messages.iter().take(MAX_RECEIVE_ITEMS) {
             match self.stage(message, now, &mut inbound).await {
                 Ok(()) => processed += 1,
                 Err(error) => {
@@ -619,6 +679,11 @@ impl<P: CryptoProvider> GroupClient<P> {
             Some(error) if processed == 0 => return Err(error),
             _ => {}
         }
+        // Nothing awaits after this point, so a dropped future cannot have
+        // handed anything over without recording it (0144).
+        if let Some(highest) = inbound.events().iter().map(|event| event.event_id).max() {
+            self.handed_over = self.handed_over.max(highest.saturating_add(1));
+        }
         Ok(inbound)
     }
 
@@ -627,6 +692,8 @@ impl<P: CryptoProvider> GroupClient<P> {
         loop {
             let inbound = self.receive(now).await?;
             if !(inbound.items.is_empty()
+                && inbound.redelivered.is_empty()
+                && inbound.lost_events == 0
                 && inbound.direct.is_empty()
                 && inbound.dropped == 0
                 && !inbound.frozen)
@@ -1446,6 +1513,11 @@ async fn drive_send<P: CryptoProvider>(
     }
     Ok(())
 }
+
+/// The most relay items one `receive` call processes: half the `inbox` bound of
+/// 0133, so the events of one call always fit the retention that redelivery
+/// reads (0144).
+const MAX_RECEIVE_ITEMS: usize = 32;
 
 #[cfg(test)]
 mod tests;

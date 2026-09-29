@@ -471,11 +471,19 @@ async fn a_replayed_ciphertext_and_a_repeated_context_are_refused_and_a_restore_
         .await
         .unwrap();
     let inbound = bob.receive(0).await.unwrap();
-    assert!(inbound.events().is_empty());
+    assert!(
+        inbound.items.is_empty(),
+        "the replayed ciphertext produces no new event"
+    );
     assert_eq!(
         inbound.dropped, 1,
         "the replay after the restore is refused"
     );
+    // The event the first process handed over was never acknowledged, so the
+    // restarted process is offered it again with the same ID (0144).
+    assert_eq!(inbound.redelivered.len(), 1);
+    assert_eq!(inbound.redelivered[0].event_id, 0);
+    assert_eq!(inbound.redelivered[0].payload, b"once");
 
     // The same context in a fresh ciphertext is a duplicate with the same event
     // ID, after the restore too; changed content under it is a conflict.

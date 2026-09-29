@@ -2362,6 +2362,90 @@ fn record_receive(
     Ok(())
 }
 
+/// Where the pieces of a `TCGR` receive record lie: the context bytes (empty
+/// unless the disposition was accepted and the context is still retained) and,
+/// for an accepted disposition, its event ID.
+struct ReceiveRecordLayout {
+    context: std::ops::Range<usize>,
+    accepted_event: Option<u64>,
+}
+
+fn receive_record_layout(record: &[u8]) -> Option<ReceiveRecordLayout> {
+    // TCGR, effect, length-prefixed context, commitment, disposition tag, and
+    // for accepted and duplicate the event ID (see `encode_receive_record`).
+    let rest = record.strip_prefix(b"TCGR")?;
+    let length = u32::from_be_bytes(rest.get(1..5)?.try_into().ok()?) as usize;
+    let context = 9..9usize.checked_add(length)?;
+    let after = record.get(context.end..)?;
+    let (tag, tail) = after.get(32..)?.split_first()?;
+    let accepted_event = match tag {
+        0 => Some(u64::from_be_bytes(tail.get(..8)?.try_into().ok()?)),
+        _ => None,
+    };
+    Some(ReceiveRecordLayout {
+        context,
+        accepted_event,
+    })
+}
+
+/// The accepted group events the snapshot still holds at or above its delivery
+/// cursor, in event order, each with the context it was accepted with (0144).
+/// These are the events a caller was never handed, or has not acknowledged.
+pub(crate) fn undelivered_events(snapshot: &OperationSnapshot) -> Vec<(u64, ApplicationContext)> {
+    let mut events: Vec<(u64, ApplicationContext)> = Vec::new();
+    for record in &snapshot.inbox {
+        let Some(layout) = receive_record_layout(record) else {
+            continue;
+        };
+        let Some(event_id) = layout.accepted_event else {
+            continue;
+        };
+        if event_id < snapshot.delivery_cursor || layout.context.is_empty() {
+            continue;
+        }
+        let Ok(context) = ApplicationContext::decode(&record[layout.context]) else {
+            continue;
+        };
+        if !events.iter().any(|(known, _)| *known == event_id) {
+            events.push((event_id, context));
+        }
+    }
+    events.sort_by_key(|(event_id, _)| *event_id);
+    events
+}
+
+/// Advances the delivery cursor and, in the same commit, rewrites the `inbox`
+/// records of the events it delivers without their context bytes, so accepted
+/// plaintext stays in the snapshot only until it is acknowledged (0144).
+pub(crate) fn commit_delivery_cursor<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    cursor: u64,
+) -> Result<(), GroupOperationError> {
+    let mut candidate = begin_candidate(&*store, snapshot)?;
+    candidate.delivery_cursor = cursor;
+    for record in &mut candidate.inbox {
+        let Some(layout) = receive_record_layout(record) else {
+            continue;
+        };
+        if layout
+            .accepted_event
+            .is_some_and(|event_id| event_id < cursor)
+            && !layout.context.is_empty()
+        {
+            let mut scrubbed = record[..5].to_vec();
+            scrubbed.extend_from_slice(&0u32.to_be_bytes());
+            scrubbed.extend_from_slice(&record[layout.context.end..]);
+            *record = scrubbed;
+        }
+    }
+    if store.commit(&candidate) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate;
+    Ok(())
+}
+
 fn encode_roster_record(
     preimage: &[u8],
     commitment: &[u8; 32],
