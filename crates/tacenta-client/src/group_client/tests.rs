@@ -1009,7 +1009,7 @@ async fn a_removed_member_restarts_with_its_own_receiver_and_keeps_its_event_ids
     let removed_state = bob_store.durable().unwrap().application_state;
 
     // Bob restarts. The group crate restores the receiver of a removed member
-    // (0130), so he comes back with his own state and no stand-in: it is the
+    // (0139), so he comes back with his own state and no stand-in: it is the
     // durable bytes, it is not active, and it refuses everything addressed to
     // him as not active.
     drop(bob);

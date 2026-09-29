@@ -1,6 +1,6 @@
 # 0095 — bounded group logical sends and retries
 
-> Amended by 0129.
+> Amended by 0138.
 
 ## Decision
 

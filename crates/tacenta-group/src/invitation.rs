@@ -563,7 +563,7 @@ impl InvitationBook {
         if now >= invitation.expires_at {
             return Err(Error::Expired);
         }
-        // Decision 0128: one device per identity, so any active member with the
+        // Decision 0137: one device per identity, so any active member with the
         // target's identity (the exact member or another device of it) blocks
         // the invitation.
         if active_members
@@ -666,7 +666,7 @@ impl InvitationBook {
         match invitation.status {
             InvitationStatus::AcceptedPendingAdmission => {
                 // An admission is a successor of the source roster or of a
-                // later one (decision 0128).
+                // later one (decision 0137).
                 if accepted_revision <= invitation.source_revision {
                     return Err(Error::StaleSource);
                 }

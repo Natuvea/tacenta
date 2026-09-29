@@ -1,4 +1,4 @@
-# 0130 — bounded group receiver state after removal or closure
+# 0139 — bounded group receiver state after removal or closure
 
 > Amends 0114.
 

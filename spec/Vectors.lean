@@ -206,7 +206,7 @@ def printStreamVectors : IO Unit := do
 
 Each step names the model operation, whether the model accepted it, and the
 state the model holds afterwards (a refused step leaves the state unchanged).
-The Rust `tacenta-group` types replay every step; see decision 0128. The model
+The Rust `tacenta-group` types replay every step; see decision 0137. The model
 has no exact-retry rule for a duplicate invitation ID (it refuses any
 duplicate), so the traces only repeat an ID with a different target, which both
 sides refuse. Revocation carries no logical time in the model, and removal of a

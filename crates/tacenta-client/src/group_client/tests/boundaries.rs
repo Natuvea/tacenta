@@ -632,7 +632,7 @@ async fn sequences_come_from_the_group_crate_and_start_again_at_each_revision() 
         assert_eq!((sent.id.revision, sent.id.sequence), (1, expected));
     }
     // A roster change with the same members is a new revision. Sequences are
-    // per revision (0095, 0129), so the first send at revision 2 is sequence 0,
+    // per revision (0095, 0138), so the first send at revision 2 is sequence 0,
     // not 2.
     let r2 = p
         .alice

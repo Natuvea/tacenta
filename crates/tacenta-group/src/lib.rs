@@ -167,7 +167,7 @@ impl Member {
         &self.device
     }
 
-    /// The canonical roster order (decision 0127): the identity bytes, then
+    /// The canonical roster order (decision 0136): the identity bytes, then
     /// the device bytes. It is never the order of their concatenation. It is
     /// public so that a caller that builds rosters or recipient lists sorts with
     /// this rule and not a copy of it (decision 0135).

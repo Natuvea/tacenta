@@ -2,7 +2,7 @@
 
 The first block is the cold read's group-crate mutant set (IDs as in
 GROUP-CODECS-COLD-READ-2026-09-29), adapted where the fixes changed the text.
-The N block covers the guards added by decisions 0127 to 0130.
+The N block covers the guards added by decisions 0136 to 0139.
 """
 
 G = "crates/tacenta-group/src/"
@@ -102,12 +102,12 @@ add('X15', G + 'send.rs', '        if progress.attempts_reserved >= 3 {', '     
 add('X16', G + 'payload.rs', 'const MAX_GROUP_PAYLOAD_LEN: usize = 8_192;', 'const MAX_GROUP_PAYLOAD_LEN: usize = 16_384;', 'constant: group payload bound 8 KiB raised to 16 KiB')
 add('X17', G + 'receive.rs', 'const MAX_RECEIVER_STATE_LEN: usize = 262_144;', 'const MAX_RECEIVER_STATE_LEN: usize = 524_288;', 'constant: receiver state bound 256 KiB raised to 512 KiB')
 
-# ---- decision 0127: roster and recipient order is the (identity, device) pair
+# ---- decision 0136: roster and recipient order is the (identity, device) pair
 add("N01", G + "lib.rs", "            .then_with(|| self.device.cmp(&other.device))\n", "            .then_with(|| Ordering::Equal)\n", "canonical_cmp: the device no longer breaks an identity tie (equivalent: equal identities are refused by the identity rule)")
 add("N02", G + "lib.rs", "        self.identity\n            .cmp(&other.identity)\n            .then_with(|| self.device.cmp(&other.device))\n", "        self.device\n            .cmp(&other.device)\n            .then_with(|| self.identity.cmp(&other.identity))\n", "canonical_cmp: device compared before identity")
 add("N03", G + "lib.rs", "        self.identity\n            .cmp(&other.identity)\n            .then_with(|| self.device.cmp(&other.device))\n", "        [self.identity.as_slice(), self.device.as_slice()]\n            .concat()\n            .cmp(&[other.identity.as_slice(), other.device.as_slice()].concat())\n", "canonical_cmp: back to the concatenation order of 75c9a20")
 
-# ---- decision 0128: invitation creation and admission
+# ---- decision 0137: invitation creation and admission
 add("N04", G + "invitation.rs", "        if active_members.len() >= MAX_MEMBERS {", "        if false && active_members.len() >= MAX_MEMBERS {", "create: the eight-member cap is not checked")
 add("N05", G + "invitation.rs", "            .any(|member| member.identity() == invitation.target.identity())", "            .any(|member| member == &invitation.target)", "create: only the exact member blocks an invitation (a second device is allowed)")
 add("N06", G + "invitation.rs", "                if accepted_revision <= invitation.source_revision {", "                if false && accepted_revision <= invitation.source_revision {", "admit: a revision at or before the source is accepted")
@@ -115,7 +115,7 @@ add("N07", G + "invitation.rs", "                if accepted_revision <= invitat
 add("N08", G + "invitation.rs", "            InvitationStatus::Admitted { revision } if revision == accepted_revision => {", "            InvitationStatus::Admitted { revision: _ } if true => {", "admit: a repeated admission at another revision returns the record instead of conflicting")
 add("N09", G + "invitation.rs", "        if active_members.len() >= MAX_MEMBERS {", "        if active_members.len() > MAX_MEMBERS {", "create: a roster of exactly eight members can still invite (off by one)")
 
-# ---- decision 0129: stale sends and sequence allocation
+# ---- decision 0138: stale sends and sequence allocation
 add("N10", G + "send.rs", "        if send.id.revision < self.applied_revision {", "        if false && send.id.revision < self.applied_revision {", "record: a send older than the applied revision is accepted")
 add("N11", G + "send.rs", "        if send.id.revision < self.applied_revision {", "        if send.id.revision <= self.applied_revision {", "record: a send at the applied revision is refused")
 add("N12", G + "send.rs", "            .is_some_and(|highest| send.id.sequence <= highest)", "            .is_some_and(|_| false)", "record: a sequence below the retained maximum is accepted")
@@ -127,7 +127,7 @@ add("N17", G + "send.rs", "        self.applied_revision = self.applied_revision
 add("N18", G + "send.rs", "            .filter(|send| send.id.revision == revision && &send.id.sender == sender)", "            .filter(|send| &send.id.sender == sender)", "highest_sequence: not scoped to the revision")
 add("N19", G + "send.rs", "            .filter(|send| send.id.revision == revision && &send.id.sender == sender)", "            .filter(|send| send.id.revision == revision)", "highest_sequence: not scoped to the sender")
 
-# ---- decision 0130: terminal receiver state
+# ---- decision 0139: terminal receiver state
 add("N20", G + "receive.rs", "        if terminal && accepted_count != 0 {", "        if false && terminal && accepted_count != 0 {", "decode_state: a terminal state may carry accepted entries")
 add("N21", G + "receive.rs", "        if terminal && deferred_count != 0 {", "        if false && terminal && deferred_count != 0 {", "decode_state: a terminal state may carry deferred contexts")
 add("N22", G + "receive.rs", "        let terminal = roster.closed || !roster.members.iter().any(|member| member == &local);", "        let terminal = !roster.members.iter().any(|member| member == &local);", "decode_state: a closed roster is not terminal")

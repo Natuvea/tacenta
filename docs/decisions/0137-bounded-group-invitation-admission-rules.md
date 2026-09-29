@@ -1,4 +1,4 @@
-# 0128 — bounded group invitation admission rules and revision numbering
+# 0137 — bounded group invitation admission rules and revision numbering
 
 > Clarifies 0093. Aligns `spec/Tacenta/Group.lean` with the code.
 

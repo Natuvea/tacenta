@@ -34,7 +34,7 @@ pub enum ReceiveDisposition {
     Rejected(ReceiveRefusal),
 }
 
-/// Whether a receiver can accept application contexts (decision 0130).
+/// Whether a receiver can accept application contexts (decision 0139).
 ///
 /// A recovered `NotMember` or `Closed` receiver is a valid terminal state: it
 /// refuses every application context and carries no accepted or deferred
@@ -284,7 +284,7 @@ impl GroupReceiver {
             return Err(Error::Conflict);
         }
         let local = take_member(&mut cursor)?;
-        // Decision 0130: a removed member's or closed group's state is a valid
+        // Decision 0139: a removed member's or closed group's state is a valid
         // terminal state. It refuses every application context and must hold
         // no accepted or deferred entries.
         let terminal = roster.closed || !roster.members.iter().any(|member| member == &local);

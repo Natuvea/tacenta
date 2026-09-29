@@ -1,6 +1,6 @@
 # 0135 — group crate changes the coordinator needs
 
-> Amends 0100, 0106, 0109, 0127, 0129, 0131, 0133 and 0134.
+> Amends 0100, 0106, 0109, 0136, 0138, 0131, 0133 and 0134.
 
 The client's coordinator (`GroupClient`, 0131) shipped with five workarounds
 for behaviour of `tacenta-group`, and with its own copy of the sequence rule. The group crate and the client were changed
@@ -51,12 +51,12 @@ change". This record makes the five changes together, so the workarounds go.
    at the revision it was invited at.
 
 4. **The canonical member order is public.** `Member::canonical_cmp` (identity
-   bytes, then device bytes, 0127) is `pub`. The client sorts rosters and
+   bytes, then device bytes, 0136) is `pub`. The client sorts rosters and
    recipients with it in production code instead of a hand-written copy of the
    rule.
 
 5. **A removed or closed member's receiver is restored, not replaced.**
-   Decision 0130 made `GroupReceiver::decode_state` restore the receiver of a
+   Decision 0139 made `GroupReceiver::decode_state` restore the receiver of a
    removed member or a closed group as a terminal state. The client no longer
    substitutes an inert receiver for it: `GroupClient::join_group` after a
    restart recovers the durable receiver in every case, so the stable event
@@ -68,11 +68,11 @@ change". This record makes the five changes together, so the workarounds go.
 
 6. **The client allocates sequences with `GroupOutbox::next_sequence`.**
    `GroupClient::send_group` computed the highest retained sequence itself,
-   across every revision. It now asks the outbox, so the rule of 0129 has one
+   across every revision. It now asks the outbox, so the rule of 0138 has one
    owner and a sequence starts again at zero at each revision, as 0095 says.
    Compaction keeps every live send and the sixteen most recent terminal ones, so
    the newest send of the current revision is always retained and the retained
-   maximum stays the high-water mark that 0129 requires. A send at an older
+   maximum stays the high-water mark that 0138 requires. A send at an older
    revision is refused as stale, so a sequence dropped with an old revision's
    sends cannot be reused.
 
@@ -127,7 +127,7 @@ one rule could diverge.
 
 ## What would reopen this
 
-A multi-device profile (the one-device rule in 0128 and the receiver key), a
+A multi-device profile (the one-device rule in 0137 and the receiver key), a
 per-recipient retry budget other than three, a bootstrap that carries the
 source roster's predecessor chain so an invitee can verify it, or a receipt
 protocol that lets an application confirm more than relay acceptance.

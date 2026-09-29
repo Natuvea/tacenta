@@ -1,5 +1,5 @@
 //! Regression tests for the cold-read findings CR-06 and CR-12 (decisions
-//! 0127 to 0130). Each test fails on the code at 75c9a20 and passes after the
+//! 0136 to 0139). Each test fails on the code at 75c9a20 and passes after the
 //! fix; the git history of this file and of `src/` shows both states. They use
 //! only the public API of `tacenta-group`.
 
@@ -39,7 +39,7 @@ fn try_roster(authority: Member, members: Vec<Member>) -> Result<Roster, Error> 
 }
 
 // ---------------------------------------------------------------------------
-// CR-12 (a): roster order is the (identity, device) pair (decision 0127)
+// CR-12 (a): roster order is the (identity, device) pair (decision 0136)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -100,7 +100,7 @@ fn recipient_order_follows_the_same_pair_order() {
 }
 
 // ---------------------------------------------------------------------------
-// CR-12 (b): invitation creation and admission (decision 0128)
+// CR-12 (b): invitation creation and admission (decision 0137)
 // ---------------------------------------------------------------------------
 
 fn named(name: &str) -> Member {
@@ -262,7 +262,7 @@ fn a_repeated_admission_returns_the_record_only_at_the_same_revision() {
 
 #[test]
 fn acceptance_is_idempotent_before_and_after_admission() {
-    // Decision 0128: the acceptance control is retried and may be resent after
+    // Decision 0137: the acceptance control is retried and may be resent after
     // a crash, so a repeat must return the committed record.
     let (mut book, authority, target) = accepted_book(0);
     let id = InvitationId::new([1; 16]);
@@ -296,7 +296,7 @@ fn the_successor_roster_carries_the_cap_and_one_device_rules_admission_needs() {
 }
 
 // ---------------------------------------------------------------------------
-// CR-12 (c) and (d): stale sends and sequence allocation (decision 0129)
+// CR-12 (c) and (d): stale sends and sequence allocation (decision 0138)
 // ---------------------------------------------------------------------------
 
 fn send_at(revision: u64, sender: &Member, sequence: u64, payload: &[u8]) -> LogicalSend {
@@ -445,7 +445,7 @@ fn a_sequence_that_cannot_be_followed_reports_exhaustion() {
 
 // ---------------------------------------------------------------------------
 // CR-06: a removed member's or closed group's receiver state is recoverable
-// (decision 0130)
+// (decision 0139)
 // ---------------------------------------------------------------------------
 
 const ROSTER_DIGEST: [u8; DIGEST_LEN] = [9; DIGEST_LEN];

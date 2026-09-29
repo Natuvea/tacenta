@@ -1,6 +1,6 @@
 # 0114 — bounded group receiver state codec
 
-> Amended by 0130.
+> Amended by 0139.
 
 ## Decision
 

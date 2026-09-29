@@ -1,4 +1,4 @@
-# 0129 — bounded group sequence allocation and stale sends
+# 0138 — bounded group sequence allocation and stale sends
 
 > Amends 0095. Amended by 0135.
 

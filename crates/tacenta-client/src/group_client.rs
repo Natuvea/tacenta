@@ -463,7 +463,7 @@ impl<P: CryptoProvider> GroupClient<P> {
                 local.clone(),
             )),
             // The receiver of a removed member or a closed group is a valid
-            // terminal state the group crate restores (0130, 0135): the durable
+            // terminal state the group crate restores (0139, 0135): the durable
             // receiver is used whatever the roster says, never a stand-in.
             Some(_) => Some(recover_group_receiver(snapshot).map_err(|_| GroupError::Recovery)?),
         };
@@ -824,7 +824,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         let mut routes = recipients.to_vec();
         routes.sort_by(|left, right| left.0.canonical_cmp(&right.0));
         // The group crate allocates: one more than the highest retained sequence
-        // for this revision and sender, and zero when it retains none (0129).
+        // for this revision and sender, and zero when it retains none (0138).
         let sequence = state
             .outbox
             .next_sequence(view.roster().revision, &state.local)

@@ -6,7 +6,7 @@ development profile. Group, invitation, and commitment values are opaque here:
 their byte encodings, cryptographic placement, and production-scale protocol are
 specified separately before a codec or crypto implementation is added.
 
-Revision numbering (decision 0128): an invitation does not advance the roster
+Revision numbering (decision 0137): an invitation does not advance the roster
 revision. It records the authority's current revision as its source revision.
 Only a roster successor (admission, removal, closure) advances the revision, so
 inviting one person at revision 0 and admitting them leaves the group at
@@ -112,7 +112,7 @@ def invite? (actor : Member) (id now expiresAt : Nat) (target : Member) (s : Sta
 /-- Acceptance records pending intent only; it does not grant membership. It
 must name the invitation's source revision. A repeat of an acceptance that was
 already recorded is a no-op while the invitation is unexpired or admitted:
-acceptance travels as a retried control message (decision 0128). -/
+acceptance travels as a retried control message (decision 0137). -/
 def accept? (actor : Member) (id now observedRevision : Nat) (s : State) : Option State :=
   match invitationAt? id s.invitations with
   | none => none
@@ -227,7 +227,7 @@ theorem admission_follows_its_source (actor : Member) (id now commitment : Nat)
     rw [hnext] at h
     simp at h
 
-/-- Decision 0128: an invitation changes no roster and no revision. -/
+/-- Decision 0137: an invitation changes no roster and no revision. -/
 theorem invitation_does_not_advance_the_revision (actor : Member) (id now expiresAt : Nat)
     (target : Member) (s s' : State)
     (h : invite? actor id now expiresAt target s = some s') :

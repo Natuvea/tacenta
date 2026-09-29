@@ -1,5 +1,5 @@
 //! Replays the traces the Lean model `spec/Tacenta/Group.lean` generated
-//! (`contracts/vectors/group-v1.json`, decision 0128) against the Rust
+//! (`contracts/vectors/group-v1.json`, decision 0137) against the Rust
 //! `tacenta-group` types. For every step the model says whether the operation
 //! is accepted and what the group holds afterwards (revision, roster,
 //! invitations); the Rust types must agree, including the revision numbers.
@@ -284,7 +284,7 @@ fn the_rust_group_types_replay_the_lean_model_traces() {
 
 #[test]
 fn the_model_numbering_is_the_code_numbering() {
-    // The point of decision 0128, restated without the vector file: invite at
+    // The point of decision 0137, restated without the vector file: invite at
     // revision 0, admit at revision 1, and a second invitee admitted at 2.
     let doc: Value = serde_json::from_str(VECTORS).expect("vectors: invalid JSON");
     let trace = doc["traces"]

@@ -1,6 +1,6 @@
 # 0093 — bounded group invitation lifecycle
 
-> Amended by 0128.
+> Amended by 0137.
 
 ## Decision
 

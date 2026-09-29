@@ -561,7 +561,7 @@ not in our proofs' dependency cone.
     book and control-outbox state and the `TCG*` transcript records have no
     specification page or byte vector. `group-v1.json` is a policy trace, not a
     byte vector, and the Lean model differs from the code where
-    `docs/decisions/0128` says so. Expiry takes an explicit logical time with no
+    `docs/decisions/0137` says so. Expiry takes an explicit logical time with no
     clock mapping. The Lean group model and its vectors have had no human
     review.
   It is not a shipped group-chat protocol or a production membership system;

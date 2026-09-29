@@ -101,7 +101,7 @@ impl GroupOutbox {
 
     /// The next sequence for `sender` at `revision`: zero when the outbox
     /// retains no send for that pair, otherwise one more than the highest
-    /// retained sequence (decision 0129).
+    /// retained sequence (decision 0138).
     pub fn next_sequence(&self, revision: u64, sender: &Member) -> Result<u64, Error> {
         match self.highest_sequence(revision, sender) {
             None => Ok(0),
@@ -140,7 +140,7 @@ impl GroupOutbox {
     ///
     /// A new send is refused when its revision is older than the newest roster
     /// the outbox applied, and when its sequence is not above every retained
-    /// sequence for the same revision and sender (decision 0129).
+    /// sequence for the same revision and sender (decision 0138).
     pub fn record(&mut self, send: LogicalSend) -> Result<OutboxDisposition, Error> {
         self.insert(send, None)
     }

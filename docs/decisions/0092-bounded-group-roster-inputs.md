@@ -1,6 +1,6 @@
 # 0092 — bounded group roster inputs
 
-> Amended by 0127.
+> Amended by 0136.
 
 ## Decision
 
