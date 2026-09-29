@@ -64,6 +64,12 @@ which provider produced the bytes. Exposed as a function over a path and a byte
 slice, it serves the blob model directly: the caller keeps ownership of where
 state lives, and stops having to get the write right themselves.
 
+On Windows the directory `fsync` is not performed: the standard library cannot
+synchronise a directory there, and attempting it turned an already completed
+atomic rename into a false write failure. The write is still atomic on Windows;
+the power-loss guarantee after return holds only on platforms where the
+directory can be synchronised.
+
 **`DurableOpenParty` stays, demoted and labelled.** It is the reference
 integration and the fault-injection harness, and its tests are the evidence that
 the write sequence is correct. Its documentation must say it is not on a

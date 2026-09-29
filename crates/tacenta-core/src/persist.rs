@@ -51,9 +51,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// Write `bytes` to `path` so that a crash leaves `path` holding either its
-/// previous complete contents or these new complete contents, never a mix, and
-/// and, on platforms that support directory synchronization, so that a
-/// successful return means the new contents survive a power loss.
+/// previous complete contents or these new complete contents, never a mix, and,
+/// on platforms that support directory synchronization, so that a successful
+/// return means the new contents survive a power loss.
 ///
 /// **Those are two separate guarantees and it is worth keeping them apart.**
 ///
