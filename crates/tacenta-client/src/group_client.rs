@@ -462,20 +462,10 @@ impl<P: CryptoProvider> GroupClient<P> {
                 *view.digest(),
                 local.clone(),
             )),
-            Some(view) => match recover_group_receiver(snapshot) {
-                Ok(receiver) => Some(receiver),
-                // The group crate refuses to restore the receiver of a member
-                // that a roster removed or closed (CR-06). Such a member
-                // refuses every application context as `not_active` anyway, so
-                // an inert receiver over the accepted roster stands in; its
-                // dedup history is not restored.
-                Err(_) if !view.is_active(&local) => Some(GroupReceiver::new(
-                    view.roster().clone(),
-                    *view.digest(),
-                    local.clone(),
-                )),
-                Err(_) => return Err(GroupError::Recovery),
-            },
+            // The receiver of a removed member or a closed group is a valid
+            // terminal state the group crate restores (0130, 0135): the durable
+            // receiver is used whatever the roster says, never a stand-in.
+            Some(_) => Some(recover_group_receiver(snapshot).map_err(|_| GroupError::Recovery)?),
         };
         let outbox = recover_group_outbox(snapshot, group_id).map_err(|_| GroupError::Recovery)?;
         let control = recover_group_control_outbox(snapshot).map_err(|_| GroupError::Recovery)?;

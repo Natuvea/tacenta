@@ -61,10 +61,10 @@ bootstrap is recorded only from the pinned authority.
   past genesis joins at the revision it was invited at. The caller, not the
   coordinator, decides to join from what the bootstrap reported.
 - The receiver state of a member that a roster removed, or of a closed group,
-  cannot be restored by the group crate (CR-06). `join_group` after a restart
-  substitutes an inert receiver over the accepted roster for such a member,
-  which refuses every application context as `not_active`, as it would have; its
-  dedup history is not restored.
+  is restored by the group crate as a terminal state (0130), and since 0135
+  `join_group` after a restart uses it: the stable event counter survives, so a
+  member that is readmitted continues its event IDs. Before 0135 the client
+  substituted an inert receiver for such a member, which restarted the counter.
 - The delivery cursor of the snapshot is written by nobody. An event returned by
   `receive` is committed before it is returned, but a crash between the commit
   and the caller's use of the event does not redeliver it: the relay redelivers

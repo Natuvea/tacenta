@@ -60,8 +60,11 @@ change". This record makes the five changes together, so the workarounds go.
    removed member or a closed group as a terminal state. The client no longer
    substitutes an inert receiver for it: `GroupClient::join_group` after a
    restart recovers the durable receiver in every case, so the stable event
-   counter and the retained dedup history of a removed member survive a
-   restart, and `GroupReceiver::status()` says `NotMember` or `Closed`.
+   counter of a removed member survives a restart and a member that is
+   readmitted continues its event IDs, and `GroupReceiver::status()` says
+   `NotMember` or `Closed`. (A terminal receiver holds no accepted entries, so
+   there is no dedup history to keep; the counter is the state the inert
+   stand-in lost.)
 
 ## Considered
 

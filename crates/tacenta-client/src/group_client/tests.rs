@@ -960,7 +960,7 @@ fn alice_route(alice: &GroupClient) -> DeviceAddr {
 }
 
 #[tokio::test]
-async fn a_removed_member_restarts_with_an_inert_receiver() {
+async fn a_removed_member_restarts_with_its_own_receiver_and_keeps_its_event_ids() {
     let (directory, relay) = start_server().await;
     let alice_store = SharedStore::default();
     let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
@@ -981,6 +981,17 @@ async fn a_removed_member_restarts_with_an_inert_receiver() {
         sole_roster_disposition(&bob.receive(0).await.unwrap()),
         RosterDisposition::Accepted
     );
+    // Bob receives one application message while he is a member: event 0.
+    alice
+        .send_group(
+            &[(bob_member.clone(), bob_route.clone())],
+            b"first".to_vec(),
+        )
+        .await
+        .unwrap();
+    let inbound = bob.receive(0).await.unwrap();
+    assert_eq!(inbound.events()[0].event_id, 0);
+
     // Alice removes Bob, and Bob applies it.
     let r2 = alice.next_roster(vec![alice_member.clone()]).unwrap();
     let r2_digest = roster_commitment(&r2.encode().unwrap());
@@ -992,22 +1003,30 @@ async fn a_removed_member_restarts_with_an_inert_receiver() {
         sole_roster_disposition(&bob.receive(0).await.unwrap()),
         RosterDisposition::Accepted
     );
+    let removed_state = bob_store.durable().unwrap().application_state;
 
-    // The group crate refuses to restore the receiver of a removed member, so
-    // Bob restarts with an inert one over the accepted roster: he comes back
-    // up, and everything addressed to him is refused as not active.
+    // Bob restarts. The group crate restores the receiver of a removed member
+    // (0130), so he comes back with his own state and no stand-in: it is the
+    // durable bytes, it is not active, and it refuses everything addressed to
+    // him as not active.
     drop(bob);
     let mut bob = restart(&bob_config, &bob_store).await;
     bob.join_group(genesis_of(&alice_member), alice_member.clone())
         .unwrap();
     assert_eq!(bob.roster().unwrap().revision, 2);
+    let restored = bob.group.as_ref().unwrap().receiver.as_ref().unwrap();
+    assert_eq!(restored.status(), tacenta_group::ReceiverStatus::NotMember);
+    assert!(
+        restored.encode_state().unwrap() == removed_state,
+        "the receiver is the durable one, with its event counter, not a stand-in"
+    );
     let after_removal = GroupPayload::Application(
         ApplicationContext::new(
             gid(),
             2,
             r2_digest,
             alice_member.clone(),
-            bob_member,
+            bob_member.clone(),
             0,
             b"too late".to_vec(),
         )
@@ -1028,6 +1047,29 @@ async fn a_removed_member_restarts_with_an_inert_receiver() {
             ..
         }]
     ));
+
+    // Alice readmits him. His next event continues his own counter: 1, not a
+    // second event 0 for a different message.
+    let r3 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(r3, &[(bob_member.clone(), bob_route.clone())], None, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+    alice
+        .send_group(&[(bob_member, bob_route)], b"second".to_vec())
+        .await
+        .unwrap();
+    let inbound = bob.receive(0).await.unwrap();
+    let events = inbound.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload, b"second");
+    assert_eq!(events[0].event_id, 1);
 }
 
 #[tokio::test]
