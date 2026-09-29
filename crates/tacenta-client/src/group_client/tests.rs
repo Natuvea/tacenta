@@ -161,11 +161,13 @@ mod boundaries;
 mod delivery_and_receive_next_guards;
 mod durable_root;
 mod freeze_and_recovery;
+mod install_roster_result_guards;
 mod invitation_payload_refusals;
 mod recovery_rebuild;
 mod redelivery;
 mod roster_fanout;
 mod roster_installation;
+mod route_and_authority_guards;
 mod scale_probe;
 mod send_and_control_dispatch;
 
