@@ -96,9 +96,14 @@ cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/po
 The experiment is limited to eight members, one device per person and one
 membership authority, and no SDK head reaches it; `docs/claims.md` says what it
 does and does not establish. Run the group crate's limit and negative-control
-suites and the live bounded-profile trace, which covers cap-plus-one refusals,
-group and direct-message session sharing, prepared-handoff cancellation on
-removal, invitation admission and removal, and revocation:
+suites, the five group crate changes the coordinator needs, and the live
+bounded-profile traces. The traces cover cap-plus-one refusals, group and
+direct-message session sharing, prepared-handoff cancellation on removal, a
+member removed while a message is in flight (authority and recipient side),
+replay after a restore, the dedup window, the future queue and the outbox
+limits, the ninth member on the roster, invitation and admission paths,
+invitation admission and removal, and revocation. The `GroupClient` traces run
+through a real provider, relay and directory:
 
 ```bash
 cd tacenta
@@ -124,12 +129,36 @@ that `Cargo.lock` resolves, whether the tree had uncommitted changes, the host,
 the Rust toolchain and the load average; the demo's logs and its elapsed, user,
 system and maximum-resident figures, cold and warm; the deterministic 2, 3 and
 8 member roster and receiver-state sizes (real 32-byte identities: 219, 260 and
-465 roster bytes); and the three-client native transaction, sender restart and
-snapshot figures. A missing measurement stops it rather than being skipped.
-Snapshot bytes, commits per logical send, CPU and maximum resident set at 2, 3
-and 8 members need a per-size client probe; without it `scale.txt` says NOT
-MEASURED. The runs are not seeded, and the results are development evidence,
-not production budgets or 32, 128 or 512 member results.
+465 roster bytes); the three-client native transaction, sender restart and
+snapshot figures; and, from the client's per-size probe, run once per size in
+its own process and twice, snapshot bytes, provider-state bytes, whole-snapshot
+commits per logical send, the time of that send, the median latency of one more
+commit at that size, the restart and recovery time, and the probe's CPU and
+maximum resident set. A missing measurement, including a missing probe, stops
+the runner. The runs are not seeded (keys come from the operating system), and
+the results are development evidence, not production budgets or 32, 128 or 512
+member results.
+
+One recorded run: the integration branch with a clean tree, tacenta-core
+`5a8f90c1`, an Apple M5 Pro with 18 logical CPUs and 64 GiB, `rustc
+1.99.0-nightly` (2026-07-14), a load average of about 8.4 from other work on the
+machine, native file store, one 1,000-byte logical send from the authority to
+every other member. Sizes were identical in the two passes of each size; times
+moved by up to about a quarter between passes.
+
+| Members | Roster bytes | Receiver state | Snapshot bytes | Provider state | Commits per logical send | Logical send | One commit at that size (median) | Restart and recover |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 219 | 343 | 191,542 | 174,236 | 4 | 36 to 38 ms | 6.0 to 7.7 ms | 37 to 40 ms |
+| 3 | 260 | 384 | 221,149 | 188,442 | 7 | 68 to 69 ms | 7.9 to 8.0 ms | 39 to 40 ms |
+| 8 | 465 | 589 | 371,518 | 259,472 | 22 | 253 to 256 ms | 8.0 to 8.1 ms | 47 to 50 ms |
+
+A logical send costs one commit for the intent and three per recipient (prepare,
+reserve, accept), each rewriting the whole snapshot, so the time of a send grows
+with the number of recipients times the snapshot size. The probe process's
+maximum resident set was 14 MB, 15 to 16 MB and 20 to 23 MB and its user CPU
+0.23 s, 0.34 s and 0.95 s at 2, 3 and 8 members. The whole demo in one process:
+27 s elapsed (68 s CPU, 657 MB) cold and 9 s (20 s CPU, 96 MB) warm. Nothing was
+measured at 32, 128 or 512 members or on another host.
 
 ```bash
 tooling/measure-group-chat.sh /tmp/tacenta-group-measurements

@@ -520,14 +520,22 @@ not in our proofs' dependency cone.
   authenticated peer and the state effect from the provider's outcome, writes
   direct messages through to the same snapshot, latches the store after a write
   that is not `committed`, validates before it encrypts, keeps the snapshot
-  within literal bounds, and grows a live group from one to eight members. A
-  repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
+  within literal bounds, and grows a live group from one to eight members; and
+  boundary traces over a real provider: a member removed while a message is in
+  flight (authority and recipient side), replay of a delivered ciphertext before
+  and after a restore, the 64-sequence dedup window, the future window and
+  queue, the outbox and invitation-book caps, and a ninth member refused on the
+  roster, invitation and admission paths. A repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
   three-client invitation, restart, admission, removal, revocation and
   direct-message trace through the in-process directory, relay and crypto
   provider. Its live traces keep operation state in an in-memory store whose
   writes always succeed; the native file-backed store is exercised by one step
   and by unit tests, and it is neither sealed nor protected against rollback,
-  and it reports every write error as `failed` and never as `unknown`. This is
+  and it reports every write error as `failed` and never as `unknown`. Measured
+  once on one host (`docs/reproduce.md` has the table and the conditions): a
+  logical send of 1,000 bytes to every other member costs 4, 7 and 22
+  whole-snapshot commits at 2, 3 and 8 members, and the snapshot is 191,542,
+  221,149 and 371,518 bytes. These are development figures, not budgets. This is
   **tested, not proven**.
   **What is not true yet** at this revision:
   - The acknowledgement waits for the commit only through `GroupClient`. The
