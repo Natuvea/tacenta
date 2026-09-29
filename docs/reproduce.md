@@ -69,6 +69,7 @@ lake exe vectors envelope | diff -u ../contracts/vectors/envelope-v1.json -
 lake exe vectors session  | diff -u ../contracts/vectors/session-v1.json  -
 lake exe vectors user     | diff -u ../contracts/vectors/user-v1.json     -
 lake exe vectors stream   | diff -u ../contracts/vectors/stream-v1.json   -
+lake exe vectors group    | diff -u ../contracts/vectors/group-v1.json    -
 
 # Refinement theorems over the committed translation of the shipped Rust.
 cd ../verification && lake exe cache get && lake build
@@ -177,13 +178,26 @@ tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
 ```
 
 To check that the group crate's tests notice a removed guard, run its
-single-change mutation harness (about three minutes with four workers). It
-needs the unmodified tree to pass, prints each mutant as killed or survived,
-and fails on a mutant that does not patch or build:
+single-change mutation harness (131 mutants; a few minutes with four workers,
+longer on a loaded machine). It needs the unmodified tree to pass, prints each
+mutant as killed or survived, and fails on a mutant that does not patch or build:
 
 ```bash
 python3 tooling/group-mutation/mutate.py --workers 4
 ```
+
+At the revision that added mutants R17 to R21 it killed 124 and left seven
+standing, each argued: `L05` (the 4,096-byte roster bound is above the largest
+valid roster, 3,048 bytes, so nothing reaches it), `L10` and `S11` (a second
+check returns the same error; the pair with both removed, `D10` and `D11`, is
+killed), `N13` (the duplicate lookup runs before the sequence-order check),
+`N36` (`Roster::validate` already enforces the genesis shape, so every roster
+that reaches `accept_source` at revision zero passes the genesis checks),
+`P01` (the 8 KiB payload-input bound is an early exit that gives the error the
+length check gives) and `X15` (a third reserved attempt already exhausts the
+recipient). These are arguments from the code, not proofs of equivalence. The
+harness covers the group crate only; the client crate has no harness in this
+repository.
 
 ## 5. The repo gates
 
@@ -197,9 +211,12 @@ TACENTA_CORE_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
 
 ## The axiom baselines (what a green proof rests on)
 
-- **Spec-level theorems** admit no axiom beyond `propext`, machine-enforced by
+- **Spec-level theorems** admit no axiom beyond `propext` and `Quot.sound`
+  (the wire theorems and two of the four bounded-group theorems use the second;
+  the others need at most `propext`), machine-enforced by
   `#guard_msgs in #print axioms` in `spec/Tacenta/Assurance.lean` — a corrupted
-  axiom set fails the build.
+  axiom set fails the build. The four group theorems are in that audit; the
+  group model, its vectors and those theorems have had no human review.
 - **Refinement theorems** (`verification/`) sit at Lean's three classical axioms
   plus one per-declaration `bv_decide` reflection axiom for each of two
   byte-order lemmas (see `docs/claims.md`); their pinned
