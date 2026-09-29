@@ -1386,15 +1386,19 @@ async fn receive_next_waits_for_mail_and_returns_it() {
     let store = SharedStore::default();
     let mut bob = coordinator(directory, relay, "+bob", &store).await;
     let bob_route = bob.address().clone();
+    // Bounded: a `receive_next` that fails to return mail would otherwise wait
+    // forever and hang the suite instead of failing it.
     let (sent, received) = tokio::join!(
         async {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             alice.send_as(&bob_route, b"late", Kind::Dm).await
         },
-        bob.receive_next(0)
+        tokio::time::timeout(std::time::Duration::from_secs(30), bob.receive_next(0))
     );
     sent.unwrap();
-    let inbound = received.unwrap();
+    let inbound = received
+        .expect("receive_next returned within 30 seconds")
+        .unwrap();
     assert_eq!(inbound.direct.len(), 1);
     assert_eq!(inbound.direct[0].plaintext, b"late");
 }
