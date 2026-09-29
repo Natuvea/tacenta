@@ -502,68 +502,127 @@ not in our proofs' dependency cone.
   group-operation modules of `tacenta-client`): an experimental development
   profile, and these are its limits. **At most eight members, one device per
   person, one membership authority** (the group's creator, whose leave closes
-  the group), application payloads of at most 1,024 bytes, and pairwise fan-out
-  with no shared sender keys. It is Rust values and policy driven by tests:
-  **no SDK head, the CLI or the server reaches it**. `GroupClient` is public in
-  `tacenta-client` and is outside `sdk/surface.json`; the surface test scans
-  only the `Client` and `Tacenta` impl blocks, so it neither sees it nor excuses
-  it.
-  What has tests: canonical roster and context values, with each limit pinned at
-  both edges by a literal number; invitation, admission, revocation and removal
-  policy; the outbox (stale sends refused, monotonic sequences, a final attempt
-  recorded when the relay accepts it); bounded replay and future-message
-  queues; the restart codecs, which a structure-aware mutation test checks for
-  panics, oversized allocations and non-canonical input; the Lean model's
-  traces (`contracts/vectors/group-v1.json`), which the Rust types replay; and,
-  through `GroupClient`, a receive that commits each item's disposition together
-  with the provider state before it acknowledges the relay prefix, takes the
-  authenticated peer and the state effect from the provider's outcome, writes
-  direct messages through to the same snapshot, latches the store after a write
-  that is not `committed`, validates before it encrypts, keeps the snapshot
-  within literal bounds, and grows a live group from one to eight members; and
-  boundary traces over a real provider: a member removed while a message is in
+  the group), application payloads of at most 1,024 bytes, one group per client
+  and per store, and pairwise fan-out with no shared sender keys. It is Rust
+  values and policy driven by tests: **no SDK head, the CLI or the server reaches
+  it**. `GroupClient` is public in `tacenta-client` and is outside
+  `sdk/surface.json`; the surface test scans only the `Client` and `Tacenta` impl
+  blocks, so it neither sees it nor excuses it.
+  What has tests: canonical roster and context values; invitation, admission,
+  revocation and removal policy; the outbox (stale sends refused, monotonic
+  sequences, a final attempt recorded when the relay accepts it); bounded replay
+  and future-message queues; the restart codecs, which a structure-aware mutation
+  test checks for panics, oversized allocations and non-canonical input; the Lean
+  model's traces (`contracts/vectors/group-v1.json`), which the Rust types replay;
+  and, through `GroupClient` with a real provider, relay and directory: a
+  receive that commits each item's disposition together with the provider state
+  before it acknowledges the relay prefix, takes the authenticated peer and the
+  state effect from the provider's outcome, and offers a committed group event
+  again, with its event ID, until the caller has acknowledged it (0144);
+  direct messages written through to the same snapshot; a latch on any write that
+  is not `committed`; a refusal to `open` a client whose state is not the
+  snapshot's and to commit over a snapshot the coordinator has not seen (0143);
+  validation before encryption; a roster install that tells the member it removes
+  wherever that member is listed (0141); roster controls that arrive ahead of
+  their predecessor, or before the coordinator has a roster, kept and applied in
+  order (0142); and boundary traces: a member removed while a message is in
   flight (authority and recipient side), replay of a delivered ciphertext before
-  and after a restore, the 64-sequence dedup window, the future window and
-  queue, the outbox and invitation-book caps, and a ninth member refused on the
-  roster, invitation and admission paths. A repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
+  and after a restore, the dedup window, the future window and queue, the outbox
+  and invitation-book caps, and a ninth member refused on the roster, invitation
+  and admission paths, and a live group grown from one to eight members.
+  The limits are pinned by literal numbers at both edges: eight members, 1,024
+  payload bytes, the 64-sequence dedup window, the two-revision future window,
+  four deferred contexts (two of them open to senders the roster does not list
+  yet) and four held roster controls, eight live and sixteen retained sends and
+  control handoffs, thirty-two invitations, thirty-two relay items per receive
+  call, and the snapshot's 64 inbox, 512 dedup and 64 control records. **Four
+  bounds sit above every valid value and are pinned by their constant and by the
+  largest valid case only**, because no valid input reaches them: the roster
+  preimage (4,096 bytes against a largest valid 3,048), the application context
+  (2,048 against 1,784), the receiver state (262,144 against 207,347) and the
+  payload input (8,192 against 3,526).
+  A repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
   three-client invitation, restart, admission, removal, revocation and
   direct-message trace through the in-process directory, relay and crypto
-  provider. Its live traces keep operation state in an in-memory store whose
-  writes always succeed; the native file-backed store is exercised by one step
-  and by unit tests, and it is neither sealed nor protected against rollback,
-  and it reports every write error as `failed` and never as `unknown`. Measured
-  once on one host (`docs/reproduce.md` has the table and the conditions): a
-  logical send of 1,000 bytes to every other member costs 4, 7 and 22
-  whole-snapshot commits at 2, 3 and 8 members, and the snapshot is 191,542,
-  221,149 and 371,518 bytes. These are development figures, not budgets. This is
-  **tested, not proven**.
+  provider, and runs the suites above. **What a green run establishes** is that
+  the tests it names exist, ran and passed, with none ignored, failed or marked
+  `should_panic`, and that their names and counts equal the checked-in manifest
+  (`tooling/group-chat-demo-tests.txt`); a rename, a deletion or an addition fails
+  it. It does **not** establish that a test still checks what its name says: a
+  body that returns early, asserts `true`, asserts in a task nobody joins, or is
+  empty, under a listed name, passes. Its live traces keep operation state in an
+  in-memory store whose writes always succeed; the native file-backed store is
+  exercised by one step and by unit tests, and it is neither sealed nor
+  protected against rollback, and it reports every write error as `failed` and
+  never as `unknown`.
+  **Measured** on one host (`docs/reproduce.md` has the tables and the
+  conditions): a logical send of 1,000 bytes to every other member costs 4, 7 and
+  22 whole-snapshot commits at 2, 3 and 8 members, and **from an empty outbox**
+  the snapshot is 191,542, 221,149 and 371,518 bytes. **In steady state it is
+  larger and slower**: at 8 members after 17 sends, with sixteen terminal sends
+  retained, a snapshot of 1,727,803 bytes and 511 to 519 ms for one logical send, against
+  371,518 bytes and about 260 ms for the first. The bounds above are on record
+  counts and on the size of each record; they do not bound the snapshot in bytes
+  at a stated figure. The provider state inside the snapshot holds a session for
+  every peer that ever sent a decryptable message and has no eviction (one review
+  measured about 731 bytes per hostile peer; another, under the directory's
+  default registration limit, saw no growth), and every commit, including one for
+  a junk message from any registered peer, rewrites the whole snapshot. These
+  are development figures, not budgets. This is **tested, not proven**.
   **What is not true yet** at this revision:
+  - **One writer per store.** The snapshot is the durable root only while one
+    coordinator writes it. A second coordinator on the same store (an
+    application and an extension, a restored backup) would encrypt at a ratchet
+    position the first has used; since 0143 `open` refuses a client whose state
+    is not the snapshot's and a commit is refused when the store holds a snapshot
+    the coordinator has not seen, so the second writer freezes instead. That is a
+    fence, not a supported configuration: the default check is read-then-write,
+    the native store's lock is advisory and local, and a party that can write the
+    store can write anything (it is unsealed and has no rollback detection).
+  - **No catch-up.** A roster control that never arrives (lost by the relay,
+    dropped with an offline device's queue, abandoned by the authority) leaves a
+    member behind: nothing asks for it again and the authority records relay
+    acceptance, not receipt. A control is applied at once when it is one revision
+    ahead of the member's roster, held when it is two to five ahead, and refused
+    when it is more than five ahead. A message to a pending invitee that beats the
+    roster that admits it is lost (the receiver of a non-member holds nothing).
+    Controls that arrive ahead of their predecessor are kept (0142), so a
+    reordering, a retry order or a batch that holds the bootstrap and a successor
+    no longer strands a member; the limit is delivery, not order.
   - The acknowledgement waits for the commit only through `GroupClient`. The
     plain `Client::receive`, `drain` and `inbound`, which the FFI and
     WebAssembly heads export, still acknowledge the fetched prefix before any
-    disposition exists. That is the behaviour for direct messages, and group
-    traffic that arrives through those calls is not durable.
-  - An event that `GroupClient::receive` returns is committed before it is
-    returned, but a crash between that commit and the caller's use of it loses
-    it: the relay redelivers the item, the durable state has consumed its key,
-    and the decrypt is refused. The snapshot's delivery cursor is written by
-    nobody. The same window exists for a direct message received under
-    `GroupClient`, and a failed acknowledgement after every item committed
-    returns the error and not that call's events.
+    disposition exists, so group traffic that arrives through those calls is not
+    durable.
+  - **Delivery is at-least-once for group events and at-most-once for direct
+    messages.** A committed group event is offered again, with the same ID, until
+    the caller acknowledges it (0144); a process that stops after it was handed
+    over and before the acknowledgement sees it again. A direct message received
+    under `GroupClient` is committed and handed over once: a crash between the
+    commit and the caller's use of it loses it, and its plaintext is not kept.
+    Accepted group plaintext stays in the unsealed snapshot until the caller
+    acknowledges it, and the sender's outbox keeps the contexts of its eight live
+    and sixteen retained sends.
   - Under `GroupClient` every direct send and each received direct message costs
-    one whole-snapshot commit, and direct plaintext is not kept until it is
-    consumed.
+    one whole-snapshot commit.
   - `GroupReceiveInput` is not sealed: its fields are `pub(crate)`, so review
-    keeps other code from building one by hand.
+    keeps other code from building one by hand. `join_group` takes the roster and
+    authority the local application passes, and does not compare them with the
+    recorded bootstrap.
   - A terminal send or control older than the sixteen most recent is dropped
-    from the local snapshot, so its evidence is no longer kept.
+    from the local snapshot, so its evidence is no longer kept. An unreachable
+    route for one recipient is reported as `Frozen` and stops the fan-out for the
+    recipients after it in that call.
   - The byte layouts of the group payloads, invitation records, receiver, view,
-    book and control-outbox state and the `TCG*` transcript records have no
-    specification page or byte vector. `group-v1.json` is a policy trace, not a
-    byte vector, and the Lean model differs from the code where
-    `docs/decisions/0137` says so. Expiry takes an explicit logical time with no
-    clock mapping. The Lean group model and its vectors have had no human
-    review.
+    book, control-outbox and held-controls state and the `TCG*` transcript
+    records have no specification page or byte vector. `group-v1.json` is a
+    policy trace, not a byte vector. The Lean model differs from the code in the
+    twelve ways `docs/decisions/0137` lists, the receiver, outbox and coordinator
+    mechanisms have no model counterpart, the vector replay compares only
+    acceptance, revision, roster and invitation status, and the model, the
+    vectors and their theorems (whose axiom sets are pinned in
+    `spec/Tacenta/Assurance.lean`) have had no human review. Expiry takes an
+    explicit logical time with no clock mapping.
   It is not a shipped group-chat protocol or a production membership system;
   sender-key, production authority, sequencing, multi-device, sealed-sender,
   franking and scale work remain open.
