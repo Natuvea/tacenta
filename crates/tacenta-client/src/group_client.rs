@@ -1,4 +1,4 @@
-//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0143).
+//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0141, 0143).
 //!
 //! **Experimental.** This is the profile of the bounded group experiment: at
 //! most eight members, one device each, one authority, one group per client.
@@ -50,6 +50,7 @@ pub use crate::operation_store::{
     CommitOutcome, DurableStore, OperationSnapshot, OperationStore, StoreError,
 };
 
+use crate::group_control_outbox::Disposition as ControlDisposition;
 use crate::group_control_outbox::Outbox as ControlOutbox;
 use crate::group_operations::{
     AuthorityControlState, AuthorityInvitationState, GroupLiveError, GroupOperationError,
@@ -62,6 +63,7 @@ use crate::group_operations::{
     prepare_installed_roster_control, prepare_outbound_invitation_control,
     prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_invitation_book,
     recover_group_outbox, recover_group_receiver, recover_group_roster_view,
+    roster_control_recipient_is_entitled,
 };
 use crate::{Client, Error, MailSignal, MessageKind, Received};
 
@@ -259,11 +261,19 @@ pub struct Install {
     /// The local disposition of the successor.
     pub disposition: RosterDisposition,
     /// Recipients whose control the relay accepted (or whose final attempt it
-    /// accepted).
+    /// accepted). A recipient already delivered by an earlier call is reported
+    /// here again on a retry (0141).
     pub delivered: Vec<Member>,
-    /// Recipients whose committed control has not been accepted yet; retry with
+    /// Recipients whose control is committed and not accepted yet; retry with
     /// [`dispatch_pending_controls`](GroupClient::dispatch_pending_controls).
+    /// A recipient whose third and final attempt was not confirmed stays here
+    /// and is not retried (0134).
     pub pending: Vec<Member>,
+    /// Recipients for whom nothing was committed (a transient failure while
+    /// preparing, or a full control outbox); call
+    /// [`install_roster`](GroupClient::install_roster) again with the same
+    /// successor (0141).
+    pub unprepared: Vec<Member>,
 }
 
 /// The invitation an authority admits with the roster that includes it.
@@ -463,10 +473,14 @@ impl<P: CryptoProvider> GroupClient<P> {
         let snapshot = &self.snapshot;
         let has = |tag: &[u8]| snapshot.group_controls.iter().any(|r| r.starts_with(tag));
         let view = if has(b"TCGV") {
-            Some(
-                recover_group_roster_view(snapshot, &authority)
-                    .map_err(|_| GroupError::Recovery)?,
-            )
+            let view = recover_group_roster_view(snapshot, &authority)
+                .map_err(|_| GroupError::Recovery)?;
+            // One group per store: a second id on a store that holds another
+            // group's roster would wedge every later call (0141).
+            if view.roster().group_id != group_id {
+                return Err(GroupError::Policy);
+            }
+            Some(view)
         } else if let Some(source) = &source {
             if source.group_id != group_id {
                 return Err(GroupError::Policy);
@@ -858,6 +872,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         } = self;
         let state = group.as_mut().ok_or(GroupError::NoGroup)?;
         let view = state.view.as_ref().ok_or(GroupError::Policy)?;
+        check_routes(recipients)?;
         let mut routes = recipients.to_vec();
         routes.sort_by(|left, right| left.0.canonical_cmp(&right.0));
         // The group crate allocates: one more than the highest retained sequence
@@ -904,6 +919,7 @@ impl<P: CryptoProvider> GroupClient<P> {
             group,
             ..
         } = self;
+        check_routes(routes)?;
         let state = group.as_mut().ok_or(GroupError::NoGroup)?;
         let pending: Vec<LogicalMessageId> = state
             .outbox
@@ -919,12 +935,19 @@ impl<P: CryptoProvider> GroupClient<P> {
     }
 
     /// The authority installs `successor` locally and sends it to `recipients`
-    /// (members and unexpired invitees, each with a route). The local
-    /// transition, the provider state and the first recipient's exact
-    /// ciphertext commit in one snapshot; every further recipient is prepared
-    /// on the installed roster (0124). A successor that is already installed
-    /// is only fanned out. `admission` marks an invitation admitted in the
-    /// same commit.
+    /// (each with a route). The local transition, the provider state and the
+    /// first recipient's exact ciphertext commit in one snapshot; every further
+    /// recipient is prepared on the installed roster (0124). A successor that is
+    /// already installed is only fanned out. `admission` marks an invitation
+    /// admitted in the same commit.
+    ///
+    /// The result does not depend on the order of `recipients` (0141). Every
+    /// recipient is checked up front: a member of the roster being replaced, of
+    /// the successor, or an unexpired invitee, and once the successor is
+    /// installed also a member of the roster it replaced (the member it
+    /// removes). One that is none of those, or an empty list for a successor
+    /// that is not installed yet, is refused with [`GroupError::Policy`] before
+    /// anything changes.
     pub async fn install_roster(
         &mut self,
         successor: Roster,
@@ -949,16 +972,52 @@ impl<P: CryptoProvider> GroupClient<P> {
         let (Some(view), Some(receiver)) = (state.view.as_mut(), state.receiver.as_mut()) else {
             return Err(GroupError::Policy);
         };
+        check_routes(recipients)?;
         let mut installed = view.roster() == &successor;
+        if recipients.is_empty() && !installed {
+            return Err(GroupError::Policy);
+        }
+        for (recipient, _) in recipients {
+            if !roster_control_recipient_is_entitled(
+                snapshot,
+                view,
+                Some(&state.book),
+                &successor,
+                &state.local,
+                recipient,
+                now,
+            ) {
+                return Err(GroupError::Policy);
+            }
+        }
+        let payload = GroupPayload::Roster(successor.clone())
+            .encode()
+            .map_err(|_| GroupError::Policy)?;
         let mut disposition = RosterDisposition::Duplicate;
         let mut delivered = Vec::new();
         let mut pending = Vec::new();
+        let mut unprepared = Vec::new();
         let mut admission = admission.map(|admission| InvitationAdmission {
             id: admission.id,
             target: admission.target,
             now,
         });
         for (recipient, route) in recipients {
+            if installed && let Ok(existing) = state.control.handoff(recipient, &payload) {
+                match existing.disposition {
+                    ControlDisposition::RelayAccepted => {
+                        delivered.push(recipient.clone());
+                        continue;
+                    }
+                    ControlDisposition::Prepared | ControlDisposition::HandedOff => {}
+                    ControlDisposition::ExhaustedUnknown
+                    | ControlDisposition::Cancelled
+                    | ControlDisposition::CancelledAfterHandoff => {
+                        pending.push(recipient.clone());
+                        continue;
+                    }
+                }
+            }
             let handoff = if installed {
                 prepare_installed_roster_control(
                     client,
@@ -1006,7 +1065,7 @@ impl<P: CryptoProvider> GroupClient<P> {
                 // Nothing was installed and nothing prepared: refuse the call.
                 Err(error) if !installed => return Err(error.into()),
                 Err(_) => {
-                    pending.push(recipient.clone());
+                    unprepared.push(recipient.clone());
                     continue;
                 }
             };
@@ -1030,6 +1089,7 @@ impl<P: CryptoProvider> GroupClient<P> {
             disposition,
             delivered,
             pending,
+            unprepared,
         })
     }
 
@@ -1050,6 +1110,7 @@ impl<P: CryptoProvider> GroupClient<P> {
             group,
             ..
         } = self;
+        check_routes(routes)?;
         let state = group.as_mut().ok_or(GroupError::NoGroup)?;
         let mut accepted = 0;
         for handoff in state.control.pending() {
@@ -1104,6 +1165,11 @@ impl<P: CryptoProvider> GroupClient<P> {
             return Err(GroupError::Policy);
         }
         let view = state.view.as_ref().ok_or(GroupError::Policy)?;
+        // A closed group admits nobody: the invitee could only refuse the
+        // bootstrap (0141).
+        if view.roster().closed || !route_is_members_device(target, route) {
+            return Err(GroupError::Policy);
+        }
         let roster = view.roster().clone();
         let invitation = Invitation::new(
             id,
@@ -1171,6 +1237,9 @@ impl<P: CryptoProvider> GroupClient<P> {
             ..
         } = self;
         let state = group.as_mut().ok_or(GroupError::NoGroup)?;
+        if !route_is_members_device(&state.authority, authority_route) {
+            return Err(GroupError::Policy);
+        }
         let record = state
             .book
             .records()
@@ -1249,6 +1318,9 @@ impl<P: CryptoProvider> GroupClient<P> {
             .find(|record| record.id == id)
             .map(|record| record.target.clone())
             .ok_or(GroupError::Policy)?;
+        if !route_is_members_device(&target, target_route) {
+            return Err(GroupError::Policy);
+        }
         let handoff = prepare_authority_invitation_revocation(
             client,
             store,
@@ -1274,6 +1346,26 @@ impl<P: CryptoProvider> GroupClient<P> {
         )
         .await?;
         Ok(())
+    }
+}
+
+/// Whether a route is the relay address of the device the member names: the
+/// member carries its one crypto device, the route the relay's device number
+/// (0141). A ciphertext for one device sent to another is accepted by the relay
+/// and useless to both.
+fn route_is_members_device(member: &Member, route: &DeviceAddr) -> bool {
+    matches!(member.device(), [device] if u32::from(*device) == route.device)
+}
+
+/// Refuses a set of routes that name a device other than the member's.
+fn check_routes(routes: &[(Member, DeviceAddr)]) -> Result<(), GroupError> {
+    if routes
+        .iter()
+        .all(|(member, route)| route_is_members_device(member, route))
+    {
+        Ok(())
+    } else {
+        Err(GroupError::Policy)
     }
 }
 

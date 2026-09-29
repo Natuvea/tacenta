@@ -207,6 +207,66 @@ fn recipient_can_receive_installed_roster_control(
             .any(|member| member == recipient)
 }
 
+/// The members of the roster that `view`'s accepted roster replaced (0141).
+///
+/// The successor names its predecessor's digest, and the predecessor's preimage
+/// is one of the roster records the snapshot keeps in `group_controls` (`TCGC`,
+/// 0122), so the set is found by digest and survives a restart with no state of
+/// its own. It is empty when the record is no longer among the retained control
+/// records (or never existed, as for a genesis roster).
+pub(crate) fn replaced_roster_members(
+    snapshot: &OperationSnapshot,
+    view: &RosterView,
+) -> Vec<Member> {
+    let predecessor = view.roster().predecessor_digest;
+    for record in snapshot.group_controls.iter().rev() {
+        let Some(rest) = record.strip_prefix(b"TCGC") else {
+            continue;
+        };
+        let Some((length, rest)) = rest.split_at_checked(4) else {
+            continue;
+        };
+        let Ok(length) = <[u8; 4]>::try_from(length) else {
+            continue;
+        };
+        let Some(preimage) = rest.get(..u32::from_be_bytes(length) as usize) else {
+            continue;
+        };
+        if roster_commitment(preimage) != predecessor {
+            continue;
+        }
+        if let Ok(roster) = Roster::decode(preimage) {
+            return roster.members;
+        }
+    }
+    Vec::new()
+}
+
+/// Whether `recipient` may be sent `successor` by `authority` (0141): a member
+/// of the roster being replaced, of the successor, or an unexpired invitee.
+/// When `successor` is already the installed roster the members of the roster it
+/// replaced count too, which is what lets the member an install removes be told
+/// wherever it is listed.
+pub(crate) fn roster_control_recipient_is_entitled(
+    snapshot: &OperationSnapshot,
+    view: &RosterView,
+    book: Option<&InvitationBook>,
+    successor: &Roster,
+    authority: &Member,
+    recipient: &Member,
+    now: u64,
+) -> bool {
+    if view.roster() == successor {
+        recipient_can_receive_installed_roster_control(view, authority, recipient)
+            || (&view.roster().authority == authority
+                && replaced_roster_members(snapshot, view).contains(recipient))
+            || recipient_can_observe_invitation_successor(book, successor, recipient, now)
+    } else {
+        recipient_can_receive_roster_control(view, successor, recipient)
+            || recipient_can_observe_invitation_successor(book, successor, recipient, now)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AuthorityRosterControlCommit {
     pub(crate) roster: RosterCommit,
@@ -817,16 +877,15 @@ where
 {
     let (recipient, route) = recipient_route;
     if client.party.identity_key() != authenticated_authority.identity()
-        || (!recipient_can_receive_installed_roster_control(
+        || !roster_control_recipient_is_entitled(
+            snapshot,
             state.view,
-            authenticated_authority,
-            recipient,
-        ) && !recipient_can_observe_invitation_successor(
             state.invitation_book,
             state.view.roster(),
+            authenticated_authority,
             recipient,
             state.control_now,
-        ))
+        )
     {
         return Err(GroupLiveError::Policy);
     }

@@ -159,6 +159,7 @@ async fn joined(
 
 mod boundaries;
 mod durable_root;
+mod roster_fanout;
 mod scale_probe;
 
 #[tokio::test]
