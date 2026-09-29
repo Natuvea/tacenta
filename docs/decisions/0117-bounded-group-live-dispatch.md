@@ -1,0 +1,52 @@
+# 0117 — bounded group live dispatch
+
+> Amended by 0135 (the group crate changes the dispatch needs) and 0134.
+
+> Status (2026-09-29, after 0134): the freeze is a latch for the store that
+> `GroupClient::open` wraps. After a write that is not `committed`, every later
+> preparation, dispatch and receive returns `frozen` before it encrypts or sends,
+> until `recover` has read the durable generation back. The free functions of
+> `group_operations` latch only when the store handed to them does.
+
+## Decision
+
+The live bounded-group sender separates pairwise preparation from relay
+dispatch. It authenticates the directory identity against the recipient member
+binding, encrypts the recipient's canonical context once, exports the advanced
+client provider state, and commits the exact ciphertext plus state through the
+outbox preparation boundary. It reserves the committed handoff before placing
+those exact ciphertext bytes in a `group` relay envelope. After the relay
+accepts, it commits `relay_accepted`; only a transient transport or relay
+backpressure result leaves the durable handoff retryable. A permanent relay
+refusal freezes the operation rather than misclassifying it as a retry.
+
+Any failure after pairwise encryption but before the preparation snapshot
+commits freezes the group operation. It must recover the selected durable
+generation before it can retry, never encrypting a new context under that
+logical ID.
+
+## Considered
+
+- Reuse direct-message `send` and mark the result as group state afterwards.
+- Re-encrypt each retry after a transport error.
+- Commit prepared and handed-off records around an exact group envelope.
+
+## Why
+
+The relay only observes opaque ciphertext, while the client needs one durable
+fact for each pairwise ratchet movement and retry. The separation preserves
+both the group outbox's immutable bytes and the provider's restart state.
+
+## What would reopen this
+
+A transactional provider/store integration can replace the reference
+freeze-and-recover boundary only if it preserves exact-ciphertext retries and
+the same relay-acceptance rule.
+
+## Amendment (0134)
+
+"It must recover the selected durable generation before it can retry" is
+enforced: a non-committed write latches the store handle, and every later
+preparation, dispatch and receive returns `frozen` before it encrypts or sends
+until `recover` has run (0134). The third attempt is dispatched once and, when
+the relay accepts it, recorded as `relay_accepted` (0134, 0135).

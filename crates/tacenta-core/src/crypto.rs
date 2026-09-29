@@ -36,6 +36,8 @@ pub fn verify_challenge(identity: &[u8], challenge: &[u8], signature: &[u8]) -> 
 /// docs for why this is a concrete type rather than another
 /// `CryptoProvider` implementation.
 pub mod durable_open;
+/// Product adapter for the standalone core's bounded group commitment helpers.
+pub mod groups;
 /// The tacenta-core provider.
 pub mod open;
 pub mod provider;

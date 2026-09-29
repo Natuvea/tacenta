@@ -1,5 +1,7 @@
 # 0092 — bounded group roster inputs
 
+> Amended by 0136.
+
 ## Decision
 
 The bounded group experiment has a product-owned, canonical roster preimage.
@@ -26,9 +28,11 @@ identity/device encoding, an unknown policy version, a malformed field, or an
 unsorted roster is refused. Reusing a device number for different identities is
 valid.
 
-The product owns these bytes. A later narrow core helper computes the
-domain-separated roster commitment over this exact preimage; this decision does
-not choose that primitive or add group cryptography.
+The product owns these bytes. The pinned standalone core exposes
+`roster_commitment` through the product crypto adapter. It computes SHA-256
+over `"Tacenta:group:roster-commitment:v1\xff" || preimage`; its independent
+core specification and vectors own that primitive and label. This decision
+continues to own parsing and canonicality, and does not add a group cipher.
 
 ## Considered
 
