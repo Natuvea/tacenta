@@ -98,3 +98,28 @@ test("two users message through the carriage and resume from state", async () =>
   assert.match(alice, /^acme\/conform-a-[0-9a-f]+\/1$/);
   assert.match(bob, /^acme\/conform-b-[0-9a-f]+\/1$/);
 }, { timeout: 120_000 });
+
+test("a received message carries the relay envelope class as kind", async () => {
+  const { Tacenta, Message } = await import("../dist/index.js");
+  const { signUpTenant } = await import("../dist/harness.js");
+  const apiKey = await signUpTenant(documentUrl, "kindco", "admin@kindco.example", "correct horse");
+  const tenant = await Tacenta.connect(apiKey, { documentUrl });
+  const password = `p-${Math.random().toString(16).slice(2, 10)}-${Math.random().toString(16).slice(2, 10)}`;
+  await tenant.signUp("kate", password);
+  await tenant.signUp("liam", password);
+  const kate = await tenant.signIn("kate", password);
+  const liam = await tenant.signIn("liam", password);
+
+  await kate.send(await kate.find("liam"), "hello");
+  const inbox = await liam.receive();
+  assert.equal(inbox.length, 1);
+  assert.ok(inbox[0] instanceof Message);
+  assert.equal(inbox[0].text(), "hello");
+  // An ordinary send arrives in the direct class. "group" and "receipt" are
+  // not reachable from this head without a group sender, so they are not
+  // checked here.
+  assert.equal(inbox[0].kind, "direct");
+
+  // The default that keeps code building a Message with two arguments compiling.
+  assert.equal(new Message("a/1", new Uint8Array()).kind, "direct");
+}, { timeout: 120_000 });
