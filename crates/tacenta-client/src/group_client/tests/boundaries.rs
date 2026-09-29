@@ -683,3 +683,140 @@ async fn the_invitation_book_holds_32_records_and_refuses_a_33rd_through_the_coo
     ));
     assert_eq!(alice.invitations().len(), 32);
 }
+
+// ---------------------------------------------------------------------------
+// The ninth member
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_ninth_member_is_refused_on_the_roster_invitation_and_admission_paths() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let genesis = genesis_of(&alice_member);
+    // Eight people are invited at genesis: seven will make the group eight
+    // members with the authority, and the eighth would be its ninth.
+    let mut invitees = Vec::new();
+    for n in 1..=8 {
+        let store = SharedStore::default();
+        let mut invitee = coordinator(directory, relay, &format!("+m{n}"), &store).await;
+        invitee.await_group(gid(), alice_member.clone()).unwrap();
+        invitees.push(invitee);
+    }
+    let bindings: Vec<Member> = invitees.iter().map(|m| m.member().unwrap()).collect();
+    let routes: Vec<(Member, DeviceAddr)> = invitees
+        .iter()
+        .zip(&bindings)
+        .map(|(invitee, binding)| (binding.clone(), route(invitee)))
+        .collect();
+    for (n, (binding, route)) in routes.iter().enumerate() {
+        alice
+            .invite(
+                InvitationId::new([n as u8 + 1; 16]),
+                binding,
+                route,
+                1_000,
+                0,
+            )
+            .await
+            .unwrap();
+    }
+    for (n, invitee) in invitees.iter_mut().enumerate() {
+        assert_eq!(invitee.receive(1).await.unwrap().items.len(), 1);
+        invitee
+            .join_group(genesis.clone(), alice_member.clone())
+            .unwrap();
+        invitee
+            .accept_invitation(InvitationId::new([n as u8 + 1; 16]), &route(&alice), 1)
+            .await
+            .unwrap();
+    }
+    assert_eq!(alice.receive(2).await.unwrap().items.len(), 8);
+
+    // Seven admissions: the authority and seven members are eight.
+    for k in 1..=7usize {
+        let mut members = vec![alice_member.clone()];
+        members.extend(bindings[..k].iter().cloned());
+        let successor = alice.next_roster(members).unwrap();
+        let install = alice
+            .install_roster(
+                successor,
+                &routes,
+                Some(Admission {
+                    id: InvitationId::new([k as u8; 16]),
+                    target: bindings[k - 1].clone(),
+                }),
+                3,
+            )
+            .await
+            .unwrap();
+        assert_eq!(install.disposition, RosterDisposition::Accepted, "{k}");
+        for invitee in &mut invitees {
+            assert_eq!(
+                sole_roster_disposition(&invitee.receive(3).await.unwrap()),
+                RosterDisposition::Accepted
+            );
+        }
+    }
+    assert_eq!(alice.roster().unwrap().revision, 7);
+    assert_eq!(alice.roster().unwrap().members.len(), 8);
+    let eighth_invitation = InvitationId::new([8; 16]);
+    let status = |alice: &GroupClient| {
+        alice
+            .invitations()
+            .iter()
+            .find(|invitation| invitation.id == eighth_invitation)
+            .unwrap()
+            .status
+    };
+    assert_eq!(status(&alice), InvitationStatus::AcceptedPendingAdmission);
+
+    // Roster path: a roster of nine members cannot be built.
+    let mut nine = vec![alice_member.clone()];
+    nine.extend(bindings.iter().cloned());
+    assert_eq!(nine.len(), 9);
+    assert!(matches!(alice.next_roster(nine), Err(GroupError::Policy)));
+
+    // Invitation path: with eight members active a new invitation is refused,
+    // even for a person who was invited before.
+    assert!(matches!(
+        alice
+            .invite(
+                InvitationId::new([9; 16]),
+                &bindings[7],
+                &routes[7].1,
+                1_000,
+                3
+            )
+            .await,
+        Err(GroupError::Policy)
+    ));
+    assert_eq!(alice.invitations().len(), 8);
+
+    // Admission path: the eighth invitee accepted long ago and is waiting. The
+    // successor that would admit them cannot be built (above), and a successor
+    // that names the admission without listing the person is refused.
+    let same_members = alice.roster().unwrap().members.clone();
+    let without_the_ninth = alice.next_roster(same_members).unwrap();
+    assert!(matches!(
+        alice
+            .install_roster(
+                without_the_ninth,
+                &routes,
+                Some(Admission {
+                    id: eighth_invitation,
+                    target: bindings[7].clone(),
+                }),
+                4
+            )
+            .await,
+        Err(GroupError::Policy)
+    ));
+
+    // Nothing moved: still revision 7, eight members, the invitation waiting.
+    assert_eq!(alice.roster().unwrap().revision, 7);
+    assert_eq!(alice.roster().unwrap().members.len(), 8);
+    assert_eq!(status(&alice), InvitationStatus::AcceptedPendingAdmission);
+}
