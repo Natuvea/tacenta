@@ -897,6 +897,97 @@ fn receiver_state_holds_512_accepted_entries_and_four_deferred_contexts() {
     assert!(decode(&crafted.state(0, 0, &mixed, 4)).is_ok());
 }
 
+/// A sender the roster does not list may hold one of the two slots open to such senders (0146), so
+/// one peer cannot take both and leave nothing for the member that the next roster admits. The
+/// quota is per identity: a second device of the same identity shares it.
+#[test]
+fn one_unlisted_identity_holds_one_of_the_two_open_deferred_slots() {
+    let (mut receiver, alice, bob) = two_party_receiver(2);
+    let carol = small("carol");
+    let carol_second_device = Member::new(b"carol".to_vec(), vec![2]);
+    let dave = small("dave");
+    let defer = |receiver: &mut GroupReceiver, sender: &Member, sequence: u64, revision: u64| {
+        receiver.receive(
+            &context_from(sender, &bob, revision, sequence),
+            sender,
+            [1; DIGEST_LEN],
+        )
+    };
+    assert_eq!(
+        defer(&mut receiver, &carol, 0, 3),
+        ReceiveDisposition::Deferred
+    );
+    // The same identity finds no second slot: another sequence, another revision, another device.
+    for (sender, sequence, revision) in
+        [(&carol, 1, 3), (&carol, 0, 4), (&carol_second_device, 0, 3)]
+    {
+        assert_eq!(
+            defer(&mut receiver, sender, sequence, revision),
+            ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull),
+            "{sequence} {revision}"
+        );
+    }
+    // An exact repeat of the held context reuses its slot.
+    assert_eq!(
+        defer(&mut receiver, &carol, 0, 3),
+        ReceiveDisposition::Deferred
+    );
+    // The other open slot is still free for another identity, and the member's slots are untouched.
+    assert_eq!(
+        defer(&mut receiver, &dave, 0, 3),
+        ReceiveDisposition::Deferred
+    );
+    assert_eq!(
+        defer(&mut receiver, &alice, 0, 3),
+        ReceiveDisposition::Deferred
+    );
+    assert_eq!(
+        defer(&mut receiver, &alice, 1, 3),
+        ReceiveDisposition::Deferred
+    );
+}
+
+/// The state codec holds the same rule: two deferred contexts from one unlisted identity are not a
+/// state a receiver can reach (0146), whether they differ in sequence, revision or device.
+#[test]
+fn the_receiver_state_refuses_two_deferred_contexts_of_one_unlisted_identity() {
+    let (_, alice, bob) = two_party_receiver(2);
+    let roster_bytes = roster(2, alice.clone(), vec![alice.clone(), bob.clone()])
+        .unwrap()
+        .encode()
+        .unwrap();
+    let crafted = Crafted {
+        roster_bytes: &roster_bytes,
+        local: &bob,
+        sender: &alice,
+        revision: 2,
+    };
+    let carol = small("carol");
+    let carol_second_device = Member::new(b"carol".to_vec(), vec![2]);
+    let from = |sender: &Member, revision: u64, sequence: u64| {
+        context_from(sender, &bob, revision, sequence)
+    };
+    for pair in [
+        [from(&carol, 3, 0), from(&carol, 3, 1)],
+        [from(&carol, 3, 0), from(&carol, 4, 0)],
+        [from(&carol, 3, 0), from(&carol_second_device, 3, 0)],
+    ] {
+        assert_eq!(
+            decode(&crafted.state(0, 0, &pair, 2)).map(|_| ()),
+            Err(Error::Conflict)
+        );
+    }
+    // Two identities, one context each, and a listed sender with two, are states the receiver
+    // reaches.
+    let reachable = [
+        from(&carol, 3, 0),
+        from(&small("dave"), 3, 0),
+        from(&alice, 3, 0),
+        from(&alice, 3, 1),
+    ];
+    assert!(decode(&crafted.state(0, 0, &reachable, 4)).is_ok());
+}
+
 #[test]
 fn the_largest_receiver_state_is_207347_bytes_and_round_trips() {
     // Eight maximal bindings, all eight senders at a full 64-sequence window,

@@ -2124,9 +2124,11 @@ fn commit_roster_transition<S: OperationStore>(
 /// (0142): the pinned authority and the group are known and the roster is not,
 /// so nothing can judge the control, and it must not be lost. The control, the
 /// provider state that consumed its ciphertext and the queue commit together.
-/// Refused with `Policy`, after committing only the provider state, when the
-/// control is not the pinned authority's, is for another group, is revision
-/// zero, or does not fit the queue.
+/// The queue keeps the four lowest revisions it is sent: when it is full a
+/// control lower than the highest held takes that one's place (0146). Refused
+/// with `Policy`, after committing only the provider state, when the control is
+/// not the pinned authority's, is for another group, is revision zero, or is
+/// higher than the four held.
 pub(crate) fn commit_hold_roster_without_view<S: OperationStore>(
     store: &mut S,
     snapshot: &mut OperationSnapshot,
@@ -2140,7 +2142,10 @@ pub(crate) fn commit_hold_roster_without_view<S: OperationStore>(
     if control.group_id != group_id
         || &control.authority != pinned_authority
         || control.revision == 0
-        || !matches!(candidate_queue.hold(control), Hold::Held | Hold::Duplicate)
+        || !matches!(
+            candidate_queue.hold_keeping_lowest(control),
+            Hold::Held | Hold::Duplicate
+        )
     {
         return Err(GroupOperationError::Policy);
     }

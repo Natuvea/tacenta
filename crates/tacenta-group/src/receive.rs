@@ -10,6 +10,7 @@ const FUTURE_REVISIONS: u64 = 2;
 const MAX_DEFERRED: usize = 4;
 /// How many of the deferred slots may hold a context whose sender the accepted
 /// roster does not list yet (decision 0142); the rest are for listed senders.
+/// Each identity that is not listed holds at most one of them (decision 0146).
 const MAX_DEFERRED_UNLISTED: usize = 2;
 const RECEIVER_STATE_DOMAIN: &[u8] = b"Tacenta Group Receiver State v1";
 const MAX_RECEIVER_STATE_LEN: usize = 262_144;
@@ -388,14 +389,20 @@ impl GroupReceiver {
             });
         }
         // At most two deferred contexts may have a sender the roster does not
-        // list (decision 0142).
-        let unlisted = deferred
+        // list (decision 0142), and no two of them the same identity (decision
+        // 0146).
+        let unlisted: Vec<&Deferred> = deferred
             .iter()
             .filter(|item| {
                 roster.closed || !roster.members.iter().any(|m| m == &item.context.sender)
             })
-            .count();
-        if unlisted > MAX_DEFERRED_UNLISTED {
+            .collect();
+        let one_each = unlisted.iter().enumerate().all(|(index, item)| {
+            unlisted[..index]
+                .iter()
+                .all(|earlier| earlier.context.sender.identity() != item.context.sender.identity())
+        });
+        if unlisted.len() > MAX_DEFERRED_UNLISTED || !one_each {
             return Err(Error::Conflict);
         }
         if !cursor.is_empty() {
@@ -415,13 +422,21 @@ impl GroupReceiver {
         !self.roster.closed && self.roster.members.iter().any(|known| known == member)
     }
 
-    /// How many deferred contexts have a sender the accepted roster does not
-    /// list.
-    fn unlisted_deferred(&self) -> usize {
-        self.deferred
-            .iter()
-            .filter(|item| !self.is_active(&item.context.sender))
-            .count()
+    /// Whether a deferred slot is open to a context from `sender`, whom the
+    /// accepted roster does not list: fewer than two such contexts are held, and
+    /// none is from the same identity (decisions 0142, 0146).
+    fn unlisted_slot_is_open_to(&self, sender: &Member) -> bool {
+        let mut held = 0;
+        for item in &self.deferred {
+            if self.is_active(&item.context.sender) {
+                continue;
+            }
+            if item.context.sender.identity() == sender.identity() {
+                return false;
+            }
+            held += 1;
+        }
+        held < MAX_DEFERRED_UNLISTED
     }
 
     fn accept_current(&mut self, key: Key, commitment: [u8; DIGEST_LEN]) -> ReceiveDisposition {
@@ -489,9 +504,11 @@ impl GroupReceiver {
             return ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull);
         }
         // Contexts from senders the roster does not list yet may take only some
-        // of the slots, so that a peer outside the group cannot use up the room
-        // a member's early message needs (0142).
-        if !self.is_active(&context.sender) && self.unlisted_deferred() >= MAX_DEFERRED_UNLISTED {
+        // of the slots, and one per identity, so that one peer outside the group
+        // cannot use up the room a member's early message needs. Two identities
+        // still can: nothing before the roster arrives tells a member it admits
+        // from another peer (0142, 0146).
+        if !self.is_active(&context.sender) && !self.unlisted_slot_is_open_to(&context.sender) {
             return ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull);
         }
         self.deferred.push(Deferred {

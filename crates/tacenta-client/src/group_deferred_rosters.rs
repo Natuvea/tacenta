@@ -69,6 +69,28 @@ impl DeferredRosters {
         Hold::Held
     }
 
+    /// Holds `roster` for a coordinator that has no view (0146). The base
+    /// revision is unknown, so the queue keeps the lowest revisions it is sent,
+    /// which are the ones that can chain from whatever roster the coordinator
+    /// joins from: when it is full, a control lower than the highest held takes
+    /// the highest one's place. A control higher than all of them is refused, as
+    /// is a fork of a held revision.
+    pub(crate) fn hold_keeping_lowest(&mut self, roster: Roster) -> Hold {
+        if self.rosters.len() == MAX_DEFERRED_ROSTERS
+            && !self
+                .rosters
+                .iter()
+                .any(|held| held.revision == roster.revision)
+            && self
+                .rosters
+                .last()
+                .is_some_and(|highest| roster.revision < highest.revision)
+        {
+            self.rosters.pop();
+        }
+        self.hold(roster)
+    }
+
     /// Drops every control whose revision is at or below `revision`: the view has
     /// passed it.
     pub(crate) fn prune_through(&mut self, revision: u64) {
@@ -230,6 +252,46 @@ mod tests {
         let fork = roster(4, [9; DIGEST_LEN], vec![alice(), bob()]);
         assert_eq!(queue.hold(fork), Hold::Refused);
         assert_eq!(queue.rosters().len(), 4);
+    }
+
+    #[test]
+    fn a_queue_for_a_coordinator_with_no_view_keeps_the_four_lowest_revisions() {
+        let rosters = chain(7);
+        let revisions = |queue: &DeferredRosters| -> Vec<u64> {
+            queue.rosters().iter().map(|held| held.revision).collect()
+        };
+        // Later controls first: a lower one takes the highest one's place.
+        let mut queue = DeferredRosters::default();
+        for index in [2, 3, 4, 5] {
+            assert_eq!(
+                queue.hold_keeping_lowest(rosters[index].clone()),
+                Hold::Held
+            );
+        }
+        assert_eq!(revisions(&queue), [3, 4, 5, 6]);
+        assert_eq!(queue.hold_keeping_lowest(rosters[1].clone()), Hold::Held);
+        assert_eq!(revisions(&queue), [2, 3, 4, 5]);
+        // A control higher than everything held is refused, and the queue is unchanged.
+        assert_eq!(queue.hold_keeping_lowest(rosters[6].clone()), Hold::Refused);
+        assert_eq!(revisions(&queue), [2, 3, 4, 5]);
+        // An exact repeat of a held control, even the highest, evicts nothing; a fork of a held
+        // revision is refused and evicts nothing.
+        assert_eq!(
+            queue.hold_keeping_lowest(rosters[4].clone()),
+            Hold::Duplicate
+        );
+        let fork = roster(6, [9; DIGEST_LEN], vec![alice(), bob()]);
+        assert_eq!(queue.hold_keeping_lowest(fork), Hold::Refused);
+        let fork_of_a_low_one = roster(3, [9; DIGEST_LEN], vec![alice(), bob()]);
+        assert_eq!(queue.hold_keeping_lowest(fork_of_a_low_one), Hold::Refused);
+        assert_eq!(revisions(&queue), [2, 3, 4, 5]);
+        // With room, it is `hold`.
+        let mut roomy = DeferredRosters::default();
+        assert_eq!(roomy.hold_keeping_lowest(rosters[4].clone()), Hold::Held);
+        assert_eq!(roomy.hold_keeping_lowest(rosters[0].clone()), Hold::Held);
+        assert_eq!(revisions(&roomy), [1, 5]);
+        // `hold`, used with a view, still refuses when full.
+        assert_eq!(queue.hold(rosters[0].clone()), Hold::Refused);
     }
 
     #[test]

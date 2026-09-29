@@ -1143,3 +1143,59 @@ async fn a_coordinator_with_no_view_holds_four_controls_and_only_the_authoritys(
     assert_eq!(carol.roster().unwrap().revision, 4);
     assert!(carol.held_roster_controls().is_empty());
 }
+
+/// A coordinator that holds a removal it cannot apply yet still sends to the member the removal
+/// removes (0146). Its view is what decides who a message goes to, and the view is at the revision
+/// before the missing one. The removed member's pairwise session decrypts the message; its group
+/// layer, which has applied the removal, refuses it. This pins the window; it is not a guarantee.
+#[tokio::test]
+async fn a_member_that_holds_a_removal_it_cannot_apply_yet_still_sends_to_the_member_it_removes() {
+    let mut crew = crew(2).await; // Bob (0) and Carol (1), both at revision 1
+    let (bob, carol) = (crew.member(0), crew.member(1));
+    // r2 keeps everybody and goes to Carol only; r3 removes Carol and goes to both.
+    let r2 = crew
+        .alice
+        .next_roster(vec![crew.alice_member.clone(), bob.clone(), carol.clone()])
+        .unwrap();
+    crew.alice
+        .install_roster(r2, &[crew.recipient(1)], None, 0)
+        .await
+        .unwrap();
+    let r3 = crew
+        .alice
+        .next_roster(vec![crew.alice_member.clone(), bob.clone()])
+        .unwrap();
+    crew.alice
+        .install_roster(r3, &[crew.recipient(0), crew.recipient(1)], None, 0)
+        .await
+        .unwrap();
+    let inbound = crew.others[0].0.receive(0).await.unwrap();
+    assert!(matches!(
+        inbound.items.as_slice(),
+        [GroupReceipt {
+            outcome: GroupOutcome::RosterDeferred,
+            ..
+        }]
+    ));
+    assert_eq!(crew.others[0].0.roster().unwrap().revision, 1);
+    assert_eq!(crew.others[0].0.held_roster_controls(), [3]);
+    let to_carol = [crew.recipient(1)];
+    let sent = crew.others[0]
+        .0
+        .send_group(&to_carol, b"after the removal".to_vec())
+        .await;
+    assert!(sent.is_ok(), "{sent:?}");
+    let inbound = crew.others[1].0.receive(0).await.unwrap();
+    assert!(
+        matches!(
+            inbound.items.iter().find_map(|item| match &item.outcome {
+                GroupOutcome::Rejected(refusal) => Some(*refusal),
+                _ => None,
+            }),
+            Some(tacenta_group::ReceiveRefusal::NotActive)
+        ),
+        "{:?}",
+        inbound.items
+    );
+    assert!(inbound.events().is_empty());
+}

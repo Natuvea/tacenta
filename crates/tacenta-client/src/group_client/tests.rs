@@ -158,6 +158,7 @@ async fn joined(
 }
 
 mod boundaries;
+mod deferral_slots;
 mod delivery_and_receive_next_guards;
 mod drain_faults_and_receiver_schedule;
 mod durable_root;

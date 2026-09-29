@@ -522,3 +522,41 @@ async fn r143_joining_at_a_revision_drops_the_passed_controls_from_memory() {
     let (s, _chain) = joined_from_revision_two().await;
     assert!(s.carol.held_roster_controls().is_empty());
 }
+
+/// A coordinator with no view keeps the four lowest revisions it is sent (0146), whatever order
+/// they arrive in. Four later controls arrive first and the predecessor they need arrives last: it
+/// replaces the highest held control instead of being refused for want of room, and joining from
+/// the source roster then applies the whole chain the queue can hold. Ascending, descending and
+/// mixed orders end in the same place.
+#[tokio::test]
+async fn a_view_less_queue_full_of_later_controls_makes_room_for_the_predecessor_that_arrives_last()
+{
+    for order in [
+        [2usize, 3, 4, 5, 1],
+        [5, 4, 3, 2, 1],
+        [1, 2, 3, 4, 5],
+        [3, 1, 4, 2, 5],
+    ] {
+        let mut s = setup(false).await;
+        let chain = s.chain(6);
+        for &index in &order {
+            s.send(&chain[index]).await;
+        }
+        s.carol.receive(0).await.unwrap();
+        assert_eq!(s.carol.held_roster_controls(), [2, 3, 4, 5], "{order:?}");
+        let mut carol = restart(&s.carol_config, &s.carol_store).await;
+        carol
+            .await_group(gid(), s.authority_member.clone())
+            .unwrap();
+        assert_eq!(
+            carol.held_roster_controls(),
+            [2, 3, 4, 5],
+            "{order:?}: the queue survives a restart"
+        );
+        carol
+            .join_group(chain[0].clone(), s.authority_member.clone())
+            .unwrap();
+        assert_eq!(carol.roster().unwrap().revision, 5, "{order:?}");
+        assert!(carol.held_roster_controls().is_empty(), "{order:?}");
+    }
+}
