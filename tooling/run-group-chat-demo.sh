@@ -3,10 +3,13 @@
 # limit and negative-control suites, then the client's live traces against the
 # in-process directory, relay and real crypto provider.
 #
-# What the traces persist to: the live client traces use an in-memory store
-# (`GroupStore`, whose commit always succeeds); the native file-backed
-# operation store is exercised by the "native durable" step and its unit tests,
-# with synthetic data. See docs/claims.md for the profile's limits.
+# What the traces persist to: the older live client traces use an in-memory
+# store (`GroupStore`, whose commit always succeeds); the `GroupClient` traces
+# use an in-memory store that a test can script to fail or leave a write in
+# doubt; the native file-backed operation store is exercised by the "native
+# durable" step and its unit tests, with synthetic data, and by the measurement
+# probe (tooling/measure-group-chat.sh). See docs/claims.md for the profile's
+# limits.
 #
 # Every step must run exactly the tests it names. A step that runs zero tests
 # (a renamed or filtered-out test), or a different number than expected, fails
@@ -93,15 +96,19 @@ step "mutation-survivor killers" 8 \
 step "decoder robustness: no panics, bounded allocation, canonical re-encoding" 2 \
   cargo test --locked -p tacenta-group --test codec_robustness
 
+echo "group profile: the five group crate changes the coordinator needs (decision 0135)"
+step "final-attempt acceptance, recovery at the applied revision, source-roster view, public member order" 19 \
+  cargo test --locked -p tacenta-group --test coordinator_needs
+
 echo "group profile: deterministic 2/3/8-member checkpoint sizes, 32-byte identities"
 step "checkpoint sizes" 1 \
   cargo test --locked -p tacenta-group --lib \
   tests::development_profile_reports_checkpoint_sizes_at_two_three_and_eight_members \
   -- --exact --nocapture
 
-# TODO(client-fixes): the steps below name tests in crates/tacenta-client. If
-# the client changes rename, add or remove tests here, update the names and
-# the expected counts; a stale name fails the script, which is the point.
+# The steps below name tests in crates/tacenta-client. If the client changes
+# rename, add or remove tests here, update the names and the expected counts; a
+# stale name fails the script, which is the point.
 echo "group profile: native durable group logical-intent transaction"
 step "native snapshot" 1 \
   cargo test --locked -p tacenta-client --lib \
@@ -137,5 +144,15 @@ step "revocation" 1 \
   cargo test --locked -p tacenta-client --lib \
   tests::a_live_invitation_revocation_uses_a_durable_control_handoff \
   -- --exact --nocapture
+
+echo "group client: staged receive, write-through direct messages, latch, bounds, boundaries"
+# The measurement probe in the same module is ignored and is skipped here; the
+# measurement script runs it.
+step "GroupClient live traces and boundary traces" 33 \
+  cargo test --locked -p tacenta-client --lib group_client::tests -- --skip group_scale_probe
+step "coordinator functions: bounds, latch, validate before encrypt, unknown-write sites" 37 \
+  cargo test --locked -p tacenta-client --lib group_operations::review_tests
+step "live guards of the preparation and dispatch functions" 14 \
+  cargo test --locked -p tacenta-client --lib tests::review_live
 
 echo "group demo: $steps steps, $tests tests, all passed"

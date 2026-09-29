@@ -10,10 +10,11 @@
 #  2. extracts the deterministic 2/3/8-member roster and receiver-state sizes,
 #     which use real 32-byte identities (the policy crate's own test asserts
 #     them), and the three-client live figures the client tests print;
-#  3. if the client crate has the per-size probe test named below, runs it once
-#     per member count in its own process and records snapshot bytes, commits
-#     per logical send, CPU and maximum resident set for each size. Without the
-#     probe it says so: those figures are NOT MEASURED, and none are invented.
+#  3. runs the client crate's per-size probe, once per member count in its own
+#     process and twice, and records snapshot bytes, commits per logical send,
+#     commit latency, restart cost, CPU and maximum resident set for each size.
+#     The probe is an ignored client test (`group_client::tests::scale_probe::
+#     group_scale_probe`); a missing probe stops the script.
 #
 # Every extraction is required. A missing line, a missing timing field or a
 # missing /usr/bin/time stops the script with a message; nothing is defaulted.
@@ -42,15 +43,16 @@ Darwin) time_flag=-l ;;
 *) time_flag=-v ;;
 esac
 
-# TODO(client-fixes): the client crate does not have this probe yet. Its
-# contract: a lib test with this name that reads GROUP_SCALE_MEMBERS (2, 3 or
-# 8), builds that many real clients, sends one 1,000-byte logical message from
-# the authority to every other member through a FileOperationStore, and prints
-# exactly one line
+# The probe's contract: an ignored lib test with this name that reads
+# GROUP_SCALE_MEMBERS (2, 3 or 8), builds that many real clients with 32-byte
+# identities, has the authority send one 1,000-byte logical message to every
+# other member through a GroupClient over a native file store, and prints one
+# line
 #   group-scale members=N snapshot_bytes=B provider_state_bytes=P
 #     logical_send_commits=C logical_send_micros=T restart_recover_micros=R
-# (one line; wrapped here only for reading).
-probe=tests::group_scale_probe
+#     roster_bytes=.. receiver_state_bytes=.. commit_median_micros=..
+# (one line; wrapped here only for reading). It is run with --ignored.
+probe=group_client::tests::scale_probe::group_scale_probe
 
 core_source=$(awk '
   /^name = "tacenta-core"$/ { found = 1; next }
@@ -69,7 +71,7 @@ dirty=$(git -C "$root" status --porcelain | wc -l | tr -d ' ')
   echo "tacenta_core_revision=$core_rev"
   echo "cargo_lock_sha256=$(shasum -a 256 "$root/Cargo.lock" | cut -d' ' -f1)"
   echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "seeds=none: the policy-crate fixtures are fixed byte patterns; the live traces draw keys from the operating system, so ciphertext sizes and timings vary between runs and are not seeded"
+  echo "seeds=none: the policy-crate fixtures are fixed byte patterns; the live traces and the scale probe draw keys from the operating system and are not seeded. Byte sizes repeated exactly between the two passes of each probe size in the recorded runs; timings vary"
   echo "load_average=$(uptime | sed 's/.*load averages*: //')"
   uname -a
   case "$(uname -s)" in
@@ -141,23 +143,21 @@ scale="$output/scale.txt"
 : >"$scale"
 client_list=$(cargo test --locked -p tacenta-client --lib -- --list 2>/dev/null) ||
   fail "could not list the client tests"
-if echo "$client_list" | grep -q "^$probe: test\$"; then
-  exe=$(cargo test --locked -p tacenta-client --lib --no-run --message-format=json 2>/dev/null |
-    sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)
-  [ -x "$exe" ] || fail "could not find the client test executable"
-  for members in 2 3 8; do
-    for pass in first second; do
-      log="$output/scale-$members-$pass.log"
-      GROUP_SCALE_MEMBERS=$members /usr/bin/time "$time_flag" "$exe" "$probe" --exact --nocapture \
-        >"$log" 2>"$output/scale-$members-$pass.time" ||
-        fail "the scale probe failed for $members members; see $log"
-      need "$log" "^group-scale members=$members snapshot_bytes="
-      echo "members=$members run=$pass $(grep "^group-scale members=$members " "$log" | head -1 | cut -d' ' -f3-) $(timing "$output/scale-$members-$pass.time")" >>"$scale"
-    done
+echo "$client_list" | grep -q "^$probe: test\$" ||
+  fail "the client crate has no $probe test"
+exe=$(cargo test --locked -p tacenta-client --lib --no-run --message-format=json 2>/dev/null |
+  sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)
+[ -x "$exe" ] || fail "could not find the client test executable"
+for members in 2 3 8; do
+  for pass in first second; do
+    log="$output/scale-$members-$pass.log"
+    GROUP_SCALE_MEMBERS=$members /usr/bin/time "$time_flag" "$exe" "$probe" --ignored --exact --nocapture \
+      >"$log" 2>"$output/scale-$members-$pass.time" ||
+      fail "the scale probe failed for $members members; see $log"
+    need "$log" "^group-scale members=$members snapshot_bytes="
+    echo "members=$members run=$pass $(grep "^group-scale members=$members " "$log" | head -1 | cut -d' ' -f3-) $(timing "$output/scale-$members-$pass.time")" >>"$scale"
   done
-else
-  echo "NOT MEASURED per member count: the client crate has no $probe test, so snapshot bytes, commits per logical send, CPU and maximum resident set at 2, 3 and 8 members were not captured. The three-client figures above are the only live measurements." >"$scale"
-fi
+done
 
 {
   echo "identification"
@@ -193,9 +193,13 @@ target directory, the warm run reuses it. summary.txt extracts the fields.
 The 2/3/8-member roster and receiver-state sizes are deterministic and use
 32-byte identities. The native transaction, restart and snapshot figures come
 from the three-client client tests and are single measurements on a loaded
-machine. When the client crate has the per-size probe, scale.txt has one line
-per member count and pass; otherwise scale.txt says NOT MEASURED. Nothing here
-is a production budget or a 32, 128 or 512-member result.
+machine. scale.txt has one line per member count and pass from the client's
+per-size probe (a GroupClient over a native file store, real 32-byte
+identities, one 1,000-byte logical send to every other member): snapshot bytes,
+provider-state bytes, whole-snapshot commits per logical send, the time of that
+send, the median latency of one more commit at the final size, the restart and
+recovery time, and the probe process's CPU and maximum resident set. Nothing
+here is a production budget or a 32, 128 or 512-member result.
 EOF
 
 echo "group-chat measurements written to $output"

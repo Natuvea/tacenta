@@ -153,6 +153,7 @@ async fn joined(
 }
 
 mod boundaries;
+mod scale_probe;
 
 #[tokio::test]
 async fn a_crash_between_receive_and_commit_redelivers_the_group_message() {
