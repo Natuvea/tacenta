@@ -202,7 +202,7 @@ tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
 ```
 
 To check that the group crate's tests notice a removed guard, run its
-single-change mutation harness (131 mutants; a few minutes with four workers,
+single-change mutation harness (134 mutants; a few minutes with four workers,
 longer on a loaded machine). It needs the unmodified tree to pass, prints each
 mutant as killed or survived, and fails on a mutant that does not patch or build:
 
@@ -210,8 +210,8 @@ mutant as killed or survived, and fails on a mutant that does not patch or build
 python3 tooling/group-mutation/mutate.py --workers 4
 ```
 
-At the revision that added mutants R17 to R21 it killed 124 and left seven
-standing, each argued: `L05` (the 4,096-byte roster bound is above the largest
+At the revision that added mutants R22 to R24 it killed 127 and left seven
+standing, the same seven as before, each argued: `L05` (the 4,096-byte roster bound is above the largest
 valid roster, 3,048 bytes, so nothing reaches it), `L10` and `S11` (a second
 check returns the same error; the pair with both removed, `D10` and `D11`, is
 killed), `N13` (the duplicate lookup runs before the sequence-order check),
@@ -220,8 +220,17 @@ that reaches `accept_source` at revision zero passes the genesis checks),
 `P01` (the 8 KiB payload-input bound is an early exit that gives the error the
 length check gives) and `X15` (a third reserved attempt already exhausts the
 recipient). These are arguments from the code, not proofs of equivalence. The
-harness covers the group crate only; the client crate has no harness in this
-repository.
+harness covers the group crate only; the client and transport crates have no
+harness in this repository.
+
+Many comments in the group tests name a mutant by an id (`M###`, `R###`, `D##`)
+and a `file:line`. Those ids belong to single-change mutation runs against
+97689a0, 341e2b0 and later revisions whose mutant lists are **not kept in this
+repository**; only the ids of `tooling/group-mutation/mutants.py` (the letters
+`L`, `N`, `P`, `R`, `S`, `V` and `X`, and `D` for its doubles) resolve here, and
+its `R` ids are not those of the comments. The line numbers in the comments are
+those of the commit the comment names and have drifted. A comment states the one
+change its test fails on in words, and that is what to read.
 
 ## 5. The repo gates
 
