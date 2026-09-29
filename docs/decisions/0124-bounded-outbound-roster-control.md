@@ -1,6 +1,6 @@
 # 0124 — bounded outbound roster control
 
-Amended by 0133, 0134, 0135 and 0141.
+Amended by 0133, 0134, 0135, 0141 and 0142.
 
 ## Decision
 

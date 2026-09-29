@@ -1,5 +1,7 @@
 # 0102 — bounded group deferred revalidation
 
+> Amended by 0142.
+
 ## Decision
 
 `GroupReceiver` retains the full canonical application context and commitment

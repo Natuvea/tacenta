@@ -1,6 +1,6 @@
 # 0139 — bounded group receiver state after removal or closure
 
-> Amends 0114.
+> Amends 0114. Amended by 0142.
 
 ## Decision
 
