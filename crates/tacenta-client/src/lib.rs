@@ -216,8 +216,10 @@ pub struct Received {
 /// The relay envelope class of a decrypted message: an unauthenticated
 /// routing label, not an authenticated application class (decision 0116). The
 /// pairwise associated data does not cover it, so a relay that relabels an
-/// envelope causes misrouting or lost availability, never a group state change
-/// the payload's own authentication would not allow.
+/// envelope causes misrouting or lost availability, never a roster, invitation
+/// or receiver change the payload's own authentication would not allow. A direct
+/// message relabelled `Group` is consumed as a malformed group payload and leaves
+/// a 41-byte record in the operation snapshot (0133, 0116).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageKind {
     Direct,

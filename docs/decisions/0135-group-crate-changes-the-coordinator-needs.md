@@ -12,9 +12,10 @@ changes together, so the workarounds go.
 
 1. **The final attempt can be recorded as accepted.**
    `LogicalSend::record_relay_accepted` accepts a recipient that is
-   `handed_off`, and also a recipient that is `exhausted_unknown` with all
-   three attempts reserved and its ciphertext present; the result is
-   `relay_accepted`. `GroupOutbox::recover_from_transcript` accepts the `TCGA`
+   `handed_off`, and also a recipient that is `exhausted_unknown`, a state the
+   outbox reaches only through three reservations with the ciphertext stored, so
+   the state itself implies both (the function does not test them again); the
+   result is `relay_accepted`. `GroupOutbox::recover_from_transcript` accepts the `TCGA`
    record for either state and refuses it for every other. A fourth
    reservation is still refused before any relay request, and a recipient that
    is `exhausted_unknown` with no acceptance recorded stays that way, so
