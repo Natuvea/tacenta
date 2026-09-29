@@ -159,9 +159,13 @@ async fn joined(
 
 mod boundaries;
 mod durable_root;
+mod freeze_and_recovery;
+mod invitation_payload_refusals;
 mod redelivery;
 mod roster_fanout;
+mod roster_installation;
 mod scale_probe;
+mod send_and_control_dispatch;
 
 #[tokio::test]
 async fn a_crash_between_receive_and_commit_redelivers_the_group_message() {
