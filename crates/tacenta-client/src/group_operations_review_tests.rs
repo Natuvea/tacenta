@@ -946,6 +946,7 @@ fn cancellation_by_roster_changes_counts_toward_the_sixteen_terminal_sends() {
                 prepared_control: None,
                 invitation_book: None,
                 admission: None,
+                deferred: None,
             },
             &alice(),
             next,

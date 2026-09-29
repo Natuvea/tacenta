@@ -8,6 +8,9 @@ use crate::{
 const DEDUP_WINDOW: u64 = 64;
 const FUTURE_REVISIONS: u64 = 2;
 const MAX_DEFERRED: usize = 4;
+/// How many of the deferred slots may hold a context whose sender the accepted
+/// roster does not list yet (decision 0142); the rest are for listed senders.
+const MAX_DEFERRED_UNLISTED: usize = 2;
 const RECEIVER_STATE_DOMAIN: &[u8] = b"Tacenta Group Receiver State v1";
 const MAX_RECEIVER_STATE_LEN: usize = 262_144;
 
@@ -138,7 +141,20 @@ impl GroupReceiver {
         if context.recipient != self.local {
             return ReceiveDisposition::Rejected(ReceiveRefusal::WrongRecipient);
         }
-        if !self.is_active(&context.sender) || !self.is_active(&self.local) {
+        if !self.is_active(&self.local) {
+            return ReceiveDisposition::Rejected(ReceiveRefusal::NotActive);
+        }
+        // A context ahead of the accepted roster is judged against the roster
+        // that is ahead: its sender may be a member that roster admits, and
+        // this one cannot say so yet. It is deferred whoever the sender is and
+        // revalidated when that roster arrives (decisions 0102, 0142).
+        if context.revision > self.roster.revision {
+            if context.revision > self.roster.revision.saturating_add(FUTURE_REVISIONS) {
+                return ReceiveDisposition::Rejected(ReceiveRefusal::FutureOutOfRange);
+            }
+            return self.defer(context, commitment);
+        }
+        if !self.is_active(&context.sender) {
             return ReceiveDisposition::Rejected(ReceiveRefusal::NotActive);
         }
 
@@ -151,16 +167,11 @@ impl GroupReceiver {
         if context.revision < self.roster.revision {
             return ReceiveDisposition::Rejected(ReceiveRefusal::OldRevision);
         }
-        if context.revision == self.roster.revision {
-            if context.roster_digest != self.roster_digest {
-                return ReceiveDisposition::Rejected(ReceiveRefusal::InvalidRoster);
-            }
-            return self.accept_current(key, commitment);
+        // The revision is the accepted roster's.
+        if context.roster_digest != self.roster_digest {
+            return ReceiveDisposition::Rejected(ReceiveRefusal::InvalidRoster);
         }
-        if context.revision > self.roster.revision.saturating_add(FUTURE_REVISIONS) {
-            return ReceiveDisposition::Rejected(ReceiveRefusal::FutureOutOfRange);
-        }
-        self.defer(context, commitment)
+        self.accept_current(key, commitment)
     }
 
     /// Installs a roster that the control layer has already authenticated and
@@ -357,10 +368,6 @@ impl GroupReceiver {
                 .map_err(|_| Error::Malformed)?;
             if context.group_id != roster.group_id
                 || context.recipient != local
-                || !roster
-                    .members
-                    .iter()
-                    .any(|member| member == &context.sender)
                 || context.revision <= roster.revision
                 || context.revision > roster.revision.saturating_add(FUTURE_REVISIONS)
                 || commitment != payload_commitment(&context_bytes)
@@ -380,6 +387,17 @@ impl GroupReceiver {
                 commitment,
             });
         }
+        // At most two deferred contexts may have a sender the roster does not
+        // list (decision 0142).
+        let unlisted = deferred
+            .iter()
+            .filter(|item| {
+                roster.closed || !roster.members.iter().any(|m| m == &item.context.sender)
+            })
+            .count();
+        if unlisted > MAX_DEFERRED_UNLISTED {
+            return Err(Error::Conflict);
+        }
         if !cursor.is_empty() {
             return Err(Error::Malformed);
         }
@@ -395,6 +413,15 @@ impl GroupReceiver {
 
     fn is_active(&self, member: &Member) -> bool {
         !self.roster.closed && self.roster.members.iter().any(|known| known == member)
+    }
+
+    /// How many deferred contexts have a sender the accepted roster does not
+    /// list.
+    fn unlisted_deferred(&self) -> usize {
+        self.deferred
+            .iter()
+            .filter(|item| !self.is_active(&item.context.sender))
+            .count()
     }
 
     fn accept_current(&mut self, key: Key, commitment: [u8; DIGEST_LEN]) -> ReceiveDisposition {
@@ -461,6 +488,12 @@ impl GroupReceiver {
         if self.deferred.len() == MAX_DEFERRED {
             return ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull);
         }
+        // Contexts from senders the roster does not list yet may take only some
+        // of the slots, so that a peer outside the group cannot use up the room
+        // a member's early message needs (0142).
+        if !self.is_active(&context.sender) && self.unlisted_deferred() >= MAX_DEFERRED_UNLISTED {
+            return ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull);
+        }
         self.deferred.push(Deferred {
             context: context.clone(),
             commitment,
@@ -520,6 +553,7 @@ mod tests {
         assert_eq!(DEDUP_WINDOW, 64);
         assert_eq!(FUTURE_REVISIONS, 2);
         assert_eq!(MAX_DEFERRED, 4);
+        assert_eq!(MAX_DEFERRED_UNLISTED, 2);
         assert_eq!(MAX_RECEIVER_STATE_LEN, 262_144);
     }
 

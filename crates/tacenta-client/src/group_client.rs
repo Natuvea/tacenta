@@ -1,4 +1,4 @@
-//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0141, 0143, 0144).
+//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0141 to 0144).
 //!
 //! **Experimental.** This is the profile of the bounded group experiment: at
 //! most eight members, one device each, one authority, one group per client.
@@ -20,6 +20,11 @@
 //! - **One durable root.** Every pairwise operation, direct messages included,
 //!   commits the exported provider state before it has an external effect
 //!   (0132). A restart from the snapshot cannot rewind the ratchet.
+//! - **Controls that arrive out of order are kept.** A roster control from the
+//!   pinned authority that is ahead of the accepted roster, or that reaches a
+//!   coordinator with no roster yet, is held in a bounded durable queue and
+//!   applied when its predecessor arrives (0142). There is still no catch-up
+//!   request: a control that never arrives leaves the member behind.
 //! - **A latch.** A write that did not commit freezes the coordinator until
 //!   [`recover`](GroupClient::recover) reloads the durable snapshot and resets
 //!   the client's provider state to it (0134). A `recover` that fails leaves it
@@ -55,18 +60,20 @@ pub use crate::operation_store::{
 
 use crate::group_control_outbox::Disposition as ControlDisposition;
 use crate::group_control_outbox::Outbox as ControlOutbox;
+use crate::group_deferred_rosters::DeferredRosters;
 use crate::group_operations::{
     AuthorityControlState, AuthorityInvitationState, GroupLiveError, GroupOperationError,
     GroupPayloadDisposition, GroupReceiveInput, InstalledControlState, InvitationAdmission,
     commit_delivery_cursor, commit_group_invitation_acceptance, commit_group_invitation_bootstrap,
     commit_group_invitation_revocation, commit_group_invitation_transition,
-    commit_group_payload_with_outbox, commit_logical_intent, commit_malformed_group_payload,
-    commit_provider_state, dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
+    commit_group_payload_with_deferred, commit_hold_roster_without_view, commit_logical_intent,
+    commit_malformed_group_payload, commit_next_deferred_roster, commit_provider_state,
+    commit_prune_deferred_rosters, dispatch_outbound_roster_control, dispatch_outbox_group_handoff,
     prepare_authority_invitation_revocation, prepare_authority_roster_control,
     prepare_installed_roster_control, prepare_outbound_invitation_control,
-    prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_invitation_book,
-    recover_group_outbox, recover_group_receiver, recover_group_roster_view,
-    roster_control_recipient_is_entitled, undelivered_events,
+    prepare_outbox_group_recipient, recover_group_control_outbox, recover_group_deferred_rosters,
+    recover_group_invitation_book, recover_group_outbox, recover_group_receiver,
+    recover_group_roster_view, roster_control_recipient_is_entitled, undelivered_events,
 };
 use crate::{Client, Error, MailSignal, MessageKind, Received};
 
@@ -197,6 +204,10 @@ pub enum GroupOutcome {
         disposition: RosterDisposition,
         events: Vec<GroupEvent>,
     },
+    /// A roster control that is ahead of the accepted roster (or reached a
+    /// coordinator with no roster yet) was kept, with the provider state that
+    /// consumed it, until its predecessor arrives (0142). Nothing else changed.
+    RosterDeferred,
     /// An invitation bootstrap was recorded as pending.
     Invitation(InvitationBootstrap),
     /// An acceptance or revocation moved an invitation to this status.
@@ -311,6 +322,8 @@ struct GroupState {
     outbox: GroupOutbox,
     control: ControlOutbox,
     book: InvitationBook,
+    /// Roster controls held for their predecessor (0142).
+    deferred: DeferredRosters,
 }
 
 /// The coordinator. See the module documentation.
@@ -437,6 +450,19 @@ impl<P: CryptoProvider> GroupClient<P> {
         .map_err(|_| GroupError::Policy)
     }
 
+    /// The revisions of the roster controls this coordinator is holding until
+    /// their predecessor arrives, in ascending order (0142).
+    pub fn held_roster_controls(&self) -> Vec<u64> {
+        self.group.as_ref().map_or_else(Vec::new, |state| {
+            state
+                .deferred
+                .rosters()
+                .iter()
+                .map(|roster| roster.revision)
+                .collect()
+        })
+    }
+
     /// The invitation records of the attached group.
     pub fn invitations(&self) -> &[Invitation] {
         self.group
@@ -530,6 +556,8 @@ impl<P: CryptoProvider> GroupClient<P> {
         } else {
             InvitationBook::new(group_id)
         };
+        let deferred = recover_group_deferred_rosters(snapshot, group_id, &authority)
+            .map_err(|_| GroupError::Recovery)?;
         self.group = Some(GroupState {
             group_id,
             authority,
@@ -540,7 +568,14 @@ impl<P: CryptoProvider> GroupClient<P> {
             outbox,
             control,
             book,
+            deferred,
         });
+        // A control held before this view existed, or before a crash between two
+        // of its commits, is applied now (0142). The events it unlocks are
+        // committed and are offered by the next `receive`.
+        if let Some(state) = self.group.as_mut() {
+            drain_deferred_rosters(&mut self.store, &mut self.snapshot, state)?;
+        }
         Ok(())
     }
 
@@ -825,13 +860,13 @@ impl<P: CryptoProvider> GroupClient<P> {
                 else {
                     return refuse(store, snapshot, input);
                 };
-                match commit_group_payload_with_outbox(
+                match commit_group_payload_with_deferred(
                     store,
                     snapshot,
                     view,
                     receiver,
-                    &mut [],
                     &mut state.outbox,
+                    &mut state.deferred,
                     input,
                 )? {
                     GroupPayloadDisposition::Application(disposition) => {
@@ -840,26 +875,51 @@ impl<P: CryptoProvider> GroupClient<P> {
                     GroupPayloadDisposition::Roster(_) => Err(GroupOperationError::Policy),
                 }
             }
-            GroupPayload::Roster(_) => {
+            GroupPayload::Roster(control) => {
                 let (Some(view), Some(receiver)) = (state.view.as_mut(), state.receiver.as_mut())
                 else {
-                    return refuse(store, snapshot, input);
+                    // No roster view yet: keep a control from the pinned
+                    // authority until the coordinator joins (0142).
+                    if peer_member != state.authority {
+                        return refuse(store, snapshot, input);
+                    }
+                    return match commit_hold_roster_without_view(
+                        store,
+                        snapshot,
+                        &mut state.deferred,
+                        &state.authority,
+                        state.group_id,
+                        control,
+                        (input.provider_state.clone(), input.provider_effect),
+                    ) {
+                        Ok(()) => Ok(GroupOutcome::RosterDeferred),
+                        Err(GroupOperationError::Policy) => refuse(store, snapshot, input),
+                        Err(error) => Err(error),
+                    };
                 };
-                match commit_group_payload_with_outbox(
+                match commit_group_payload_with_deferred(
                     store,
                     snapshot,
                     view,
                     receiver,
-                    &mut [],
                     &mut state.outbox,
+                    &mut state.deferred,
                     input,
                 )? {
                     GroupPayloadDisposition::Roster(commit) => {
+                        if commit.held {
+                            return Ok(GroupOutcome::RosterDeferred);
+                        }
                         let mut events = Vec::new();
                         for item in &commit.revalidated {
                             if let ReceiveDisposition::Accepted { event_id } = item.disposition {
                                 events.push(GroupEvent::new(event_id, &item.context));
                             }
+                        }
+                        // What this control accepted may be the predecessor of
+                        // controls that were waiting for it (0142).
+                        if commit.disposition == RosterDisposition::Accepted {
+                            events.extend(drain_deferred_rosters(store, snapshot, state)?);
                         }
                         Ok(GroupOutcome::Roster {
                             disposition: commit.disposition,
@@ -1414,6 +1474,36 @@ impl<P: CryptoProvider> GroupClient<P> {
         .await?;
         Ok(())
     }
+}
+
+/// Applies every held roster control that has become the successor of the view,
+/// one commit each, and drops the ones the view has passed (0142). Returns the
+/// events the applied controls unlocked, in order.
+fn drain_deferred_rosters<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    state: &mut GroupState,
+) -> Result<Vec<GroupEvent>, GroupOperationError> {
+    let mut events = Vec::new();
+    let (Some(view), Some(receiver)) = (state.view.as_mut(), state.receiver.as_mut()) else {
+        return Ok(events);
+    };
+    while let Some(commit) = commit_next_deferred_roster(
+        store,
+        snapshot,
+        view,
+        receiver,
+        &mut state.outbox,
+        &mut state.deferred,
+    )? {
+        for item in &commit.revalidated {
+            if let ReceiveDisposition::Accepted { event_id } = item.disposition {
+                events.push(GroupEvent::new(event_id, &item.context));
+            }
+        }
+    }
+    commit_prune_deferred_rosters(store, snapshot, view, state.group_id, &mut state.deferred)?;
+    Ok(events)
 }
 
 /// Whether a route is the relay address of the device the member names: the

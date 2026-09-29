@@ -75,6 +75,7 @@ mod dial;
 #[cfg(test)]
 mod durable;
 mod group_control_outbox;
+mod group_deferred_rosters;
 mod group_operations;
 // The experimental group coordinator (0131): the one non-test owner of the
 // mailbox, the pairwise state and the operation snapshot while it lives.
@@ -607,6 +608,7 @@ mod tests {
                 crate::group_operations::RosterCommit {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
+                    held: false,
                 }
             ))
         );
@@ -631,6 +633,7 @@ mod tests {
                 crate::group_operations::RosterCommit {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
+                    held: false,
                 }
             ))
         );
@@ -852,6 +855,7 @@ mod tests {
                 crate::group_operations::RosterCommit {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
+                    held: false,
                 }
             ))
         );
@@ -897,6 +901,7 @@ mod tests {
                 crate::group_operations::RosterCommit {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
+                    held: false,
                 }
             ))
         );
@@ -1244,6 +1249,7 @@ mod tests {
                 crate::group_operations::RosterCommit {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
+                    held: false,
                 }
             ))
         );
@@ -1351,6 +1357,7 @@ mod tests {
                 crate::group_operations::RosterCommit {
                     disposition: RosterDisposition::Accepted,
                     revalidated: Vec::new(),
+                    held: false,
                 }
             ))
         );

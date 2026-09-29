@@ -28,6 +28,7 @@ use tacenta_group::{
 use crate::group_control_outbox::{
     Disposition as ControlDisposition, Handoff as ControlHandoff, Outbox as ControlOutbox,
 };
+use crate::group_deferred_rosters::{DeferredRosters, HOLD_AHEAD, Hold};
 use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, StoreError};
 use crate::{Client, ErrorKind};
 
@@ -40,7 +41,7 @@ const MAX_DEDUP_RECORDS: usize = 512;
 /// Terminal logical sends whose records the `outbox` transcript keeps (0133).
 const MAX_TERMINAL_LOGICAL_SENDS: usize = 16;
 /// The retained checkpoint kinds; a new one replaces the previous of its kind.
-const CHECKPOINT_TAGS: [&[u8; 4]; 4] = [b"TCGV", b"TCGB", b"TCGO", b"TCGX"];
+const CHECKPOINT_TAGS: [&[u8; 4]; 5] = [b"TCGV", b"TCGB", b"TCGO", b"TCGX", b"TCGQ"];
 
 /// A group preparation cannot cross its durable boundary.  The caller freezes
 /// the affected operation and recovers its snapshot before it tries again.
@@ -111,6 +112,9 @@ fn live_client_error(kind: ErrorKind) -> GroupLiveError {
 pub(crate) struct RosterCommit {
     pub(crate) disposition: RosterDisposition,
     pub(crate) revalidated: Vec<RevalidatedReceive>,
+    /// The control was ahead of the view and was kept in the queue of held
+    /// controls (0142).
+    pub(crate) held: bool,
 }
 
 /// The durable effect selected by the canonical inner group payload tag.
@@ -129,6 +133,17 @@ struct RosterCommitState<'a> {
     prepared_control: Option<PreparedControl>,
     invitation_book: Option<&'a mut InvitationBook>,
     admission: Option<InvitationAdmission>,
+    /// The roster controls held for their predecessor (0142), when the caller
+    /// keeps a queue.
+    deferred: Option<DeferredCommit<'a>>,
+}
+
+/// The queue of held roster controls a transition may read and change, and the
+/// revision of the held control that this transition applies, which the commit
+/// removes whether or not the view accepts it.
+struct DeferredCommit<'a> {
+    queue: &'a mut DeferredRosters,
+    applying: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -821,6 +836,7 @@ where
                 }),
                 invitation_book: invitation_book.as_mut(),
                 admission: state.admission.clone(),
+                deferred: None,
             },
             authenticated_authority,
             successor.clone(),
@@ -848,6 +864,7 @@ where
             }),
             invitation_book: state.invitation_book.map(|book| &mut *book),
             admission: state.admission,
+            deferred: None,
         },
         authenticated_authority,
         successor,
@@ -1640,12 +1657,14 @@ pub(crate) fn commit_group_payload<S: OperationStore>(
         receiver,
         logical_sends,
         None,
+        None,
         input,
     )
 }
 
 /// As [`commit_group_payload`], while atomically cancelling any locally held
 /// application handoffs made obsolete by an accepted roster successor.
+#[cfg(test)]
 pub(crate) fn commit_group_payload_with_outbox<S: OperationStore>(
     store: &mut S,
     snapshot: &mut OperationSnapshot,
@@ -1662,10 +1681,35 @@ pub(crate) fn commit_group_payload_with_outbox<S: OperationStore>(
         receiver,
         logical_sends,
         Some(group_outbox),
+        None,
         input,
     )
 }
 
+/// As [`commit_group_payload_with_outbox`], keeping the queue of roster controls
+/// that arrive ahead of their predecessor (0142).
+pub(crate) fn commit_group_payload_with_deferred<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: &mut GroupReceiver,
+    group_outbox: &mut GroupOutbox,
+    deferred: &mut DeferredRosters,
+    input: GroupReceiveInput<'_>,
+) -> Result<GroupPayloadDisposition, GroupOperationError> {
+    commit_group_payload_with_optional_outbox(
+        store,
+        snapshot,
+        view,
+        receiver,
+        &mut [],
+        Some(group_outbox),
+        Some(deferred),
+        input,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn commit_group_payload_with_optional_outbox<S: OperationStore>(
     store: &mut S,
     snapshot: &mut OperationSnapshot,
@@ -1673,6 +1717,7 @@ fn commit_group_payload_with_optional_outbox<S: OperationStore>(
     receiver: &mut GroupReceiver,
     logical_sends: &mut [LogicalSend],
     group_outbox: Option<&mut GroupOutbox>,
+    deferred: Option<&mut DeferredRosters>,
     input: GroupReceiveInput<'_>,
 ) -> Result<GroupPayloadDisposition, GroupOperationError> {
     let payload = match GroupPayload::decode(input.plaintext) {
@@ -1717,6 +1762,10 @@ fn commit_group_payload_with_optional_outbox<S: OperationStore>(
                 prepared_control: None,
                 invitation_book: None,
                 admission: None,
+                deferred: deferred.map(|queue| DeferredCommit {
+                    queue,
+                    applying: None,
+                }),
             },
             &authenticated_peer,
             candidate,
@@ -1803,6 +1852,7 @@ pub(crate) fn commit_roster_successor<S: OperationStore>(
             prepared_control: None,
             invitation_book: None,
             admission: None,
+            deferred: None,
         },
         authenticated_authority,
         candidate,
@@ -1835,6 +1885,7 @@ pub(crate) fn commit_roster_successor_with_receiver<S: OperationStore>(
             prepared_control: None,
             invitation_book: None,
             admission: None,
+            deferred: None,
         },
         authenticated_authority,
         candidate,
@@ -1857,6 +1908,36 @@ fn commit_roster_transition<S: OperationStore>(
     let mut candidate_view = state.view.clone();
     let disposition =
         candidate_view.accept_successor(authenticated_authority, candidate.clone(), commitment);
+    // Held roster controls (0142): a control the view refuses only because it is
+    // ahead of the next revision is kept; an accepted one passes every control at
+    // or below it; the control this transition applies leaves the queue whatever
+    // the view said.
+    let current_revision = state.view.roster().revision;
+    let original_deferred = state
+        .deferred
+        .as_ref()
+        .map(|deferred| deferred.queue.clone());
+    let mut candidate_deferred = original_deferred.clone();
+    let mut held = false;
+    if let Some(queue) = candidate_deferred.as_mut() {
+        match disposition {
+            RosterDisposition::Accepted => queue.prune_through(candidate.revision),
+            RosterDisposition::Rejected(RosterRefusal::MissingPredecessor)
+                if candidate.revision > current_revision.saturating_add(1)
+                    && candidate.revision <= current_revision.saturating_add(1 + HOLD_AHEAD) =>
+            {
+                held = matches!(queue.hold(candidate.clone()), Hold::Held | Hold::Duplicate);
+            }
+            _ => {}
+        }
+        if let Some(revision) = state
+            .deferred
+            .as_ref()
+            .and_then(|deferred| deferred.applying)
+        {
+            queue.remove(revision);
+        }
+    }
     let mut candidate_sends = logical_sends.to_vec();
     let mut candidate_group_outbox = state.group_outbox.as_deref().cloned();
     if disposition == RosterDisposition::Accepted {
@@ -1944,6 +2025,15 @@ fn commit_roster_transition<S: OperationStore>(
             .encode_state()
             .map_err(|_| GroupOperationError::Policy)?,
     )?);
+    if candidate_deferred != original_deferred
+        && let Some(queue) = &candidate_deferred
+    {
+        control_records.push(
+            queue
+                .encode_record(candidate.group_id)
+                .map_err(|_| GroupOperationError::Policy)?,
+        );
+    }
     append_group_control_records(&mut candidate_snapshot, control_records);
     if disposition == RosterDisposition::Accepted
         && candidate_group_outbox.is_some()
@@ -2001,10 +2091,143 @@ fn commit_roster_transition<S: OperationStore>(
     if let (Some(book), Some(candidate_book)) = (state.invitation_book, candidate_invitation_book) {
         *book = candidate_book;
     }
+    if let (Some(deferred), Some(candidate_queue)) = (state.deferred, candidate_deferred) {
+        *deferred.queue = candidate_queue;
+    }
     Ok(RosterCommit {
         disposition,
         revalidated,
+        held,
     })
+}
+
+/// Holds a roster control that reached a coordinator with no roster view yet
+/// (0142): the pinned authority and the group are known and the roster is not,
+/// so nothing can judge the control, and it must not be lost. The control, the
+/// provider state that consumed its ciphertext and the queue commit together.
+/// Refused with `Policy`, after committing only the provider state, when the
+/// control is not the pinned authority's, is for another group, is revision
+/// zero, or does not fit the queue.
+pub(crate) fn commit_hold_roster_without_view<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    queue: &mut DeferredRosters,
+    pinned_authority: &Member,
+    group_id: tacenta_group::GroupId,
+    control: Roster,
+    (provider_state, provider_effect): (Vec<u8>, CryptoStateEffect),
+) -> Result<(), GroupOperationError> {
+    let mut candidate_queue = queue.clone();
+    if control.group_id != group_id
+        || &control.authority != pinned_authority
+        || control.revision == 0
+        || !matches!(candidate_queue.hold(control), Hold::Held | Hold::Duplicate)
+    {
+        return Err(GroupOperationError::Policy);
+    }
+    let mut candidate_snapshot = begin_candidate(&*store, snapshot)?;
+    candidate_snapshot.provider_state = provider_state;
+    let record = candidate_queue
+        .encode_record(group_id)
+        .map_err(|_| GroupOperationError::Policy)?;
+    append_group_control_records(
+        &mut candidate_snapshot,
+        [encode_control_effect_record(provider_effect), record],
+    );
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *queue = candidate_queue;
+    Ok(())
+}
+
+/// Applies the held control that is the successor of the view, if there is one,
+/// in its own commit with exactly the checks a control from the wire gets, and
+/// drops it from the queue whatever the view says (0142). Returns `None` when
+/// nothing applies. The caller repeats until it does.
+pub(crate) fn commit_next_deferred_roster<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &mut RosterView,
+    receiver: &mut GroupReceiver,
+    group_outbox: &mut GroupOutbox,
+    queue: &mut DeferredRosters,
+) -> Result<Option<RosterCommit>, GroupOperationError> {
+    let Some(next) = queue.next_for(view).cloned() else {
+        return Ok(None);
+    };
+    let authority = view.roster().authority.clone();
+    let revision = next.revision;
+    commit_roster_transition(
+        store,
+        snapshot,
+        RosterCommitState {
+            view,
+            receiver: Some(receiver),
+            provider: None,
+            group_outbox: Some(group_outbox),
+            control_outbox: None,
+            prepared_control: None,
+            invitation_book: None,
+            admission: None,
+            deferred: Some(DeferredCommit {
+                queue,
+                applying: Some(revision),
+            }),
+        },
+        &authority,
+        next,
+        &mut [],
+    )
+    .map(Some)
+}
+
+/// Drops the held controls the view has passed, in one commit, when there are
+/// any and nothing applies (0142). Returns whether it committed.
+pub(crate) fn commit_prune_deferred_rosters<S: OperationStore>(
+    store: &mut S,
+    snapshot: &mut OperationSnapshot,
+    view: &RosterView,
+    group_id: tacenta_group::GroupId,
+    queue: &mut DeferredRosters,
+) -> Result<bool, GroupOperationError> {
+    let mut candidate_queue = queue.clone();
+    candidate_queue.prune_through(view.roster().revision);
+    if &candidate_queue == queue {
+        return Ok(false);
+    }
+    let mut candidate_snapshot = begin_candidate(&*store, snapshot)?;
+    let record = candidate_queue
+        .encode_record(group_id)
+        .map_err(|_| GroupOperationError::Policy)?;
+    append_group_control_records(&mut candidate_snapshot, [record]);
+    if store.commit(&candidate_snapshot) != CommitOutcome::Committed {
+        return Err(GroupOperationError::Frozen);
+    }
+    *snapshot = candidate_snapshot;
+    *queue = candidate_queue;
+    Ok(true)
+}
+
+/// Restores the latest queue of held roster controls for one group and its
+/// pinned authority; an empty queue when the snapshot holds none.
+pub(crate) fn recover_group_deferred_rosters(
+    snapshot: &OperationSnapshot,
+    group_id: tacenta_group::GroupId,
+    pinned_authority: &Member,
+) -> Result<DeferredRosters, GroupOperationError> {
+    let scope = [b"TCGQ".as_slice(), group_id.as_bytes()].concat();
+    match snapshot
+        .group_controls
+        .iter()
+        .rev()
+        .find(|record| record.starts_with(&scope))
+    {
+        None => Ok(DeferredRosters::default()),
+        Some(record) => DeferredRosters::decode_record(record, group_id, pinned_authority)
+            .map_err(|_| GroupOperationError::Policy),
+    }
 }
 
 /// The logical send a transcript record belongs to, if it is an outbox record.
@@ -2110,7 +2333,7 @@ fn append_group_control_records(
             .iter()
             .find(|tag| record.starts_with(tag.as_slice()))
         {
-            let scope = if *tag == b"TCGX" {
+            let scope = if *tag == b"TCGX" || *tag == b"TCGQ" {
                 4 + tacenta_group::GROUP_ID_LEN
             } else {
                 4
@@ -2138,6 +2361,10 @@ fn append_group_control_records(
             .group_controls
             .iter()
             .rposition(|record| record.starts_with(b"TCGX"));
+        let latest_deferred_rosters = snapshot
+            .group_controls
+            .iter()
+            .rposition(|record| record.starts_with(b"TCGQ"));
         let eviction = snapshot
             .group_controls
             .iter()
@@ -2146,7 +2373,8 @@ fn append_group_control_records(
                 (Some(index) != latest_roster_view
                     && Some(index) != latest_invitation_book
                     && Some(index) != latest_control_outbox
-                    && Some(index) != latest_group_outbox_cancellation)
+                    && Some(index) != latest_group_outbox_cancellation
+                    && Some(index) != latest_deferred_rosters)
                     .then_some(index)
             })
             .expect("the retained checkpoints fit inside the control record bound");
@@ -3278,6 +3506,7 @@ mod tests {
                 }),
                 invitation_book: None,
                 admission: None,
+                deferred: None,
             },
             &alice(),
             successor,
@@ -3353,6 +3582,7 @@ mod tests {
                     target: bob(),
                     now: 2,
                 }),
+                deferred: None,
             },
             &alice(),
             successor,
@@ -3408,6 +3638,7 @@ mod tests {
                     }),
                     invitation_book: None,
                     admission: None,
+                    deferred: None,
                 },
                 &alice(),
                 successor,
@@ -4074,6 +4305,7 @@ mod tests {
             Ok(GroupPayloadDisposition::Roster(RosterCommit {
                 disposition: RosterDisposition::Accepted,
                 revalidated: Vec::new(),
+                held: false,
             }))
         );
         assert_eq!(
@@ -4130,6 +4362,7 @@ mod tests {
                     prepared_control: None,
                     invitation_book: None,
                     admission: None,
+                    deferred: None,
                 },
                 &alice(),
                 r2,
@@ -4340,6 +4573,7 @@ mod tests {
             GroupPayloadDisposition::Roster(RosterCommit {
                 disposition: RosterDisposition::Accepted,
                 revalidated: Vec::new(),
+                held: false,
             })
         );
         assert_eq!(snapshot.provider_state, vec![4, 5, 6]);

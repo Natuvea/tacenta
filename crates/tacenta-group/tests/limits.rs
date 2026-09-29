@@ -643,6 +643,132 @@ fn the_future_window_is_two_revisions_and_the_queue_holds_four() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Future contexts from senders the accepted roster does not list yet (0142)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_future_context_from_an_unlisted_sender_is_judged_against_the_roster_that_arrives() {
+    let (mut receiver, alice, bob) = two_party_receiver(2);
+    let carol = small("carol");
+    let dave = small("dave");
+    // Carol is not in revision 2. Her message for revision 3 is deferred, not
+    // refused as not active, and the roster that admits her accepts it.
+    assert_eq!(
+        receiver.receive(&context_from(&carol, &bob, 3, 0), &carol, [1; DIGEST_LEN]),
+        ReceiveDisposition::Deferred
+    );
+    // Dave's is deferred too; the roster that does not admit him refuses it.
+    assert_eq!(
+        receiver.receive(&context_from(&dave, &bob, 3, 0), &dave, [2; DIGEST_LEN]),
+        ReceiveDisposition::Deferred
+    );
+    let revision_3 = roster(
+        3,
+        alice.clone(),
+        vec![alice.clone(), bob.clone(), carol.clone()],
+    )
+    .unwrap();
+    let revalidated = receiver
+        .install_accepted_roster(revision_3, ROSTER_DIGEST)
+        .unwrap();
+    let outcome = |sender: &Member| {
+        revalidated
+            .iter()
+            .find(|item| &item.context.sender == sender)
+            .map(|item| item.disposition)
+    };
+    assert_eq!(
+        outcome(&carol),
+        Some(ReceiveDisposition::Accepted { event_id: 0 })
+    );
+    assert_eq!(
+        outcome(&dave),
+        Some(ReceiveDisposition::Rejected(ReceiveRefusal::NotActive))
+    );
+    // A sender the current roster does not list is still refused at the current
+    // revision, and at an older one.
+    assert_eq!(
+        receiver.receive(&context_from(&dave, &bob, 3, 1), &dave, [1; DIGEST_LEN]),
+        ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+    );
+    assert_eq!(
+        receiver.receive(&context_from(&dave, &bob, 2, 1), &dave, [1; DIGEST_LEN]),
+        ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+    );
+}
+
+#[test]
+fn the_future_window_applies_to_unlisted_senders_and_the_local_member_must_be_active() {
+    let (mut receiver, alice, bob) = two_party_receiver(2);
+    let carol = small("carol");
+    assert_eq!(
+        receiver.receive(&context_from(&carol, &bob, 4, 0), &carol, [1; DIGEST_LEN]),
+        ReceiveDisposition::Deferred
+    );
+    assert_eq!(
+        receiver.receive(&context_from(&carol, &bob, 5, 0), &carol, [1; DIGEST_LEN]),
+        ReceiveDisposition::Rejected(ReceiveRefusal::FutureOutOfRange)
+    );
+    // A receiver whose local member the roster does not list defers nothing
+    // (a terminal state, 0139).
+    let removed = GroupReceiver::new(
+        roster(2, alice.clone(), vec![alice.clone()]).unwrap(),
+        ROSTER_DIGEST,
+        bob.clone(),
+    );
+    let mut removed = removed;
+    assert_eq!(
+        removed.receive(&context_from(&carol, &bob, 3, 0), &carol, [1; DIGEST_LEN]),
+        ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+    );
+    assert_eq!(
+        removed.receive(&context_from(&alice, &bob, 3, 0), &alice, [1; DIGEST_LEN]),
+        ReceiveDisposition::Rejected(ReceiveRefusal::NotActive)
+    );
+}
+
+#[test]
+fn two_of_the_four_deferred_slots_are_open_to_senders_the_roster_does_not_list() {
+    let (mut receiver, alice, bob) = two_party_receiver(2);
+    let (carol, dave, erin) = (small("carol"), small("dave"), small("erin"));
+    let defer = |receiver: &mut GroupReceiver, sender: &Member, sequence: u64| {
+        receiver.receive(
+            &context_from(sender, &bob, 3, sequence),
+            sender,
+            [1; DIGEST_LEN],
+        )
+    };
+    assert_eq!(
+        defer(&mut receiver, &carol, 0),
+        ReceiveDisposition::Deferred
+    );
+    assert_eq!(defer(&mut receiver, &dave, 0), ReceiveDisposition::Deferred);
+    // A third unlisted sender finds no room, however empty the queue is, and an
+    // exact repeat of one already held reuses its slot.
+    assert_eq!(
+        defer(&mut receiver, &erin, 0),
+        ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull)
+    );
+    assert_eq!(
+        defer(&mut receiver, &carol, 0),
+        ReceiveDisposition::Deferred
+    );
+    // The two remaining slots are for a member.
+    assert_eq!(
+        defer(&mut receiver, &alice, 0),
+        ReceiveDisposition::Deferred
+    );
+    assert_eq!(
+        defer(&mut receiver, &alice, 1),
+        ReceiveDisposition::Deferred
+    );
+    assert_eq!(
+        defer(&mut receiver, &alice, 2),
+        ReceiveDisposition::Rejected(ReceiveRefusal::DeferredFull)
+    );
+}
+
 fn commit_roster(_: &[u8]) -> [u8; DIGEST_LEN] {
     ROSTER_DIGEST
 }
@@ -747,6 +873,28 @@ fn receiver_state_holds_512_accepted_entries_and_four_deferred_contexts() {
         decode(&crafted.state(0, 0, &five, 5)).map(|_| ()),
         Err(Error::Malformed)
     );
+    // Two deferred contexts whose sender the roster does not list are accepted,
+    // three are refused (0142).
+    let stranger = |name: &str, revision: u64| context_from(&small(name), &bob, revision, 0);
+    let two = [stranger("carol", 3), stranger("dave", 3)];
+    assert!(decode(&crafted.state(0, 0, &two, 2)).is_ok());
+    let three = [
+        stranger("carol", 3),
+        stranger("dave", 3),
+        stranger("erin", 3),
+    ];
+    assert_eq!(
+        decode(&crafted.state(0, 0, &three, 3)).map(|_| ()),
+        Err(Error::Conflict)
+    );
+    // Listed senders do not count against those two.
+    let mixed = [
+        stranger("carol", 3),
+        stranger("dave", 3),
+        context_from(&alice, &bob, 3, 0),
+        context_from(&alice, &bob, 3, 1),
+    ];
+    assert!(decode(&crafted.state(0, 0, &mixed, 4)).is_ok());
 }
 
 #[test]

@@ -568,3 +568,578 @@ async fn ninety_roster_changes_keep_the_transcript_bounded_and_recoverable() {
     let _ = alice_config;
     assert_eq!(t.alice.roster().unwrap().revision, 90 + 1);
 }
+
+// ---------------------------------------------------------------------------
+// Controls that arrive ahead of their predecessor (0142)
+// ---------------------------------------------------------------------------
+
+fn outcomes(inbound: &Inbound) -> Vec<&GroupOutcome> {
+    inbound.items.iter().map(|item| &item.outcome).collect()
+}
+
+fn is_accepted_roster(outcome: &GroupOutcome) -> bool {
+    matches!(
+        outcome,
+        GroupOutcome::Roster {
+            disposition: RosterDisposition::Accepted,
+            ..
+        }
+    )
+}
+
+#[tokio::test]
+async fn a_pending_invitee_that_receives_the_bootstrap_and_a_successor_in_one_batch_follows_the_group()
+ {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _bs) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let bob_route = route(&bob);
+    let carol_store = SharedStore::default();
+    let mut carol = coordinator(directory, relay, "+carol", &carol_store).await;
+    carol.await_group(gid(), alice_member.clone()).unwrap();
+    let carol_member = carol.member().unwrap();
+    let carol_route = route(&carol);
+
+    // r1: Bob is a member.
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(
+            r1.clone(),
+            &[(bob_member.clone(), bob_route.clone())],
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+    bob.receive(0).await.unwrap();
+    // Alice invites Carol at r1, then moves the group on (removes Bob) while the
+    // invitation is pending; pending invitees are sent successors.
+    alice
+        .invite(
+            InvitationId::new([9; 16]),
+            &carol_member,
+            &carol_route,
+            100,
+            0,
+        )
+        .await
+        .unwrap();
+    let r2 = alice.next_roster(vec![alice_member.clone()]).unwrap();
+    let install = alice
+        .install_roster(
+            r2,
+            &[
+                (bob_member.clone(), bob_route.clone()),
+                (carol_member.clone(), carol_route.clone()),
+            ],
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(install.delivered.len(), 2, "{install:?}");
+
+    // Carol's mailbox is [bootstrap, r2]. She cannot call join_group before the
+    // batch ends, so the successor is kept (it used to be refused and lost).
+    let inbound = carol.receive(2).await.unwrap();
+    assert!(matches!(
+        outcomes(&inbound).as_slice(),
+        [GroupOutcome::Invitation(_), GroupOutcome::RosterDeferred]
+    ));
+    assert_eq!(carol.held_roster_controls(), [2]);
+    // Joining from the bootstrap's source roster applies it.
+    carol.join_group(r1, alice_member.clone()).unwrap();
+    assert_eq!(carol.roster().unwrap().revision, 2);
+    assert!(carol.held_roster_controls().is_empty());
+
+    // Alice moves on again: r3 re-adds Bob. Carol follows.
+    let r3 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(
+            r3,
+            &[
+                (bob_member.clone(), bob_route.clone()),
+                (carol_member.clone(), carol_route.clone()),
+            ],
+            None,
+            3,
+        )
+        .await
+        .unwrap();
+    let inbound = carol.receive(4).await.unwrap();
+    assert!(is_accepted_roster(outcomes(&inbound)[0]));
+    assert_eq!(carol.roster().unwrap().revision, 3);
+    assert_eq!(alice.roster().unwrap().revision, 3);
+}
+
+#[tokio::test]
+async fn a_control_held_before_the_coordinator_joined_survives_a_restart() {
+    // Carol is admitted at r2 and told first, before she has called join_group;
+    // she restarts; the group's first message after that reaches her.
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let carol_config = config(directory, relay, "+carol", 1);
+    let carol_store = SharedStore::default();
+    let mut carol = GroupClient::open(
+        DefaultClient::connect(&carol_config).await.unwrap(),
+        carol_store.clone(),
+    )
+    .await
+    .unwrap();
+    carol.await_group(gid(), alice_member.clone()).unwrap();
+    let (carol_member, carol_route) = (carol.member().unwrap(), route(&carol));
+    let source = alice
+        .next_roster(vec![alice_member.clone(), carol_member.clone()])
+        .unwrap();
+    // The source roster of Carol's invitation is r1 = {alice}; here it is the
+    // genesis, and r1 admits her.
+    let genesis = genesis_of(&alice_member);
+    alice
+        .install_roster(
+            source,
+            &[(carol_member.clone(), carol_route.clone())],
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+    let inbound = carol.receive(0).await.unwrap();
+    assert!(matches!(
+        outcomes(&inbound).as_slice(),
+        [GroupOutcome::RosterDeferred]
+    ));
+    drop(carol);
+    let mut carol = restart(&carol_config, &carol_store).await;
+    carol.await_group(gid(), alice_member.clone()).unwrap();
+    assert_eq!(carol.held_roster_controls(), [1], "the queue is durable");
+    carol.join_group(genesis, alice_member.clone()).unwrap();
+    assert_eq!(carol.roster().unwrap().revision, 1);
+    assert!(carol.held_roster_controls().is_empty());
+    // She is a member: a message from Alice at r1 is an event.
+    alice
+        .send_group(&[(carol_member, carol_route)], b"welcome".to_vec())
+        .await
+        .unwrap();
+    let inbound = carol.receive(0).await.unwrap();
+    assert_eq!(inbound.events().len(), 1);
+}
+
+#[tokio::test]
+async fn a_retried_older_roster_control_that_arrives_after_a_newer_one_no_longer_strands_the_member()
+ {
+    // r2 is prepared for Carol but not sent (a transient relay refusal would leave
+    // it exactly so). Alice moves on to r3, which reaches Carol first. The retry
+    // of r2 arrives behind r3: r3 is held and applied when r2 is.
+    let mut t = three().await;
+    let routes = vec![
+        (t.bob_member.clone(), t.bob_route.clone()),
+        (t.carol_member.clone(), t.carol_route.clone()),
+    ];
+    let r2 = t
+        .alice
+        .next_roster(vec![
+            t.alice_member.clone(),
+            t.bob_member.clone(),
+            t.carol_member.clone(),
+        ])
+        .unwrap();
+    // Install r2 with Bob only, then prepare (not send) Carol's copy.
+    t.alice
+        .install_roster(r2.clone(), &[routes[0].clone()], None, 0)
+        .await
+        .unwrap();
+    {
+        let GroupClient {
+            client,
+            store,
+            snapshot,
+            group,
+            ..
+        } = &mut t.alice;
+        let state = group.as_mut().unwrap();
+        crate::group_operations::prepare_installed_roster_control(
+            client,
+            store,
+            snapshot,
+            crate::group_operations::InstalledControlState {
+                view: state.view.as_ref().unwrap(),
+                outbox: &mut state.control,
+                invitation_book: Some(&state.book),
+                control_now: 0,
+            },
+            &state.local,
+            (&t.carol_member, &t.carol_route),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(t.alice.group.as_ref().unwrap().control.pending().len(), 1);
+    // r3 goes to both.
+    let r3 = t
+        .alice
+        .next_roster(vec![
+            t.alice_member.clone(),
+            t.bob_member.clone(),
+            t.carol_member.clone(),
+        ])
+        .unwrap();
+    let install = t.alice.install_roster(r3, &routes, None, 0).await.unwrap();
+    assert_eq!(install.delivered.len(), 2, "{install:?}");
+    // Carol has r3 in her mailbox and, once the retry runs, r2 behind it.
+    let retried = t.alice.dispatch_pending_controls(&routes).await.unwrap();
+    assert_eq!(retried, 1);
+    let inbound = t.carol.receive(0).await.unwrap();
+    assert!(matches!(
+        outcomes(&inbound).as_slice(),
+        [GroupOutcome::RosterDeferred, roster] if is_accepted_roster(roster)
+    ));
+    assert_eq!(t.carol.roster().unwrap().revision, 3);
+    assert_eq!(t.alice.roster().unwrap().revision, 3);
+    assert!(t.carol.held_roster_controls().is_empty());
+    // And she is not stranded: the next control applies at once.
+    let r4 = t
+        .alice
+        .next_roster(vec![t.alice_member.clone(), t.bob_member.clone()])
+        .unwrap();
+    t.alice.install_roster(r4, &routes, None, 0).await.unwrap();
+    let inbound = t.carol.receive(0).await.unwrap();
+    assert!(is_accepted_roster(outcomes(&inbound)[0]));
+    assert_eq!(t.carol.roster().unwrap().revision, 4);
+}
+
+#[tokio::test]
+async fn the_first_message_of_a_just_admitted_member_that_overtakes_the_roster_is_kept() {
+    // Alice, Bob at r1. Carol tracks r1 (joined from its source roster). Alice
+    // admits Carol at r2 and tells Carol first. Carol answers Bob at r2 before
+    // Bob has Alice's r2 control.
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _bs) = joined(directory, relay, "+bob", &alice_member).await;
+    let (bob_member, bob_route) = (bob.member().unwrap(), route(&bob));
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(
+            r1.clone(),
+            &[(bob_member.clone(), bob_route.clone())],
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+    bob.receive(0).await.unwrap();
+    let carol_store = SharedStore::default();
+    let mut carol = coordinator(directory, relay, "+carol", &carol_store).await;
+    carol.join_group(r1, alice_member.clone()).unwrap();
+    let carol_member = carol.member().unwrap();
+    let carol_route = route(&carol);
+
+    let r2 = alice
+        .next_roster(vec![
+            alice_member.clone(),
+            bob_member.clone(),
+            carol_member.clone(),
+        ])
+        .unwrap();
+    // Carol is told first, and answers.
+    alice
+        .install_roster(
+            r2.clone(),
+            &[(carol_member.clone(), carol_route.clone())],
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+    carol.receive(0).await.unwrap();
+    assert_eq!(carol.roster().unwrap().revision, 2);
+    carol
+        .send_group(
+            &[(bob_member.clone(), bob_route.clone())],
+            b"carol says hi".to_vec(),
+        )
+        .await
+        .unwrap();
+    // Bob gets Carol's message before he has r2: it is kept, not refused.
+    let early = bob.receive(0).await.unwrap();
+    assert!(matches!(
+        outcomes(&early).as_slice(),
+        [GroupOutcome::Deferred]
+    ));
+    assert!(early.events().is_empty());
+    // Only now does Bob get Alice's r2; the roster that admits Carol accepts the
+    // message it was waiting for.
+    alice
+        .install_roster(r2, &[(bob_member.clone(), bob_route.clone())], None, 0)
+        .await
+        .unwrap();
+    let inbound = bob.receive(0).await.unwrap();
+    assert_eq!(bob.roster().unwrap().revision, 2);
+    let events = inbound.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload, b"carol says hi");
+    assert_eq!(events[0].sender, carol_member);
+    assert_eq!(events[0].event_id, 0);
+}
+
+#[tokio::test]
+async fn a_message_from_a_sender_the_roster_never_admits_is_refused_when_the_roster_arrives() {
+    // The same race with a sender who is not admitted: the message waits and is
+    // refused as not active when the roster that omits the sender arrives.
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _bs) = joined(directory, relay, "+bob", &alice_member).await;
+    let (bob_member, bob_route) = (bob.member().unwrap(), route(&bob));
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(r1, &[(bob_member.clone(), bob_route.clone())], None, 0)
+        .await
+        .unwrap();
+    bob.receive(0).await.unwrap();
+    let mut mallory = plain(directory, relay, "+mallory").await;
+    let mallory_member = member_of(&mallory);
+    let r1_digest = bob.roster_digest().unwrap();
+    let context = ApplicationContext::new(
+        gid(),
+        2,
+        [5; DIGEST_LEN],
+        mallory_member.clone(),
+        bob_member.clone(),
+        0,
+        b"from a stranger".to_vec(),
+    )
+    .unwrap();
+    assert_ne!(r1_digest, [5; DIGEST_LEN]);
+    mallory
+        .send_as(
+            &bob_route,
+            &GroupPayload::Application(context).encode().unwrap(),
+            Kind::Group,
+        )
+        .await
+        .unwrap();
+    let early = bob.receive(0).await.unwrap();
+    assert!(matches!(
+        outcomes(&early).as_slice(),
+        [GroupOutcome::Deferred]
+    ));
+    let r2 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(r2, &[(bob_member, bob_route)], None, 0)
+        .await
+        .unwrap();
+    let inbound = bob.receive(0).await.unwrap();
+    assert!(inbound.events().is_empty());
+    assert_eq!(bob.roster().unwrap().revision, 2);
+}
+
+/// Successive rosters for a chain of `count` revisions after `genesis`, all with
+/// `members`.
+fn chain_after(genesis: &Roster, count: u64, members: &[Member]) -> Vec<Roster> {
+    let mut rosters: Vec<Roster> = Vec::new();
+    let mut predecessor = roster_commitment(&genesis.encode().unwrap());
+    for offset in 1..=count {
+        let next = Roster::new(
+            genesis.group_id,
+            genesis.revision + offset,
+            predecessor,
+            genesis.authority.clone(),
+            POLICY_VERSION_V1,
+            false,
+            members.to_vec(),
+        )
+        .unwrap();
+        predecessor = roster_commitment(&next.encode().unwrap());
+        rosters.push(next);
+    }
+    rosters
+}
+
+async fn send_control(sender: &mut DefaultClient, to: &DeviceAddr, roster: &Roster) {
+    sender
+        .send_as(
+            to,
+            &GroupPayload::Roster(roster.clone()).encode().unwrap(),
+            Kind::Group,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_held_controls_are_four_within_a_window_and_a_chain_drains_in_order() {
+    let (directory, relay) = start_server().await;
+    let mut authority = plain(directory, relay, "+authority").await;
+    let authority_member = member_of(&authority);
+    let carol_store = SharedStore::default();
+    let mut carol = coordinator(directory, relay, "+carol", &carol_store).await;
+    let carol_route = route(&carol);
+    let genesis = genesis_of(&authority_member);
+    carol
+        .join_group(genesis.clone(), authority_member.clone())
+        .unwrap();
+    let chain = chain_after(&genesis, 8, std::slice::from_ref(&authority_member));
+    // The view is at revision 0. Revisions 2 to 5 are inside the window (the next
+    // revision plus four); 6 is not. Revision 1 is the next and is not held.
+    for roster in &chain[1..5] {
+        send_control(&mut authority, &carol_route, roster).await;
+    }
+    send_control(&mut authority, &carol_route, &chain[5]).await;
+    let inbound = carol.receive(0).await.unwrap();
+    let kinds: Vec<_> = outcomes(&inbound)
+        .into_iter()
+        .map(|outcome| match outcome {
+            GroupOutcome::RosterDeferred => "held",
+            GroupOutcome::Roster {
+                disposition: RosterDisposition::Rejected(RosterRefusal::MissingPredecessor),
+                ..
+            } => "refused",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["held", "held", "held", "held", "refused"]);
+    assert_eq!(carol.held_roster_controls(), [2, 3, 4, 5]);
+    assert_eq!(carol.roster().unwrap().revision, 0);
+    // A different control for a held revision is a fork: refused, first kept.
+    let fork = Roster::new(
+        genesis.group_id,
+        3,
+        chain[2].predecessor_digest,
+        authority_member.clone(),
+        POLICY_VERSION_V1,
+        true,
+        vec![authority_member.clone()],
+    )
+    .unwrap();
+    send_control(&mut authority, &carol_route, &fork).await;
+    let inbound = carol.receive(0).await.unwrap();
+    assert!(matches!(
+        outcomes(&inbound).as_slice(),
+        [GroupOutcome::Roster {
+            disposition: RosterDisposition::Rejected(RosterRefusal::MissingPredecessor),
+            ..
+        }]
+    ));
+    assert_eq!(carol.held_roster_controls(), [2, 3, 4, 5]);
+    // The next revision arrives: it and the four behind it apply, one commit each.
+    send_control(&mut authority, &carol_route, &chain[0]).await;
+    let inbound = carol.receive(0).await.unwrap();
+    assert!(is_accepted_roster(outcomes(&inbound)[0]));
+    assert_eq!(carol.roster().unwrap().revision, 5);
+    assert!(carol.held_roster_controls().is_empty());
+    // And a restart finds the same view and an empty queue.
+    let carol_config = config(directory, relay, "+carol", 1);
+    drop(carol);
+    let mut carol = restart(&carol_config, &carol_store).await;
+    carol.join_group(genesis, authority_member).unwrap();
+    assert_eq!(carol.roster().unwrap().revision, 5);
+    assert!(carol.held_roster_controls().is_empty());
+}
+
+#[tokio::test]
+async fn a_control_from_a_peer_that_is_not_the_authority_is_never_held() {
+    let (directory, relay) = start_server().await;
+    let authority = plain(directory, relay, "+authority").await;
+    let authority_member = member_of(&authority);
+    let mut stranger = plain(directory, relay, "+stranger").await;
+    let stranger_member = member_of(&stranger);
+    let carol_store = SharedStore::default();
+    let mut carol = coordinator(directory, relay, "+carol", &carol_store).await;
+    let carol_route = route(&carol);
+    let genesis = genesis_of(&authority_member);
+    carol
+        .join_group(genesis.clone(), authority_member.clone())
+        .unwrap();
+    let ahead = chain_after(&genesis, 4, std::slice::from_ref(&authority_member));
+    // A member of the group's key space, but not the pinned authority, sends a
+    // control that would be held if the authority sent it.
+    send_control(&mut stranger, &carol_route, &ahead[2]).await;
+    // A control that names the stranger as authority is a control of another
+    // authority.
+    let usurper = Roster::new(
+        genesis.group_id,
+        3,
+        [1; DIGEST_LEN],
+        stranger_member.clone(),
+        POLICY_VERSION_V1,
+        false,
+        vec![stranger_member],
+    )
+    .unwrap();
+    send_control(&mut stranger, &carol_route, &usurper).await;
+    let inbound = carol.receive(0).await.unwrap();
+    assert!(matches!(
+        outcomes(&inbound).as_slice(),
+        [
+            GroupOutcome::Roster {
+                disposition: RosterDisposition::Rejected(RosterRefusal::WrongAuthority),
+                ..
+            },
+            GroupOutcome::Roster {
+                disposition: RosterDisposition::Rejected(RosterRefusal::WrongAuthority),
+                ..
+            }
+        ]
+    ));
+    assert!(carol.held_roster_controls().is_empty());
+}
+
+#[tokio::test]
+async fn a_coordinator_with_no_view_holds_four_controls_and_only_the_authoritys() {
+    let (directory, relay) = start_server().await;
+    let mut authority = plain(directory, relay, "+authority").await;
+    let authority_member = member_of(&authority);
+    let mut stranger = plain(directory, relay, "+stranger").await;
+    let carol_store = SharedStore::default();
+    let mut carol = coordinator(directory, relay, "+carol", &carol_store).await;
+    let carol_route = route(&carol);
+    carol.await_group(gid(), authority_member.clone()).unwrap();
+    let genesis = genesis_of(&authority_member);
+    let chain = chain_after(&genesis, 6, std::slice::from_ref(&authority_member));
+    send_control(&mut stranger, &carol_route, &chain[0]).await;
+    for roster in &chain[..5] {
+        send_control(&mut authority, &carol_route, roster).await;
+    }
+    let inbound = carol.receive(0).await.unwrap();
+    let kinds: Vec<_> = outcomes(&inbound)
+        .into_iter()
+        .map(|outcome| match outcome {
+            GroupOutcome::RosterDeferred => "held",
+            GroupOutcome::Refused => "refused",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["refused", "held", "held", "held", "held", "refused"]
+    );
+    assert_eq!(carol.held_roster_controls(), [1, 2, 3, 4]);
+    // Joining at revision 2 drops what the view has passed and applies the rest.
+    carol
+        .join_group(chain[1].clone(), authority_member.clone())
+        .unwrap();
+    assert_eq!(carol.roster().unwrap().revision, 4);
+    assert!(carol.held_roster_controls().is_empty());
+}
