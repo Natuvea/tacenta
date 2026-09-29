@@ -158,9 +158,11 @@ async fn joined(
 }
 
 mod boundaries;
+mod delivery_and_receive_next_guards;
 mod durable_root;
 mod freeze_and_recovery;
 mod invitation_payload_refusals;
+mod recovery_rebuild;
 mod redelivery;
 mod roster_fanout;
 mod roster_installation;
