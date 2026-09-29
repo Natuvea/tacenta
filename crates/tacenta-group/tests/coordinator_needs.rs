@@ -407,3 +407,168 @@ fn a_recovered_outbox_refuses_a_send_below_the_applied_revision() {
     );
     assert!(recovered.record(send_at(3, 0)).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// 3. A roster view can start from a source roster at any revision
+//    (decision 0135, item 3)
+// ---------------------------------------------------------------------------
+
+/// A chain of accepted rosters for alice, bob and carol, each committed to its
+/// predecessor's digest, with the digests the integration would supply.
+struct Chain {
+    rosters: Vec<Roster>,
+    digests: Vec<[u8; DIGEST_LEN]>,
+}
+
+fn chain() -> Chain {
+    let mut rosters = Vec::new();
+    let mut digests = Vec::new();
+    let mut predecessor = [0; DIGEST_LEN];
+    for (revision, names) in [
+        (0u64, vec!["alice"]),
+        (1, vec!["alice", "bob"]),
+        (2, vec!["alice", "bob", "carol"]),
+        (3, vec!["alice", "carol"]),
+    ] {
+        let mut members: Vec<Member> = names.iter().map(|name| named(name)).collect();
+        members.sort_by(|left, right| {
+            left.identity()
+                .cmp(right.identity())
+                .then_with(|| left.device().cmp(right.device()))
+        });
+        let roster = Roster::new(
+            group(),
+            revision,
+            predecessor,
+            named("alice"),
+            POLICY_VERSION_V1,
+            false,
+            members,
+        )
+        .unwrap();
+        let digest = commit(&roster.encode().unwrap());
+        predecessor = digest;
+        rosters.push(roster);
+        digests.push(digest);
+    }
+    Chain { rosters, digests }
+}
+
+#[test]
+fn a_view_starts_from_a_source_roster_at_a_later_revision() {
+    let chain = chain();
+    let view =
+        RosterView::accept_source(&named("alice"), chain.rosters[2].clone(), chain.digests[2])
+            .unwrap();
+    assert_eq!(view.roster(), &chain.rosters[2]);
+    assert_eq!(view.digest(), &chain.digests[2]);
+    assert!(view.is_active(&named("carol")));
+
+    // It observes the next successor from the authority, and no other.
+    let mut next = view.clone();
+    assert_eq!(
+        next.accept_successor(&named("alice"), chain.rosters[3].clone(), chain.digests[3]),
+        RosterDisposition::Accepted
+    );
+    assert_eq!(next.roster().revision, 3);
+    let mut skipped = view.clone();
+    assert_eq!(
+        skipped.accept_successor(&named("bob"), chain.rosters[3].clone(), chain.digests[3]),
+        RosterDisposition::Rejected(RosterRefusal::WrongAuthority)
+    );
+    // Its predecessor is the source, not an earlier roster it never saw.
+    let mut behind = view;
+    assert_eq!(
+        behind.accept_successor(&named("alice"), chain.rosters[1].clone(), chain.digests[1]),
+        RosterDisposition::Rejected(RosterRefusal::StaleRevision)
+    );
+}
+
+#[test]
+fn a_source_view_equals_the_view_a_replay_from_genesis_reaches() {
+    let chain = chain();
+    let mut replayed =
+        RosterView::accept_genesis(&named("alice"), chain.rosters[0].clone(), chain.digests[0])
+            .unwrap();
+    for index in 1..=2 {
+        assert_eq!(
+            replayed.accept_successor(
+                &named("alice"),
+                chain.rosters[index].clone(),
+                chain.digests[index]
+            ),
+            RosterDisposition::Accepted
+        );
+    }
+    let from_source =
+        RosterView::accept_source(&named("alice"), chain.rosters[2].clone(), chain.digests[2])
+            .unwrap();
+    assert_eq!(from_source, replayed);
+}
+
+#[test]
+fn a_source_view_is_a_restorable_checkpoint() {
+    let chain = chain();
+    let view =
+        RosterView::accept_source(&named("alice"), chain.rosters[2].clone(), chain.digests[2])
+            .unwrap();
+    let state = view.encode_state().unwrap();
+    assert_eq!(
+        RosterView::decode_state(&state, &named("alice"), commit),
+        Ok(view)
+    );
+}
+
+#[test]
+fn a_source_at_revision_zero_follows_the_genesis_rules() {
+    let chain = chain();
+    let genesis = chain.rosters[0].clone();
+    assert_eq!(
+        RosterView::accept_source(&named("alice"), genesis.clone(), chain.digests[0]),
+        RosterView::accept_genesis(&named("alice"), genesis.clone(), chain.digests[0])
+    );
+    assert_eq!(
+        RosterView::accept_source(&named("bob"), genesis, chain.digests[0]),
+        Err(RosterRefusal::WrongAuthority)
+    );
+}
+
+#[test]
+fn a_source_roster_is_refused_unless_it_names_the_authenticated_authority() {
+    let chain = chain();
+    // Authenticated as bob, but the roster's authority is alice.
+    assert_eq!(
+        RosterView::accept_source(&named("bob"), chain.rosters[2].clone(), chain.digests[2]),
+        Err(RosterRefusal::WrongAuthority)
+    );
+    // Its authority is not one of its members.
+    let without_authority = Roster::new(
+        group(),
+        2,
+        [0; DIGEST_LEN],
+        named("alice"),
+        POLICY_VERSION_V1,
+        false,
+        vec![named("bob"), named("carol")],
+    )
+    .unwrap();
+    assert_eq!(
+        RosterView::accept_source(&named("alice"), without_authority, [1; DIGEST_LEN]),
+        Err(RosterRefusal::MissingAuthorityMember)
+    );
+    // A closed roster admits nobody, so it cannot be a bootstrap source.
+    let closed = Roster::new(
+        group(),
+        2,
+        [0; DIGEST_LEN],
+        named("alice"),
+        POLICY_VERSION_V1,
+        true,
+        vec![named("alice"), named("bob")],
+    )
+    .unwrap();
+    assert_eq!(
+        RosterView::accept_source(&named("alice"), closed, [1; DIGEST_LEN]),
+        Err(RosterRefusal::InvalidSource)
+    );
+}

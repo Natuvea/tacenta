@@ -2326,6 +2326,7 @@ fn encode_roster_record(
             RosterRefusal::PolicyChange => 7,
             RosterRefusal::Reopened => 8,
             RosterRefusal::MissingAuthorityMember => 9,
+            RosterRefusal::InvalidSource => 10,
         }
     }
 

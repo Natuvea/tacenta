@@ -10,6 +10,9 @@ pub enum RosterRefusal {
     WrongAuthority,
     WrongGroup,
     InvalidGenesis,
+    /// A source roster that cannot start a view: a closed roster (decision
+    /// 0135).
+    InvalidSource,
     StaleRevision,
     MissingPredecessor,
     Conflict,
@@ -52,6 +55,43 @@ impl RosterView {
             || roster.members.as_slice() != [roster.authority.clone()]
         {
             return Err(RosterRefusal::InvalidGenesis);
+        }
+        Ok(Self { roster, digest })
+    }
+
+    /// Starts a view from the source roster of an authenticated invitation
+    /// bootstrap, at any revision (decision 0135); `accept_genesis` takes only
+    /// revision zero. The trust is that of a genesis roster: the roster reached
+    /// this device from the pinned authority's bootstrap channel, and an invitee
+    /// holds no earlier roster to check its predecessor digest against. The
+    /// caller supplies the core commitment of `roster`, and can compare it with
+    /// the bootstrap's `source_roster_digest` first
+    /// (`InvitationBootstrap::validate_source_digest`).
+    ///
+    /// At revision zero this is `accept_genesis`. Later it refuses a roster
+    /// whose authority is not the authenticated one, a roster that does not list
+    /// its authority, and a closed roster, which admits nobody and so cannot be
+    /// the source of an invitation.
+    pub fn accept_source(
+        authenticated_authority: &Member,
+        roster: Roster,
+        digest: [u8; DIGEST_LEN],
+    ) -> Result<Self, RosterRefusal> {
+        if authenticated_authority != &roster.authority {
+            return Err(RosterRefusal::WrongAuthority);
+        }
+        if roster.revision == 0 {
+            return Self::accept_genesis(authenticated_authority, roster, digest);
+        }
+        if roster.closed {
+            return Err(RosterRefusal::InvalidSource);
+        }
+        if !roster
+            .members
+            .iter()
+            .any(|member| member == &roster.authority)
+        {
+            return Err(RosterRefusal::MissingAuthorityMember);
         }
         Ok(Self { roster, digest })
     }

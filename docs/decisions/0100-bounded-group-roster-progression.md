@@ -1,5 +1,7 @@
 # 0100 — bounded group roster progression
 
+> Amended by 0135.
+
 ## Decision
 
 `RosterView` owns the accepted roster for one bounded group. Genesis is an
@@ -40,3 +42,12 @@ accepted roster from being silently replaced by routing or invitation state.
 
 Authority transfer, multi-device membership, or detached-control signatures
 requires a new authenticated control protocol and a versioned successor.
+
+## Amendment (0135)
+
+A view can also start from the source roster of an authenticated invitation
+bootstrap at any revision, through `RosterView::accept_source`. It applies the
+genesis rules at revision zero. Later it refuses a roster whose authority is not
+the authenticated one, a roster that does not list its authority, and a closed
+roster. The trust is that of a genesis roster: the pinned authority's bootstrap
+channel, with no earlier history to check the predecessor digest against.

@@ -258,8 +258,10 @@ struct GroupState {
     /// The pinned authority (0119); the invitation and control paths accept
     /// authority only from this member.
     authority: Member,
-    /// The genesis the caller supplied, kept to rebuild the state on recovery.
-    genesis: Option<Roster>,
+    /// The roster the caller attached the group from (the genesis, or the
+    /// source roster of an invitation bootstrap), kept to rebuild the state on
+    /// recovery.
+    source: Option<Roster>,
     local: Member,
     view: Option<RosterView>,
     receiver: Option<GroupReceiver>,
@@ -411,16 +413,20 @@ impl<P: CryptoProvider> GroupClient<P> {
         self.attach(group_id, local, Some(genesis))
     }
 
-    /// Attaches a group whose genesis roster and authority the caller knows
-    /// from the bootstrap channel (0092). A roster view and receiver
-    /// already recovered from the snapshot win over the genesis.
-    pub fn join_group(&mut self, genesis: Roster, authority: Member) -> Result<(), GroupError> {
-        self.attach(genesis.group_id, authority, Some(genesis))
+    /// Attaches a group from a roster and an authority the caller knows from the
+    /// bootstrap channel (0092): the genesis, or the source roster of the
+    /// invitation bootstrap that `receive` reported, at any revision (0135). An
+    /// invitee that was invited after the group moved past genesis joins at the
+    /// revision it was invited at. A roster view and receiver already recovered
+    /// from the snapshot win over the roster passed here.
+    pub fn join_group(&mut self, source: Roster, authority: Member) -> Result<(), GroupError> {
+        self.attach(source.group_id, authority, Some(source))
     }
 
     /// Attaches a group only by id and authority: enough to receive an
     /// invitation bootstrap (recorded in the invitation book), not to observe
-    /// rosters. Call [`join_group`](Self::join_group) with the genesis to go on.
+    /// rosters. Call [`join_group`](Self::join_group) with the genesis, or with
+    /// the bootstrap's source roster, to go on.
     pub fn await_group(&mut self, group_id: GroupId, authority: Member) -> Result<(), GroupError> {
         self.attach(group_id, authority, None)
     }
@@ -431,7 +437,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         &mut self,
         group_id: GroupId,
         authority: Member,
-        genesis: Option<Roster>,
+        source: Option<Roster>,
     ) -> Result<(), GroupError> {
         let local = self.member()?;
         let snapshot = &self.snapshot;
@@ -441,13 +447,13 @@ impl<P: CryptoProvider> GroupClient<P> {
                 recover_group_roster_view(snapshot, &authority)
                     .map_err(|_| GroupError::Recovery)?,
             )
-        } else if let Some(genesis) = &genesis {
-            if genesis.revision != 0 || genesis.group_id != group_id {
+        } else if let Some(source) = &source {
+            if source.group_id != group_id {
                 return Err(GroupError::Policy);
             }
-            let digest = roster_commitment(&genesis.encode().map_err(|_| GroupError::Policy)?);
+            let digest = roster_commitment(&source.encode().map_err(|_| GroupError::Policy)?);
             Some(
-                RosterView::accept_genesis(&authority, genesis.clone(), digest)
+                RosterView::accept_source(&authority, source.clone(), digest)
                     .map_err(|_| GroupError::Policy)?,
             )
         } else {
@@ -485,7 +491,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         self.group = Some(GroupState {
             group_id,
             authority,
-            genesis,
+            source,
             local,
             view,
             receiver,
@@ -512,7 +518,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         self.snapshot = snapshot;
         self.poisoned = false;
         if let Some(state) = self.group.take() {
-            self.attach(state.group_id, state.authority, state.genesis)?;
+            self.attach(state.group_id, state.authority, state.source)?;
         }
         Ok(())
     }

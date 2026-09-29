@@ -53,13 +53,13 @@ bootstrap is recorded only from the pinned authority.
 
 **What is still not reachable or not done, exactly.**
 
-- An invitee does not derive its roster view from a bootstrap. The bootstrap is
-  recorded (`await_group`, then `receive`) and reported with its source roster;
-  the caller then attaches the genesis roster with `join_group`. Deriving the
-  view durably in the commit of the bootstrap record, and from a source roster
-  that is not revision zero, needs a group-crate constructor (a view can today
-  be built only from a genesis roster or a serialized checkpoint); the report
-  names it.
+- An invitee does not derive its roster view inside the commit of the
+  bootstrap record. The bootstrap is recorded (`await_group`, then `receive`)
+  and reported with its source roster; the caller then attaches that source
+  roster with `join_group`, which since 0135 accepts a roster at any revision
+  (`RosterView::accept_source`), so an invitee invited after the group moved
+  past genesis joins at the revision it was invited at. The caller, not the
+  coordinator, decides to join from what the bootstrap reported.
 - The receiver state of a member that a roster removed, or of a closed group,
   cannot be restored by the group crate (CR-06). `join_group` after a restart
   substitutes an inert receiver over the accepted roster for such a member,

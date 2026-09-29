@@ -661,6 +661,160 @@ async fn an_authority_invites_admits_and_revokes_through_the_coordinator() {
 }
 
 #[tokio::test]
+async fn an_invitee_invited_after_the_group_moved_joins_from_the_bootstrap_source_roster() {
+    let (directory, relay) = start_server().await;
+    let alice_store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &alice_store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    let (mut bob, _bob_store) = joined(directory, relay, "+bob", &alice_member).await;
+    let bob_member = bob.member().unwrap();
+    let bob_route = route(&bob);
+    let carol_store = SharedStore::default();
+    let mut carol = coordinator(directory, relay, "+carol", &carol_store).await;
+    carol.await_group(gid(), alice_member.clone()).unwrap();
+    let (carol_member, carol_route) = (carol.member().unwrap(), route(&carol));
+
+    // Bob is admitted at revision 1, so the group has moved past genesis.
+    let r1 = alice
+        .next_roster(vec![alice_member.clone(), bob_member.clone()])
+        .unwrap();
+    alice
+        .install_roster(
+            r1.clone(),
+            &[(bob_member.clone(), bob_route.clone())],
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sole_roster_disposition(&bob.receive(0).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+
+    // Carol is invited at revision 1. Her bootstrap carries that source roster.
+    let carol_invitation = InvitationId::new([9; 16]);
+    alice
+        .invite(carol_invitation, &carol_member, &carol_route, 100, 1)
+        .await
+        .unwrap();
+    let inbound = carol.receive(1).await.unwrap();
+    let bootstrap = match inbound.items.as_slice() {
+        [
+            GroupReceipt {
+                outcome: GroupOutcome::Invitation(bootstrap),
+                ..
+            },
+        ] => bootstrap.clone(),
+        other => panic!("expected the invitation bootstrap, got {other:?}"),
+    };
+    assert_eq!(bootstrap.source_roster.revision, 1);
+
+    // She joins at the revision she was invited at; she never saw genesis.
+    carol
+        .join_group(bootstrap.source_roster.clone(), alice_member.clone())
+        .unwrap();
+    assert_eq!(carol.roster().unwrap(), &r1);
+    assert_eq!(carol.roster_digest(), alice.roster_digest());
+    carol
+        .accept_invitation(carol_invitation, &route(&alice), 2)
+        .await
+        .unwrap();
+    assert_eq!(alice.receive(2).await.unwrap().items.len(), 1);
+
+    // Alice admits her at revision 2; she observes it from her own view and
+    // then receives a group message.
+    let r2 = alice
+        .next_roster(vec![
+            alice_member.clone(),
+            bob_member.clone(),
+            carol_member.clone(),
+        ])
+        .unwrap();
+    alice
+        .install_roster(
+            r2,
+            &[
+                (bob_member.clone(), bob_route.clone()),
+                (carol_member.clone(), carol_route.clone()),
+            ],
+            Some(Admission {
+                id: carol_invitation,
+                target: carol_member.clone(),
+            }),
+            3,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sole_roster_disposition(&carol.receive(3).await.unwrap()),
+        RosterDisposition::Accepted
+    );
+    assert_eq!(carol.roster().unwrap().revision, 2);
+    alice
+        .send_group(&[(carol_member.clone(), carol_route)], b"welcome".to_vec())
+        .await
+        .unwrap();
+    let inbound = carol.receive(3).await.unwrap();
+    assert!(matches!(
+        inbound.items.as_slice(),
+        [GroupReceipt { outcome: GroupOutcome::Event(event), .. }] if event.payload == b"welcome"
+    ));
+}
+
+#[tokio::test]
+async fn joining_from_a_source_roster_refuses_another_authority_and_a_closed_roster() {
+    let (directory, relay) = start_server().await;
+    let alice = plain(directory, relay, "+alice").await;
+    let alice_member = member_of(&alice);
+    let store = SharedStore::default();
+    let mut bob = coordinator(directory, relay, "+bob", &store).await;
+    let bob_member = bob.member().unwrap();
+    let source = |group: GroupId, authority: &Member, members: Vec<Member>| {
+        Roster::new(
+            group,
+            1,
+            [7; DIGEST_LEN],
+            authority.clone(),
+            POLICY_VERSION_V1,
+            false,
+            members,
+        )
+        .unwrap()
+    };
+    let mut both = vec![alice_member.clone(), bob_member.clone()];
+    both.sort_by(|left, right| left.identity().cmp(right.identity()));
+    // The roster names Alice as its authority but the pinned one is Bob.
+    assert!(matches!(
+        bob.join_group(
+            source(gid(), &alice_member, both.clone()),
+            bob_member.clone()
+        ),
+        Err(GroupError::Policy)
+    ));
+    // A closed roster admits nobody, so it is no source.
+    let closed = Roster::new(
+        gid(),
+        1,
+        [7; DIGEST_LEN],
+        alice_member.clone(),
+        POLICY_VERSION_V1,
+        true,
+        both.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        bob.join_group(closed, alice_member.clone()),
+        Err(GroupError::Policy)
+    ));
+    // The same roster, open, from the pinned authority is accepted.
+    bob.join_group(source(gid(), &alice_member, both), alice_member)
+        .unwrap();
+    assert_eq!(bob.roster().unwrap().revision, 1);
+}
+
+#[tokio::test]
 async fn an_authority_grows_a_live_group_from_one_to_eight_members() {
     let (directory, relay) = start_server().await;
     let alice_store = SharedStore::default();
