@@ -388,12 +388,12 @@ echo "group client: staged receive, write-through direct messages, latch, bounds
 step group-client-traces "GroupClient live traces and boundary traces" \
   cargo test --locked -p tacenta-client --lib group_client::tests -- --skip group_scale_probe
 step group-operations-review "coordinator functions: bounds, latch, validate before encrypt, unknown-write sites, the replaced-roster checkpoint" \
-  cargo test --locked -p tacenta-client --lib group_operations::review_tests \
+  cargo test --locked -p tacenta-client --lib -- group_operations::review_tests \
   group_operations::replaced_roster_tests
 step review-live "live guards of the preparation and dispatch functions" \
   cargo test --locked -p tacenta-client --lib tests::review_live
 step operation-store "operation store: latch, generations, the fence, rollback, the native store under contention" \
-  cargo test --locked -p tacenta-client --lib operation_store::tests operation_store::rollback_tests
+  cargo test --locked -p tacenta-client --lib -- operation_store::tests operation_store::rollback_tests
 step deferred-rosters "held roster controls: the queue and its record" \
   cargo test --locked -p tacenta-client --lib group_deferred_rosters::tests
 
