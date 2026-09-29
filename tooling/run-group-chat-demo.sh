@@ -363,7 +363,8 @@ step deferred-rosters "held roster controls: the queue and its record" \
 echo "group profile: guards pinned after the mutation reruns"
 step group-guards "group crate guards: send recovery, receiver, roster view, invitation rules" \
   cargo test --locked -p tacenta-group --test logical_send_guards --test send_recovery_transcripts \
-  --test receiver_guards --test roster_guards --test invitation_rules
+  --test receiver_guards --test receiver_events_and_removal_guards --test roster_guards \
+  --test invitation_rules
 step client-guards "client guards: operation store, control outbox, group operations" \
   cargo test --locked -p tacenta-client --lib guard_tests
 
