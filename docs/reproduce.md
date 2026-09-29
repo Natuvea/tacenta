@@ -96,7 +96,7 @@ cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/po
 The experiment is limited to eight members, one device per person and one
 membership authority, and no SDK head reaches it; `docs/claims.md` says what it
 does and does not establish. Run the group crate's limit and negative-control
-suites, the five group crate changes the coordinator needs, and the live
+suites, the group crate changes the coordinator needs, and the live
 bounded-profile traces. The traces cover cap-plus-one refusals, group and
 direct-message session sharing, prepared-handoff cancellation on removal, a
 member removed while a message is in flight (authority and recipient side),
@@ -110,10 +110,22 @@ cd tacenta
 tooling/run-group-chat-demo.sh
 ```
 
-Each step names the number of tests it must run. The script fails on a step
-that runs zero tests, a different number, a failure or an ignored test, so a
-renamed or removed test cannot leave it green. Change the expected counts with
-the tests they count.
+`tooling/group-chat-demo-tests.txt` lists, for each step, the exact names of the
+tests it must run (with the test binary they belong to) and pins the count. The
+script fails a step that exits non-zero, runs zero tests, fails or ignores a
+test, prints a test line that says `should panic`, or whose set of passing test
+names or count differs from that manifest; it prints each missing and each
+unexpected test. A green run therefore means that the named tests exist, ran
+and passed, and that their names and counts equal the manifest. It does not
+mean that a test still checks what its name says: a test whose body returns
+early, asserts `true`, asserts inside a task nobody awaits, or is empty, but
+keeps a listed name, passes. Review is what looks at bodies, and for the group
+crate the mutation harness below. CI does not run this script.
+
+After a deliberate change to the tests, run
+`tooling/run-group-chat-demo.sh --update-manifest` and review the manifest's
+diff in the same commit. That mode is never implied, it still requires every
+step to pass, and its run compares nothing with the old manifest.
 
 The Lean group model generates the trace vectors that the Rust types replay
 (`crates/tacenta-group/tests/model_vectors.rs`); CI regenerates and diffs them

@@ -110,7 +110,9 @@ changes together, so the workarounds go.
    outboxes) and `group_client::tests` (an invitee joining at a later revision,
    the ordering of `next_roster`, a removed member restarting with its own
    receiver). `tooling/run-group-chat-demo.sh` runs them and fails if one is
-   renamed or removed.
+   renamed, removed or ignored, or if a step's test names or count differ from
+   `tooling/group-chat-demo-tests.txt`. It does not check that a test's body
+   still asserts what its name says.
 4. **Does it preserve wire compatibility with a named profile?** Yes. No record
    layout changes: a `TCGA` record for a final attempt has the bytes it always
    had; older code refused to replay it, and nothing was released.
