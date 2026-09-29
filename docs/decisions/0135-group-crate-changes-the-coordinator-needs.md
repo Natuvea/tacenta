@@ -1,6 +1,6 @@
 # 0135 — group crate changes the coordinator needs
 
-> Amends 0100, 0106, 0109, 0131, 0133, 0134, 0136 and 0138.
+> Amends 0100, 0106, 0109, 0117, 0124, 0131, 0133, 0134, 0136 and 0138.
 
 The client's coordinator (`GroupClient`, 0131) shipped with five workarounds
 for behaviour of `tacenta-group`, and with its own copy of the sequence rule.

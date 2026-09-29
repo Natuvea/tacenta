@@ -36,6 +36,13 @@ the durable state; without one it would let a sequence be reused.
   for a bound the retained sends already give.
 - Refuse only stale sends and leave sequences unenforced.
 
+## The five questions
+
+This record is in a product crate (`tacenta-group`) and touches no
+`tacenta-core` behaviour. The trusted core is unchanged; the record's bytes and
+rules are product-owned and covered by this repository's tests; it does not move
+protocol functionality into the core.
+
 ## Why
 
 0095 states that a sequence is monotonic, allocated with the record and never

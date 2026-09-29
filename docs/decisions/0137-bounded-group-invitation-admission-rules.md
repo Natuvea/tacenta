@@ -125,13 +125,22 @@ the model and its theorems have had no human review.
 - Make acceptance strict, as the model had it. A resent acceptance would then
   fail at the authority.
 
+## The five questions
+
+This record is in a product crate (`tacenta-group`) and touches no
+`tacenta-core` behaviour. The trusted core is unchanged; the record's bytes and
+rules are product-owned and covered by this repository's tests; it does not move
+protocol functionality into the core.
+
 ## Why
 
 The revision space is bounded (`u64::MAX` is reserved) and every revision is a
 control message that every member must accept in order. Revisions should count
 changes to who is in the group. An invitation is authority-side state plus a
-point-to-point bootstrap, so the model follows the code and the start pack
-("B is admitted at r1 ... C observes r1 pending, then is admitted at r2").
+point-to-point bootstrap, so the model follows the code and the design notes
+for this profile ("B is admitted at r1 ... C observes r1 pending, then is
+admitted at r2"; those notes are not in this repository, and the rule stands on
+the reasoning here).
 Retry safety decides the acceptance question: an operation that a crash can
 repeat must not turn its own repeat into an error.
 

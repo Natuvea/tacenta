@@ -35,6 +35,13 @@ active members of the roster.
 - A separate tombstone format with its own version. That adds a migration for
   information the roster and the local binding already carry.
 
+## The five questions
+
+This record is in a product crate (`tacenta-group`) and touches no
+`tacenta-core` behaviour. The trusted core is unchanged; the record's bytes and
+rules are product-owned and covered by this repository's tests; it does not move
+protocol functionality into the core.
+
 ## Why
 
 Recovery has to be able to read what the writer wrote. The live receiver is
