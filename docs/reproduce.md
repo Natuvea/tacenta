@@ -60,8 +60,9 @@ translation's T1/T3 proofs build in tacenta-core's public `translation` CI job
 it" via the committed Aeneas translation.
 
 ```bash
-# Spec-level theorems (no sorry), plus the #print axioms audit in
-# spec/Tacenta/Assurance.lean that pins each theorem's exact axiom set.
+# Spec-level theorems (CI fails on a `sorry`), plus the #print axioms audit in
+# spec/Tacenta/Assurance.lean that pins the exact axiom set of the 47 theorems
+# it lists (see "The axiom baselines" below for what it does not cover).
 cd tacenta/spec && lake build
 
 # Conformance vectors are extracted from the spec and must match contracts/.
@@ -234,12 +235,19 @@ TACENTA_CORE_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
 
 ## The axiom baselines (what a green proof rests on)
 
-- **Spec-level theorems** admit no axiom beyond `propext` and `Quot.sound`
-  (the wire theorems and two of the four bounded-group theorems use the second;
-  the others need at most `propext`), machine-enforced by
-  `#guard_msgs in #print axioms` in `spec/Tacenta/Assurance.lean` — a corrupted
-  axiom set fails the build. The four group theorems are in that audit; the
-  group model, its vectors and those theorems have had no human review.
+- **Spec-level theorems.** Today none of them depends on an axiom beyond
+  `propext` and `Quot.sound` (the wire theorems and two of the four bounded-group
+  theorems use the second; the others need at most `propext`). What is enforced
+  is narrower than that: `spec/Tacenta/Assurance.lean` pins the exact axiom set
+  of the 47 theorems it lists with `#guard_msgs in #print axioms`, of the 90
+  `theorem`s that `spec/Tacenta` declares, and the four group theorems are among
+  the 47. An added axiom, a `sorry` or `Classical.choice` in a listed theorem
+  fails the build. **It does not catch** a theorem weakened with the same axioms
+  (`True` as its statement), a new theorem that is not listed and is built on an
+  added axiom, `native_decide` in an `example`, or a theorem missing from the
+  list; a `sorry` in an unlisted theorem fails the CI step that searches the
+  build log for `declaration uses`. The group model, its vectors and its
+  theorems have had no human review.
 - **Refinement theorems** (`verification/`) sit at Lean's three classical axioms
   plus one per-declaration `bv_decide` reflection axiom for each of two
   byte-order lemmas (see `docs/claims.md`); their pinned

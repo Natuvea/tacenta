@@ -6,25 +6,35 @@ import Tacenta.Stream
 import Tacenta.Group
 
 /-!
-# Axiom audit — machine-enforced
+# Axiom audit of the listed theorems
 
 The verification TCB (`docs/verification-tcb.md`) claims the trust proofs use no
 `sorry` and no axioms beyond Lean's standard, uncontroversial ones. This file
-**enforces** that claim rather than asserting it: `#guard_msgs` pins the exact
-axiom set each trust theorem depends on, so if a `sorry` ever slipped in (which
-would add `sorryAx`) or a proof pulled in an unexpected axiom, this file — and
-the CI `spec` build — would fail.
+checks that claim **for the theorems it lists**: `#guard_msgs` pins the exact
+axiom set each listed theorem depends on, so if a `sorry` slipped into one of
+them (which would add `sorryAx`), or a proof pulled in an unexpected axiom, this
+file, and with it the CI `spec` build, would fail.
+
+What that covers, and what it does not. It covers the listed theorems only: 47
+`#print axioms` lines, where `spec/Tacenta` declares 90 `theorem`s, and nothing
+checks that a new theorem is added to the list. It sees axioms and not
+statements: a theorem weakened to `True`, or to a conjunction with `True`, with
+the same axiom set passes. A new theorem that is not listed and is built on an
+added axiom builds green, and so does `native_decide` in an `example`. A `sorry`
+in an unlisted theorem is not caught here either; CI catches it by searching the
+build log for `declaration uses`.
 
 The state-machine theorems below depend on at most `propext` (propositional
 extensionality, a standard Lean axiom). The **wire** theorems, and two of the
 bounded group-policy theorems, additionally depend on `Quot.sound`, which
 arrives through the standard `List` and `Nat` libraries rather than from
-anything this repository writes. Both are among Lean's four standard axioms;
-neither is a soundness risk.
+anything this repository writes. Both are among Lean's three standard axioms
+(`propext`, `Classical.choice` and `Quot.sound`); neither is a soundness risk.
 
-The one that matters is the fourth. **`sorryAx` is what this file exists to
-catch**, because a `sorry` makes a theorem prove nothing while still reading as
-proved; pinning the axiom set turns that into a build failure.
+What this file exists to catch is not among them. **`sorryAx` is what a `sorry`
+adds**, and a `sorry` makes a theorem prove nothing while still reading as
+proved; pinning the axiom set turns that into a build failure for a listed
+theorem.
 -/
 
 -- Directory: trust on first use, framing, and rotation.
