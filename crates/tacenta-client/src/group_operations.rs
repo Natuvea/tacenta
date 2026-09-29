@@ -301,31 +301,33 @@ pub(crate) fn commit_logical_intent<S: OperationStore>(
 /// The group policy codec owns its grammar while the client supplies the
 /// standalone core's commitment domain.
 ///
-/// The transcript is replayed one logical send at a time and the latest
-/// cancellation is applied to each send before the next is inserted. Replaying
-/// the whole transcript and cancelling afterwards would count sends that a
-/// roster change had already cancelled toward the live cap of eight, and refuse
-/// to recover a group that was running correctly.
+/// The latest roster cancellation the snapshot holds is passed to the group
+/// crate, which applies it once after the replay and does not count a send it
+/// cancels toward the live cap of eight while it replays (0135). Replaying the
+/// whole transcript and cancelling afterwards would count sends that a roster
+/// change had already cancelled and refuse to recover a group that was running
+/// correctly.
 pub(crate) fn recover_group_outbox(
     snapshot: &OperationSnapshot,
     group_id: tacenta_group::GroupId,
 ) -> Result<GroupOutbox, GroupOperationError> {
     let cancelled = latest_group_outbox_cancellation(snapshot, group_id)?;
-    let mut outbox = GroupOutbox::new(group_id);
-    for (_, records) in group_outbox_records(snapshot, group_id)? {
-        let mut single =
-            GroupOutbox::recover_from_transcript(group_id, &records, payload_commitment)
-                .map_err(|_| GroupOperationError::Policy)?;
-        if let Some(revision) = cancelled {
-            single.cancel_for_newer_roster(revision);
-        }
-        for send in single.sends() {
-            outbox
-                .record(send.clone())
-                .map_err(|_| GroupOperationError::Policy)?;
+    let mut entries = Vec::new();
+    for entry in &snapshot.outbox {
+        let Some(id) = outbox_record_id(entry)? else {
+            continue;
+        };
+        if id.group_id == group_id {
+            entries.push(entry.clone());
         }
     }
-    Ok(outbox)
+    GroupOutbox::recover_from_transcript_at_revision(
+        group_id,
+        &entries,
+        cancelled,
+        payload_commitment,
+    )
+    .map_err(|_| GroupOperationError::Policy)
 }
 
 /// One logical send and its transcript records, in transcript order.

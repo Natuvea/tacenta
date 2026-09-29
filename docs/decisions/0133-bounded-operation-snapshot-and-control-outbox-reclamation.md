@@ -35,14 +35,17 @@ the disposition and no context bytes. The receiver's own bounded state
 and deferral; the `inbox` and `dedup` collections are audit records, and no
 recovery reads them.
 
-The application outbox transcript is replayed one logical send at a time, with
-the latest cancellation applied to each send before the next is inserted. The
-earlier whole-transcript replay cancelled only afterwards, so sends that a roster
-change had already cancelled still counted toward the live cap of eight during
-the replay, and a group with more than eight sends across a cancellation could
-not be recovered even though it had been running correctly. That defect existed
-before this record; the compaction above depends on the replay, so it is fixed
-here.
+The application outbox transcript is recovered by the group crate with the
+latest cancellation passed in (0135): a send that cancellation ends terminal
+does not count toward the live cap of eight while the transcript replays, and
+the cancellation is applied once afterwards. Before 0135 the client replayed
+one logical send at a time to get the same result, because the group crate's
+whole-transcript replay cancelled only afterwards, so sends that a roster change
+had already cancelled still counted toward the live cap of eight, and a group
+with more than eight sends across a cancellation could not be recovered even
+though it had been running correctly. That defect existed before this record;
+the compaction above depends on the replay, so it was worked around here and is
+fixed in the group crate by 0135.
 
 The control outbox refuses the ninth live handoff with an explicit
 `outbox_full`, exactly as the application outbox refuses the ninth live send.

@@ -142,6 +142,17 @@ impl GroupOutbox {
     /// the outbox applied, and when its sequence is not above every retained
     /// sequence for the same revision and sender (decision 0129).
     pub fn record(&mut self, send: LogicalSend) -> Result<OutboxDisposition, Error> {
+        self.insert(send, None)
+    }
+
+    /// The body of [`record`](Self::record). During a recovery that will apply
+    /// a cancellation, `cancelled_below` is that revision: a send below it ends
+    /// terminal, so it neither counts toward the live cap nor is refused by it.
+    fn insert(
+        &mut self,
+        send: LogicalSend,
+        cancelled_below: Option<u64>,
+    ) -> Result<OutboxDisposition, Error> {
         if send.id.group_id != self.group_id {
             return Err(Error::Conflict);
         }
@@ -160,7 +171,17 @@ impl GroupOutbox {
         {
             return Err(Error::SequenceOrder);
         }
-        if self.sends.iter().filter(|send| !send.is_terminal()).count() >= MAX_LIVE_LOGICAL_SENDS {
+        let stays_live = |send: &LogicalSend| {
+            cancelled_below.is_none_or(|revision| send.id.revision >= revision)
+        };
+        if stays_live(&send)
+            && self
+                .sends
+                .iter()
+                .filter(|known| !known.is_terminal() && stays_live(known))
+                .count()
+                >= MAX_LIVE_LOGICAL_SENDS
+        {
             return Err(Error::OutboxFull);
         }
         self.sends.push(send);
@@ -178,9 +199,33 @@ impl GroupOutbox {
     /// Rebuilds one group's live outbox from the ordered records in a combined
     /// operation snapshot. The caller supplies the core's domain-separated
     /// payload commitment so this policy crate stays crypto-independent.
+    ///
+    /// This applies no roster change: it is
+    /// [`recover_from_transcript_at_revision`](Self::recover_from_transcript_at_revision)
+    /// with no applied revision.
     pub fn recover_from_transcript(
         group_id: GroupId,
         entries: &[Vec<u8>],
+        payload_commitment: impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+    ) -> Result<Self, Error> {
+        Self::recover_from_transcript_at_revision(group_id, entries, None, payload_commitment)
+    }
+
+    /// Rebuilds the outbox as [`recover_from_transcript`](Self::recover_from_transcript)
+    /// does and then applies `cancel_for_newer_roster(applied_revision)`, the
+    /// newest roster revision the caller has applied (decision 0135). The
+    /// transcript does not say when that roster change happened, so a send
+    /// below it is treated as ending terminal while the replay runs: it does not
+    /// count toward `MAX_LIVE_LOGICAL_SENDS`. Replaying the whole transcript and
+    /// cancelling afterwards would refuse a group that had run correctly, once
+    /// more than eight sends had crossed a cancellation. A send at or above the
+    /// applied revision counts as it always did, so the result never holds more
+    /// than eight live sends. The recovered outbox equals the one that was
+    /// running, including its applied revision.
+    pub fn recover_from_transcript_at_revision(
+        group_id: GroupId,
+        entries: &[Vec<u8>],
+        applied_revision: Option<u64>,
         payload_commitment: impl Fn(&[u8]) -> [u8; DIGEST_LEN],
     ) -> Result<Self, Error> {
         let mut outbox = Self::new(group_id);
@@ -197,7 +242,7 @@ impl GroupOutbox {
                     if send.id.group_id != group_id {
                         continue;
                     }
-                    if outbox.record(send)? != OutboxDisposition::Inserted {
+                    if outbox.insert(send, applied_revision)? != OutboxDisposition::Inserted {
                         return Err(Error::Conflict);
                     }
                 }
@@ -266,6 +311,9 @@ impl GroupOutbox {
                 _ if tag.starts_with(b"TCG") => return Err(Error::Malformed),
                 _ => {}
             }
+        }
+        if let Some(revision) = applied_revision {
+            outbox.cancel_for_newer_roster(revision);
         }
         Ok(outbox)
     }

@@ -248,3 +248,162 @@ fn recovery_still_refuses_an_acceptance_with_no_handoff() {
         Err(Error::WrongDisposition)
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2. Recovery does not count sends a later cancellation made terminal
+//    (decision 0135, item 2)
+// ---------------------------------------------------------------------------
+
+fn send_at(revision: u64, sequence: u64) -> LogicalSend {
+    LogicalSend::new(
+        &roster_at(revision, &["alice", "bob"]),
+        [5; DIGEST_LEN],
+        named("alice"),
+        sequence,
+        vec![named("bob")],
+        b"hello".to_vec(),
+    )
+    .unwrap()
+}
+
+/// Records `count` sends at `revision` in a running outbox, and returns the
+/// transcript records the client would have written for them.
+fn record_sends(outbox: &mut GroupOutbox, entries: &mut Vec<Vec<u8>>, revision: u64, count: u64) {
+    for sequence in 0..count {
+        let send = send_at(revision, sequence);
+        outbox.record(send.clone()).unwrap();
+        entries.push(intent_record(&send));
+    }
+}
+
+#[test]
+fn recovery_does_not_count_sends_that_two_later_cancellations_made_terminal() {
+    // Eight sends at revision 1 fill the live cap; a roster change to revision
+    // 2 cancels them and eight more are recorded; a change to revision 3
+    // cancels those. Sixteen sends crossed cancellations and none is live.
+    let mut running = GroupOutbox::new(group());
+    let mut entries = Vec::new();
+    record_sends(&mut running, &mut entries, 1, 8);
+    running.cancel_for_newer_roster(2);
+    record_sends(&mut running, &mut entries, 2, 8);
+    running.cancel_for_newer_roster(3);
+    assert_eq!(running.sends().len(), 16);
+    assert!(running.sends().iter().all(LogicalSend::is_terminal));
+
+    // Without the cancellation the ninth send of the replay is over the cap.
+    assert_eq!(
+        GroupOutbox::recover_from_transcript(group(), &entries, commit).map(|_| ()),
+        Err(Error::OutboxFull)
+    );
+    // With it, recovery equals the outbox that was running, including its
+    // applied revision.
+    let recovered =
+        GroupOutbox::recover_from_transcript_at_revision(group(), &entries, Some(3), commit)
+            .unwrap();
+    assert_eq!(recovered, running);
+}
+
+#[test]
+fn a_send_at_or_above_the_applied_revision_still_counts_toward_the_cap() {
+    let mut running = GroupOutbox::new(group());
+    let mut entries = Vec::new();
+    record_sends(&mut running, &mut entries, 1, 8);
+    running.cancel_for_newer_roster(2);
+    record_sends(&mut running, &mut entries, 2, 8);
+    // Eight live sends at the applied revision 2 recover, and equal the
+    // running outbox: eight cancelled at revision 1, eight live at 2.
+    let recovered =
+        GroupOutbox::recover_from_transcript_at_revision(group(), &entries, Some(2), commit)
+            .unwrap();
+    assert_eq!(recovered, running);
+    assert_eq!(
+        recovered
+            .sends()
+            .iter()
+            .filter(|send| !send.is_terminal())
+            .count(),
+        8
+    );
+    // A ninth live send at that revision is refused, as it would have been
+    // when it was written.
+    entries.push(intent_record(&send_at(2, 8)));
+    assert_eq!(
+        GroupOutbox::recover_from_transcript_at_revision(group(), &entries, Some(2), commit)
+            .map(|_| ()),
+        Err(Error::OutboxFull)
+    );
+}
+
+#[test]
+fn recovery_without_an_applied_revision_keeps_the_cap_and_the_old_meaning() {
+    let mut entries = Vec::new();
+    for sequence in 0..9 {
+        entries.push(intent_record(&send_at(1, sequence)));
+    }
+    assert_eq!(
+        GroupOutbox::recover_from_transcript(group(), &entries, commit).map(|_| ()),
+        Err(Error::OutboxFull)
+    );
+    assert_eq!(
+        GroupOutbox::recover_from_transcript_at_revision(group(), &entries, None, commit)
+            .map(|_| ()),
+        Err(Error::OutboxFull)
+    );
+    // Eight recover, and no revision is applied.
+    entries.pop();
+    let recovered = GroupOutbox::recover_from_transcript(group(), &entries, commit).unwrap();
+    assert_eq!(recovered.sends().len(), 8);
+    assert_eq!(
+        recovered.next_sequence(1, &named("alice")).unwrap(),
+        8,
+        "sequence allocation follows the retained sends"
+    );
+}
+
+#[test]
+fn the_cancellation_is_applied_after_a_send_s_own_records() {
+    // A send that reached `handed_off` before a roster change became
+    // `cancelled_after_handoff`; its preparation and handoff records must
+    // replay before the cancellation does.
+    let send = send_at(1, 0);
+    let context = send.application_context(&named("bob")).unwrap();
+    let entries = vec![
+        intent_record(&send),
+        record(b"TCGP", &context, &[]),
+        record(b"TCGH", &context, &[1, 0]),
+    ];
+    let mut running = GroupOutbox::new(group());
+    running.record(send.clone()).unwrap();
+    {
+        let live = running.send_mut(&send.id).unwrap();
+        live.record_prepared(
+            &named("bob"),
+            commit(&context.encode().unwrap()),
+            b"ciphertext".to_vec(),
+        )
+        .unwrap();
+        live.reserve_handoff(&named("bob")).unwrap();
+    }
+    running.cancel_for_newer_roster(2);
+    let recovered =
+        GroupOutbox::recover_from_transcript_at_revision(group(), &entries, Some(2), commit)
+            .unwrap();
+    assert_eq!(recovered, running);
+    assert_eq!(
+        recovered.sends()[0].recipients()[0].disposition,
+        RecipientDisposition::CancelledAfterHandoff
+    );
+}
+
+#[test]
+fn a_recovered_outbox_refuses_a_send_below_the_applied_revision() {
+    let entries = vec![intent_record(&send_at(1, 0))];
+    let mut recovered =
+        GroupOutbox::recover_from_transcript_at_revision(group(), &entries, Some(3), commit)
+            .unwrap();
+    assert_eq!(
+        recovered.record(send_at(2, 0)).map(|_| ()),
+        Err(Error::StaleRevision)
+    );
+    assert!(recovered.record(send_at(3, 0)).is_ok());
+}
