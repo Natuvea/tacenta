@@ -3590,7 +3590,7 @@ mod tests {
             recover_group_invitation_book(&recovered_snapshot, group_id),
             Ok(invitations)
         );
-        let _ = std::fs::remove_file(path);
+        crate::operation_store::remove_store_files(&path);
     }
 
     #[test]

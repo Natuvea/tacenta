@@ -3,8 +3,9 @@
 //! This is intentionally independent of a group codec and of a concrete file
 //! store: a snapshot is versioned opaque values, and a store is a narrow
 //! commit and recover port. [`DurableStore`] is the handle the coordinator holds:
-//! it latches after a write that did not commit and keeps generations
-//! monotonic across a write whose outcome was unknown.
+//! it latches after a write that did not commit, keeps generations
+//! monotonic across a write whose outcome was unknown, and refuses to publish
+//! over a snapshot it has not seen (0143).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
@@ -194,6 +195,33 @@ pub trait OperationStore {
     fn next_generation(&self, current: u64) -> Option<u64> {
         current.checked_add(1)
     }
+
+    /// The generation of the newest durable snapshot, or `None` for a store
+    /// that holds none (0143). The provided implementation reads the whole
+    /// snapshot; a store that can answer from a header should override it.
+    fn durable_generation(&mut self) -> Result<Option<u64>, StoreError> {
+        Ok(self.recover()?.map(|snapshot| snapshot.generation))
+    }
+
+    /// Publishes `snapshot` only if the newest durable snapshot still has
+    /// generation `expected` (`None`: the store holds nothing). Otherwise it
+    /// writes nothing and reports `failed`: another writer has published since
+    /// the caller last looked, or the store cannot be read (0143).
+    ///
+    /// The provided implementation reads and then writes, which refuses a
+    /// writer that has fallen behind but not two writers that check at the
+    /// same instant. A store that can make the check and the write one atomic
+    /// step (a transaction, a compare-and-swap, a lock) overrides it.
+    fn commit_after(
+        &mut self,
+        expected: Option<u64>,
+        snapshot: &OperationSnapshot,
+    ) -> CommitOutcome {
+        match self.durable_generation() {
+            Ok(current) if current == expected => self.commit(snapshot),
+            _ => CommitOutcome::Failed,
+        }
+    }
 }
 
 impl<T: OperationStore + ?Sized> OperationStore for Box<T> {
@@ -209,9 +237,19 @@ impl<T: OperationStore + ?Sized> OperationStore for Box<T> {
     fn next_generation(&self, current: u64) -> Option<u64> {
         (**self).next_generation(current)
     }
+    fn durable_generation(&mut self) -> Result<Option<u64>, StoreError> {
+        (**self).durable_generation()
+    }
+    fn commit_after(
+        &mut self,
+        expected: Option<u64>,
+        snapshot: &OperationSnapshot,
+    ) -> CommitOutcome {
+        (**self).commit_after(expected, snapshot)
+    }
 }
 
-/// The store handle a coordinator holds (0134).
+/// The store handle a coordinator holds (0134, 0143).
 ///
 /// A write that is `failed` or `unknown` latches it: it then refuses every
 /// commit, without forwarding it, and reports itself frozen so that the
@@ -219,10 +257,21 @@ impl<T: OperationStore + ?Sized> OperationStore for Box<T> {
 /// [`recover`](OperationStore::recover) has read the durable snapshot. The
 /// highest generation it has attempted or recovered is remembered so candidate
 /// generations only increase.
+///
+/// It also remembers the generation of the newest snapshot it recovered or
+/// published, and commits with
+/// [`commit_after`](OperationStore::commit_after) against it: a store that
+/// holds a different generation (another writer published, a backup was put
+/// back) refuses the commit, which latches like any failed write, and the
+/// coordinator's `recover` reads what the store holds now. One writer per store
+/// is still a precondition (0143).
 pub struct DurableStore {
     inner: Box<dyn OperationStore + Send>,
     frozen: bool,
     high_water: u64,
+    /// The generation of the newest snapshot this handle recovered or
+    /// published; `None` while it has seen an empty store.
+    observed: Option<u64>,
 }
 
 impl DurableStore {
@@ -232,6 +281,7 @@ impl DurableStore {
             inner: Box::new(inner),
             frozen: false,
             high_water: 0,
+            observed: None,
         }
     }
 }
@@ -242,8 +292,10 @@ impl OperationStore for DurableStore {
             return CommitOutcome::Failed;
         }
         self.high_water = self.high_water.max(snapshot.generation);
-        let outcome = self.inner.commit(snapshot);
-        if outcome != CommitOutcome::Committed {
+        let outcome = self.inner.commit_after(self.observed, snapshot);
+        if outcome == CommitOutcome::Committed {
+            self.observed = Some(snapshot.generation);
+        } else {
             self.frozen = true;
         }
         outcome
@@ -254,6 +306,7 @@ impl OperationStore for DurableStore {
         if let Some(snapshot) = &recovered {
             self.high_water = self.high_water.max(snapshot.generation);
         }
+        self.observed = recovered.as_ref().map(|snapshot| snapshot.generation);
         self.frozen = false;
         Ok(recovered)
     }
@@ -270,6 +323,12 @@ impl OperationStore for DurableStore {
 /// Native reference implementation of the operation-store port.  Platform
 /// bindings provide their own store; this uses the product's crash-safe atomic
 /// writer without adding a database dependency to the initial coordinator.
+///
+/// Every write, and the check of [`commit_after`](OperationStore::commit_after),
+/// runs under an exclusive advisory lock on `<path>.lock` (0143), which stays in
+/// place. The lock binds cooperating processes on one local filesystem only.
+/// The store is unsealed, has no rollback detection, and reports every write
+/// error as `failed`, never `unknown`.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct FileOperationStore {
     path: PathBuf,
@@ -286,8 +345,26 @@ impl FileOperationStore {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl OperationStore for FileOperationStore {
-    fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+impl FileOperationStore {
+    /// The generation in the snapshot file's header (`TCOP`, version,
+    /// generation), without reading or decoding the rest.
+    fn header_generation(&self) -> Result<Option<u64>, StoreError> {
+        use std::io::Read;
+        let mut file = match std::fs::File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(StoreError),
+        };
+        let mut header = [0u8; 13];
+        file.read_exact(&mut header).map_err(|_| StoreError)?;
+        if &header[..4] != b"TCOP" || (header[4] != 1 && header[4] != OPERATION_SNAPSHOT_VERSION) {
+            return Err(StoreError);
+        }
+        let generation: [u8; 8] = header[5..13].try_into().map_err(|_| StoreError)?;
+        Ok(Some(u64::from_be_bytes(generation)))
+    }
+
+    fn write(&self, snapshot: &OperationSnapshot) -> CommitOutcome {
         let Some(bytes) = snapshot.encode() else {
             return CommitOutcome::Failed;
         };
@@ -295,6 +372,54 @@ impl OperationStore for FileOperationStore {
             Ok(()) => CommitOutcome::Committed,
             Err(_) => CommitOutcome::Failed,
         }
+    }
+
+    /// Runs `action` while holding an exclusive advisory lock on
+    /// `<path>.lock`. The atomic writer stages every write in one fixed
+    /// temporary file, so two unlocked writers would also corrupt each other's
+    /// staging. The lock binds cooperating processes only (0143).
+    fn locked(&self, action: impl FnOnce(&Self) -> CommitOutcome) -> CommitOutcome {
+        let mut lock_path = self.path.clone().into_os_string();
+        lock_path.push(".lock");
+        let Ok(lock) = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)
+        else {
+            return CommitOutcome::Failed;
+        };
+        if lock.lock().is_err() {
+            return CommitOutcome::Failed;
+        }
+        let outcome = action(self);
+        drop(lock);
+        outcome
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl OperationStore for FileOperationStore {
+    fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+        self.locked(|store| store.write(snapshot))
+    }
+
+    fn durable_generation(&mut self) -> Result<Option<u64>, StoreError> {
+        self.header_generation()
+    }
+
+    /// The check and the write happen under one exclusive lock, so two
+    /// coordinators on one local file cannot both publish from the same
+    /// generation (0143).
+    fn commit_after(
+        &mut self,
+        expected: Option<u64>,
+        snapshot: &OperationSnapshot,
+    ) -> CommitOutcome {
+        self.locked(|store| match store.header_generation() {
+            Ok(current) if current == expected => store.write(snapshot),
+            _ => CommitOutcome::Failed,
+        })
     }
 
     fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
@@ -306,6 +431,15 @@ impl OperationStore for FileOperationStore {
             Err(_) => Err(StoreError),
         }
     }
+}
+
+/// Removes a native store's snapshot file and its lock file (tests).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn remove_store_files(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let mut lock = path.to_path_buf().into_os_string();
+    lock.push(".lock");
+    let _ = std::fs::remove_file(lock);
 }
 
 #[cfg(test)]
@@ -347,7 +481,7 @@ mod tests {
         assert_eq!(store.commit(&snapshot), CommitOutcome::Committed);
         assert_eq!(store.recover(), Ok(Some(snapshot)));
 
-        let _ = std::fs::remove_file(path);
+        remove_store_files(&path);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -474,5 +608,157 @@ mod tests {
         assert_eq!(store.next_generation(3), Some(11));
         assert_eq!(store.next_generation(20), Some(21));
         assert_eq!(store.next_generation(u64::MAX), None);
+    }
+
+    /// One durable value shared by two handles, as two processes on one store
+    /// would share it.
+    #[derive(Clone, Default)]
+    struct Shared(std::sync::Arc<std::sync::Mutex<Option<OperationSnapshot>>>);
+
+    impl OperationStore for Shared {
+        fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+            *self.0.lock().unwrap() = Some(snapshot.clone());
+            CommitOutcome::Committed
+        }
+        fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    fn marked(generation: u64, mark: u8) -> OperationSnapshot {
+        let mut snapshot = OperationSnapshot::empty(generation);
+        snapshot.provider_state = vec![mark];
+        snapshot
+    }
+
+    #[test]
+    fn a_durable_store_refuses_to_publish_over_a_snapshot_it_has_not_seen() {
+        let shared = Shared::default();
+        let mut first = DurableStore::new(shared.clone());
+        let mut second = DurableStore::new(shared.clone());
+        assert_eq!(first.recover(), Ok(None));
+        assert_eq!(second.recover(), Ok(None));
+        assert_eq!(first.commit(&marked(1, 1)), CommitOutcome::Committed);
+        // The second handle last saw an empty store: its commit is refused, it
+        // latches, and the first handle's snapshot is untouched.
+        assert_eq!(second.commit(&marked(1, 2)), CommitOutcome::Failed);
+        assert!(second.is_frozen());
+        assert_eq!(shared.0.lock().unwrap().clone(), Some(marked(1, 1)));
+        // It recovers what the store holds and then publishes above it.
+        assert_eq!(second.recover(), Ok(Some(marked(1, 1))));
+        assert!(!second.is_frozen());
+        assert_eq!(second.commit(&marked(2, 2)), CommitOutcome::Committed);
+        // Now the first handle is the one that is behind.
+        assert_eq!(first.commit(&marked(2, 1)), CommitOutcome::Failed);
+        assert_eq!(shared.0.lock().unwrap().clone(), Some(marked(2, 2)));
+        // A handle keeps publishing while nobody else does.
+        assert_eq!(second.commit(&marked(3, 2)), CommitOutcome::Committed);
+        assert_eq!(second.commit(&marked(4, 2)), CommitOutcome::Committed);
+    }
+
+    #[test]
+    fn a_generation_gap_after_a_write_that_did_not_land_is_not_a_second_writer() {
+        // An unknown write that did not land leaves the store at the old
+        // generation; the next candidate carries a higher number (0134) and must
+        // still be accepted, because the store holds what the handle last saw.
+        let mut store = DurableStore::new(Counting {
+            commits: Default::default(),
+            outcomes: [CommitOutcome::Committed, CommitOutcome::Unknown].into(),
+            durable: None,
+        });
+        assert_eq!(store.recover(), Ok(None));
+        assert_eq!(store.commit(&marked(1, 1)), CommitOutcome::Committed);
+        assert_eq!(store.commit(&marked(2, 2)), CommitOutcome::Unknown);
+        assert!(store.is_frozen());
+        assert_eq!(store.recover(), Ok(Some(marked(1, 1))));
+        assert_eq!(store.commit(&marked(3, 3)), CommitOutcome::Committed);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scratch_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "tacenta-operation-store-{name}-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_native_store_reads_its_generation_from_the_header_and_refuses_a_stale_writer() {
+        let path = scratch_path("fence");
+        let mut first = FileOperationStore::new(&path);
+        let mut second = FileOperationStore::new(&path);
+        assert_eq!(first.durable_generation(), Ok(None));
+        assert_eq!(
+            first.commit_after(None, &marked(1, 1)),
+            CommitOutcome::Committed
+        );
+        assert_eq!(second.durable_generation(), Ok(Some(1)));
+        // The second handle believes the store is empty.
+        assert_eq!(
+            second.commit_after(None, &marked(1, 2)),
+            CommitOutcome::Failed
+        );
+        assert_eq!(first.recover(), Ok(Some(marked(1, 1))));
+        assert_eq!(
+            second.commit_after(Some(1), &marked(2, 2)),
+            CommitOutcome::Committed
+        );
+        assert_eq!(
+            first.commit_after(Some(1), &marked(2, 1)),
+            CommitOutcome::Failed
+        );
+        assert_eq!(first.recover(), Ok(Some(marked(2, 2))));
+        // A header that is not a snapshot's is an error, not a generation.
+        std::fs::write(&path, b"TCOP\x02").unwrap();
+        assert_eq!(first.durable_generation(), Err(StoreError));
+        assert_eq!(
+            first.commit_after(Some(2), &marked(3, 1)),
+            CommitOutcome::Failed
+        );
+        remove_store_files(&path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_native_store_lets_exactly_one_of_several_racing_writers_publish_a_generation() {
+        // Four handles on one file, each publishing generation g + 1 after
+        // reading generation g. Without the lock two of them can both pass the
+        // check; with it every success advances the generation by exactly one.
+        let path = scratch_path("race");
+        let successes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let threads: Vec<_> = (0..4u8)
+            .map(|mark| {
+                let path = path.clone();
+                let successes = successes.clone();
+                std::thread::spawn(move || {
+                    let mut store = FileOperationStore::new(&path);
+                    for _ in 0..40 {
+                        let seen = store.durable_generation().unwrap();
+                        let next = seen.map_or(1, |generation| generation + 1);
+                        if store.commit_after(seen, &marked(next, mark)) == CommitOutcome::Committed
+                        {
+                            successes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let wins = successes.load(std::sync::atomic::Ordering::SeqCst);
+        let last = FileOperationStore::new(&path)
+            .recover()
+            .unwrap()
+            .unwrap()
+            .generation;
+        assert!(wins >= 40, "each round has a winner, got {wins}");
+        assert_eq!(last, wins, "two writers published from one generation");
+        remove_store_files(&path);
     }
 }

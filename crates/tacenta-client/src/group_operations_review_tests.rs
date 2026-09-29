@@ -631,7 +631,7 @@ fn k_k10_k11_snapshot_recovery_refuses_an_unknown_version_and_trailing_bytes() {
         FileOperationStore::new(&path).recover().is_err(),
         "trailing bytes accepted"
     );
-    let _ = std::fs::remove_file(path);
+    crate::operation_store::remove_store_files(&path);
 }
 
 // ---- the bounds of the snapshot, as literals (0133) -----------------------

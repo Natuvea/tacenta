@@ -155,6 +155,6 @@ async fn group_scale_probe() {
              commit_median_micros={}",
             commit_micros[2]
         );
-        let _ = std::fs::remove_file(&path);
+        crate::operation_store::remove_store_files(&path);
     }
 }

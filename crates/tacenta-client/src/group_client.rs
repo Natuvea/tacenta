@@ -1,4 +1,4 @@
-//! The experimental bounded group coordinator (decisions 0131, 0132, 0134).
+//! The experimental bounded group coordinator (decisions 0131, 0132, 0134, 0143).
 //!
 //! **Experimental.** This is the profile of the bounded group experiment: at
 //! most eight members, one device each, one authority, one group per client.
@@ -19,7 +19,16 @@
 //!   (0132). A restart from the snapshot cannot rewind the ratchet.
 //! - **A latch.** A write that did not commit freezes the coordinator until
 //!   [`recover`](GroupClient::recover) reloads the durable snapshot and resets
-//!   the client's provider state to it (0134).
+//!   the client's provider state to it (0134). A `recover` that fails leaves it
+//!   frozen (0143).
+//!
+//! **One writer per store.** The snapshot is the durable root only while one
+//! coordinator writes it. [`open`](GroupClient::open) refuses a client whose
+//! pairwise state is not the snapshot's, and the store handle refuses to
+//! publish over a snapshot the coordinator has not seen (0143), so a second
+//! coordinator on the same store freezes instead of encrypting at a position
+//! the first has used. That is a fence, not a supported configuration: run one
+//! coordinator per store.
 //!
 //! The bytes of every record here are product-owned and have no vectors yet;
 //! see the review's CR-12.
@@ -63,8 +72,10 @@ pub enum GroupError {
     /// The underlying client failed (transport, provider, directory).
     Client(Error),
     /// A write did not commit, or an operation failed after it had consumed
-    /// pairwise state. Nothing was published or sent after that point. Call
-    /// [`recover`](GroupClient::recover) before anything else (0134).
+    /// pairwise state, or the store holds a snapshot this coordinator has not
+    /// seen (another writer, 0143). Nothing was published or sent after that
+    /// point. Call [`recover`](GroupClient::recover) before anything else
+    /// (0134).
     Frozen,
     /// The call was refused by policy before any pairwise operation: nothing
     /// durable changed.
@@ -76,6 +87,11 @@ pub enum GroupError {
     NoGroup,
     /// The store could not be read, or its snapshot does not fit this client.
     Recovery,
+    /// The client is of the identity the snapshot belongs to, but its pairwise
+    /// state is not the snapshot's: it is behind (an older backup) or ahead
+    /// (messages were sent or received through it since). Connect the client
+    /// from [`recovered_provider_state`] (0143).
+    StateMismatch,
 }
 
 impl std::fmt::Display for GroupError {
@@ -87,6 +103,10 @@ impl std::fmt::Display for GroupError {
             GroupError::Transport => write!(f, "transient transport or relay refusal"),
             GroupError::NoGroup => write!(f, "no group is attached to this coordinator"),
             GroupError::Recovery => write!(f, "the operation store could not be recovered"),
+            GroupError::StateMismatch => write!(
+                f,
+                "the client's pairwise state is not the operation snapshot's"
+            ),
         }
     }
 }
@@ -284,10 +304,13 @@ pub struct GroupClient<P: CryptoProvider = DefaultProvider> {
 impl<P: CryptoProvider> GroupClient<P> {
     /// Takes ownership of `client` and `store`. The client must have been
     /// connected from [`recovered_provider_state`] when the store holds a
-    /// snapshot (`connect_with_state`): its identity is checked against the
-    /// snapshot's. A store that holds nothing gets its first snapshot here,
-    /// carrying the client's provider state, so the durable root exists before
-    /// the first operation (0132).
+    /// snapshot (`connect_with_state`): its exported state must equal the
+    /// snapshot's (0143). Another identity, or a snapshot with no provider
+    /// state, is [`GroupError::Recovery`]; the same identity in another state,
+    /// older or newer, is [`GroupError::StateMismatch`]. Nothing is adopted or
+    /// overwritten on a refusal. A store that holds nothing gets its first
+    /// snapshot here, carrying the client's provider state, so the durable root
+    /// exists before the first operation (0132).
     pub async fn open(
         client: Client<P>,
         store: impl OperationStore + Send + 'static,
@@ -295,10 +318,11 @@ impl<P: CryptoProvider> GroupClient<P> {
         let mut store = DurableStore::new(store);
         let snapshot = match store.recover().map_err(|_| GroupError::Recovery)? {
             Some(snapshot) => {
-                if !snapshot.provider_state.is_empty()
-                    && !client.state_has_this_identity(&snapshot.provider_state)
-                {
+                if !client.state_has_this_identity(&snapshot.provider_state) {
                     return Err(GroupError::Recovery);
+                }
+                if client.export_state().await? != snapshot.provider_state {
+                    return Err(GroupError::StateMismatch);
                 }
                 snapshot
             }
@@ -491,8 +515,13 @@ impl<P: CryptoProvider> GroupClient<P> {
     /// Reloads the durable snapshot, resets the client's provider state to it
     /// and rebuilds the group state, then lifts the latch (0134). Whatever a
     /// frozen operation held in memory is discarded; a ciphertext it produced
-    /// was never recorded and never sent.
+    /// was never recorded and never sent. The coordinator stays frozen until
+    /// every step has succeeded: a `recover` that fails, for any reason,
+    /// leaves it frozen, and the call can be repeated (0143).
     pub async fn recover(&mut self) -> Result<(), GroupError> {
+        // Reading the store lifts its own latch; this coordinator's freeze must
+        // outlive that until the state has been restored and rebuilt.
+        self.poisoned = true;
         let snapshot = self
             .store
             .recover()
@@ -502,10 +531,18 @@ impl<P: CryptoProvider> GroupClient<P> {
             .restore_state_in_place(&snapshot.provider_state)
             .await?;
         self.snapshot = snapshot;
-        self.poisoned = false;
-        if let Some(state) = self.group.take() {
-            self.attach(state.group_id, state.authority, state.source)?;
+        // `attach` replaces the group state only when the rebuild succeeds.
+        let parts = self.group.as_ref().map(|state| {
+            (
+                state.group_id,
+                state.authority.clone(),
+                state.source.clone(),
+            )
+        });
+        if let Some((group_id, authority, source)) = parts {
+            self.attach(group_id, authority, source)?;
         }
+        self.poisoned = false;
         Ok(())
     }
 

@@ -4179,11 +4179,14 @@ impl<P: CryptoProvider> Client<P> {
     /// body under a secure-storage key). Keeping one builder means the two paths
     /// cannot drift in what they carry.
     async fn export_body_v3(&self) -> Result<Vec<u8>> {
-        let peers: Vec<Address> = self
+        // The sessions live in a set; the export must be a function of the
+        // state, so the peers go out in the order of their address (0143).
+        let mut peers: Vec<Address> = self
             .sessions
             .iter()
             .filter_map(|addr| peer_address(addr).ok())
             .collect();
+        peers.sort_by(|left, right| (&left.user, left.device).cmp(&(&right.user, right.device)));
         let identity = self.party.export_identity();
         let sessions = self.party.export_sessions(&peers).await.map_err(crypto)?;
         // Empty when `publish_bundle` was never called; the section is still

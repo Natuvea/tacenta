@@ -20,6 +20,8 @@ struct StoreState {
     /// Whether an `Unknown` write reaches durable storage.
     unknown_lands: bool,
     attempted: Vec<u64>,
+    /// How many `Unknown` writes reached durable storage.
+    landed_unknown: u32,
 }
 
 /// An in-memory store that a test can keep a handle to across a "crash".
@@ -52,6 +54,9 @@ impl OperationStore for SharedStore {
             CommitOutcome::Unknown => state.unknown_lands,
             CommitOutcome::Failed => false,
         };
+        if outcome == CommitOutcome::Unknown && lands {
+            state.landed_unknown += 1;
+        }
         if lands {
             state.snapshot = Some(snapshot.clone());
         }
@@ -153,6 +158,7 @@ async fn joined(
 }
 
 mod boundaries;
+mod durable_root;
 mod scale_probe;
 
 #[tokio::test]
