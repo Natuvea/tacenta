@@ -762,3 +762,7 @@ mod tests {
         remove_store_files(&path);
     }
 }
+
+#[cfg(test)]
+#[path = "operation_store_guard_tests.rs"]
+mod guard_tests;

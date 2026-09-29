@@ -701,3 +701,7 @@ mod tests {
         assert_eq!(Outbox::decode_state(&claim), Err(GroupError::Malformed));
     }
 }
+
+#[cfg(test)]
+#[path = "group_control_outbox_guard_tests.rs"]
+mod guard_tests;

@@ -2811,6 +2811,10 @@ fn decode_roster_view_record(record: &[u8]) -> Result<&[u8], GroupOperationError
 mod review_tests;
 
 #[cfg(test)]
+#[path = "group_operations_guard_tests.rs"]
+mod guard_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         ControlOutbox, GroupLiveError, GroupOperationError, GroupPayloadDisposition,
