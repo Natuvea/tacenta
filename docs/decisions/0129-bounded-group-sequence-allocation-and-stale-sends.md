@@ -1,6 +1,6 @@
 # 0129 — bounded group sequence allocation and stale sends
 
-> Amends 0095.
+> Amends 0095. Amended by 0135.
 
 ## Decision
 
@@ -51,3 +51,10 @@ accepted it.
 
 Pruning of terminal sends, a multi-device profile with per-device sequences, or
 a replay window that admits out-of-order allocation.
+
+## Amendment (0135)
+
+`GroupClient::send_group` allocates with `next_sequence`; it no longer keeps its
+own copy of the rule, and its sequences start again at zero at each revision.
+The client's compaction keeps the newest send for every revision and sender, so
+the retained maximum remains the high-water mark this record requires.

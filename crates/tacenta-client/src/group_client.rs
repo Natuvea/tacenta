@@ -823,14 +823,12 @@ impl<P: CryptoProvider> GroupClient<P> {
         let view = state.view.as_ref().ok_or(GroupError::Policy)?;
         let mut routes = recipients.to_vec();
         routes.sort_by(|left, right| left.0.canonical_cmp(&right.0));
+        // The group crate allocates: one more than the highest retained sequence
+        // for this revision and sender, and zero when it retains none (0129).
         let sequence = state
             .outbox
-            .sends()
-            .iter()
-            .filter(|send| send.id.group_id == state.group_id && send.id.sender == state.local)
-            .map(|send| send.id.sequence)
-            .max()
-            .map_or(0, |highest| highest.saturating_add(1));
+            .next_sequence(view.roster().revision, &state.local)
+            .map_err(|_| GroupError::Policy)?;
         let send = LogicalSend::new(
             view.roster(),
             *view.digest(),

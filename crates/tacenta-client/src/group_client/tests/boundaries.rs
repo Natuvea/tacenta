@@ -620,6 +620,47 @@ async fn the_outbox_holds_eight_live_sends_and_a_finished_send_frees_a_slot() {
 }
 
 #[tokio::test]
+async fn sequences_come_from_the_group_crate_and_start_again_at_each_revision() {
+    let mut p = pair().await;
+    let recipients = [(p.bob_member.clone(), p.bob_route.clone())];
+    for expected in 0..2u64 {
+        let sent = p
+            .alice
+            .send_group(&recipients, b"revision 1".to_vec())
+            .await
+            .unwrap();
+        assert_eq!((sent.id.revision, sent.id.sequence), (1, expected));
+    }
+    // A roster change with the same members is a new revision. Sequences are
+    // per revision (0095, 0129), so the first send at revision 2 is sequence 0,
+    // not 2.
+    let r2 = p
+        .alice
+        .next_roster(vec![p.alice_member.clone(), p.bob_member.clone()])
+        .unwrap();
+    p.alice
+        .install_roster(r2, &recipients, None, 0)
+        .await
+        .unwrap();
+    let sent = p
+        .alice
+        .send_group(&recipients, b"revision 2".to_vec())
+        .await
+        .unwrap();
+    assert_eq!((sent.id.revision, sent.id.sequence), (2, 0));
+    let inbound = p.bob.receive(0).await.unwrap();
+    let payloads: Vec<&[u8]> = inbound
+        .events()
+        .iter()
+        .map(|event| event.payload.as_slice())
+        .collect();
+    assert_eq!(
+        payloads,
+        [&b"revision 1"[..], &b"revision 1"[..], &b"revision 2"[..]]
+    );
+}
+
+#[tokio::test]
 async fn the_outbox_keeps_sixteen_finished_sends_and_the_newest_sequence() {
     let mut p = pair().await;
     let recipients = [(p.bob_member.clone(), p.bob_route.clone())];

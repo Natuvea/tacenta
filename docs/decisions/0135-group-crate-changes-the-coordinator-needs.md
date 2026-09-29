@@ -1,9 +1,9 @@
 # 0135 — group crate changes the coordinator needs
 
-> Amends 0100, 0106, 0109, 0127, 0131, 0133 and 0134.
+> Amends 0100, 0106, 0109, 0127, 0129, 0131, 0133 and 0134.
 
 The client's coordinator (`GroupClient`, 0131) shipped with five workarounds
-for behaviour of `tacenta-group`. The group crate and the client were changed
+for behaviour of `tacenta-group`, and with its own copy of the sequence rule. The group crate and the client were changed
 by separate lanes, so each workaround was recorded as "needs a group-crate
 change". This record makes the five changes together, so the workarounds go.
 
@@ -66,6 +66,13 @@ change". This record makes the five changes together, so the workarounds go.
    there is no dedup history to keep; the counter is the state the inert
    stand-in lost.)
 
+6. **The client allocates sequences with `GroupOutbox::next_sequence`.**
+   `GroupClient::send_group` computed the highest retained sequence itself,
+   across every revision. It now asks the outbox, so the rule of 0129 has one
+   owner and a sequence starts again at zero at each revision, as 0095 says.
+   Compaction keeps the newest send for every revision and sender, so the
+   retained maximum stays the high-water mark that 0129 requires.
+
 ## Considered
 
 - Keep the final attempt at `exhausted_unknown` and document it. That was the
@@ -93,9 +100,12 @@ change". This record makes the five changes together, so the workarounds go.
    state, so items 1 and 2 are not modelled; item 3 has no model counterpart
    either. That is open and stated in `docs/claims.md`.
 3. **Can the security claim be reproduced?** Tests in
-   `crates/tacenta-group/tests/coordinator_needs.rs` and the client's
-   `group_client::tests`; each fails when its guard is removed
-   (listed in the integration report).
+   `crates/tacenta-group/tests/coordinator_needs.rs` (the five items),
+   `crates/tacenta-client/src/tests/review_live.rs` (the final attempt in both
+   outboxes) and `group_client::tests` (an invitee joining at a later revision,
+   the ordering of `next_roster`, a removed member restarting with its own
+   receiver). `tooling/run-group-chat-demo.sh` runs them and fails if one is
+   renamed or removed.
 4. **Does it preserve wire compatibility with a named profile?** Yes. No record
    layout changes: a `TCGA` record for a final attempt has the bytes it always
    had; older code refused to replay it, and nothing was released.
