@@ -20,6 +20,18 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
 
+  # The lifecycle carve-out is a product dependency change.  Keep a native
+  # Windows workspace test in the pull-request matrix so Phase 0 does not rely
+  # on Linux-only facade and dependency evidence.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: cargo test --locked --workspace
+
   checks:
     runs-on: ubuntu-latest
     steps:
