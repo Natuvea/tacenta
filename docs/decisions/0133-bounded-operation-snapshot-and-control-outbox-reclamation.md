@@ -1,6 +1,6 @@
 # 0133 — bounded operation snapshot and control-outbox reclamation
 
-Amends 0099, 0103, 0107, 0113, 0122 and 0124.
+Amends 0099, 0103, 0107, 0113, 0122 and 0124. Amended by 0135 and 0144.
 
 ## Decision
 
@@ -33,7 +33,9 @@ for duplicate, deferred and refused dispositions it carries the commitment and
 the disposition and no context bytes. The receiver's own bounded state
 (`application_state`, 0113 and 0114) remains the authority for deduplication
 and deferral; the `inbox` and `dedup` collections are audit records, and no
-recovery reads them.
+recovery reads them. (Since 0144 the delivery path reads the accepted contexts
+of `inbox` to redeliver events the caller has not acknowledged, and the record
+of a delivered event is rewritten without its context.)
 
 The application outbox transcript is recovered by the group crate with the
 latest cancellation passed in (0135): a send that cancellation ends terminal

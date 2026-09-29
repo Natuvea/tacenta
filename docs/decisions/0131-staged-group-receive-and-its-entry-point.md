@@ -1,7 +1,7 @@
 # 0131 — staged group receive and its entry point
 
 Amends 0096, 0098, 0099 and 0107, whose text described an acknowledgement
-order the live client did not follow. Amended by 0135 and 0141.
+order the live client did not follow. Amended by 0135, 0141 and 0144.
 
 ## Decision
 
@@ -65,19 +65,23 @@ bootstrap is recorded only from the pinned authority.
   `join_group` after a restart uses it: the stable event counter survives, so a
   member that is readmitted continues its event IDs. Before 0135 the client
   substituted an inert receiver for such a member, which restarted the counter.
-- The delivery cursor of the snapshot is written by nobody. An event returned by
-  `receive` is committed before it is returned, but a crash between the commit
-  and the caller's use of the event does not redeliver it: the relay redelivers
-  the item, the durable provider state has already consumed its key, and the
-  decrypt is refused. Redelivery of committed but unconsumed events (the
-  GC-06 event-consumption boundary) is open, and so is the same window for a
-  direct message (0132).
+- *Superseded by 0144.* When this record was written the delivery cursor was
+  written by nobody, and an event committed by `receive` but not yet used by the
+  caller (a crash, a cancelled call, a failed acknowledgement, an `unknown`
+  write that landed) was lost: the relay redelivers the item, the durable
+  provider state has already consumed its key, and the decrypt is refused.
+  Since 0144 a committed group event is redelivered with its event ID until the
+  caller has acknowledged it, from the context bytes the `inbox` record holds.
+  The same window still exists for a direct message (0132): its plaintext is
+  not kept.
 - If the cumulative acknowledgement itself fails (a transport error after every
   item of the prefix committed), `receive` returns that error and the events of
-  that call are not returned to the caller. Nothing is lost durably: the relay
-  redelivers the unacknowledged items, whose keys the durable state has
-  consumed, so they are dropped and acknowledged by the next call. It is the
-  same at-most-once window as the one above.
+  that call are not returned to the caller. The relay redelivers the
+  unacknowledged items, whose keys the durable state has consumed, so they are
+  dropped and acknowledged by the next call. The dispositions and the accepted
+  group events are durable and are returned by the next call (0144); a direct
+  message of that call is lost, as above. (This record used to say "nothing is
+  lost durably" here, which described the state and not the events.)
 - The envelope `kind` is a routing label, not an authenticated field (see the
   amendment to 0116).
 - Expiry is evaluated at the explicit logical time the caller passes; there is
