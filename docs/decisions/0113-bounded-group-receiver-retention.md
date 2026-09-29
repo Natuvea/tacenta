@@ -1,9 +1,9 @@
 # 0113 — bounded group receiver retention
 
-> Scope: the bound applies to the state a `GroupReceiver` holds and encodes.
-> The combined operation snapshot also keeps every received context in its
-> `dedup` list (decision 0099), which this record does not bound.
-> <!-- TODO(client-fixes): update once the snapshot lists are bounded. -->
+> Scope: the bound applies to the state a `GroupReceiver` holds and encodes. The
+> combined operation snapshot keeps its own audit lists, bounded separately by
+> 0133 (`inbox` 64 records, `dedup` 512 commitments); neither is read by
+> recovery.
 
 ## Decision
 

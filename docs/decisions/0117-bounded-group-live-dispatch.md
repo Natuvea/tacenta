@@ -1,11 +1,10 @@
 # 0117 — bounded group live dispatch
 
-> Implementation status at 75c9a20 (2026-09-29): the freeze is not latched.
-> After an unknown write the same operation can be called again and encrypts
-> again; the recovery this record requires is a rule for the caller, not
-> something the coordinator enforces.
-> <!-- TODO(client-fixes): drop this note once a frozen operation refuses
-> further work until its durable generation is recovered. -->
+> Status (2026-09-29, after 0134): the freeze is a latch for the store that
+> `GroupClient::open` wraps. After a write that is not `committed`, every later
+> preparation, dispatch and receive returns `frozen` before it encrypts or sends,
+> until `recover` has read the durable generation back. The free functions of
+> `group_operations` latch only when the store handed to them does.
 
 ## Decision
 

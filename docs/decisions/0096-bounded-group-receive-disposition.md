@@ -1,11 +1,10 @@
 # 0096 — bounded group receive disposition
 
-> Implementation status at 75c9a20 (2026-09-29): the live client acknowledges
-> the fetched prefix before any group disposition is committed, and the
-> coordinator that would commit one is called only by tests. This record states
-> the ordering the design requires, not the ordering the client has today.
-> <!-- TODO(client-fixes): drop this note once receive is staged and the
-> acknowledgement waits for the committed disposition. -->
+> Status (2026-09-29, after 0131): through `GroupClient` the relay
+> acknowledgement waits for each item's committed disposition. The plain
+> `Client::receive`, `drain` and `inbound` still acknowledge the fetched prefix
+> first, so group traffic that arrives through them has no disposition. That is
+> correct for direct messages, and no SDK head exposes `GroupClient`.
 
 ## Decision
 

@@ -1,12 +1,9 @@
 # 0099 — bounded group receive commit
 
-> Implementation status at 75c9a20 (2026-09-29): the coordinator described
-> here is not on the live receive path; tests call it after `receive` has
-> returned and the relay has already dropped the message. Its snapshot lists
-> (`inbox`, `dedup`) gain an entry on every call, rejections and duplicates
-> included; the bound in 0113 applies to `GroupReceiver`, not to them.
-> <!-- TODO(client-fixes): drop this note once receive is staged and the
-> snapshot lists are bounded. -->
+> Status (2026-09-29, after 0131 and 0133): the coordinator described here is
+> what `GroupClient::receive` runs, per item and before the acknowledgement. The
+> snapshot's `inbox` (64 records) and `dedup` (512 commitments) are bounded
+> (0133). The plain `Client::receive` does not call it.
 
 ## Decision
 

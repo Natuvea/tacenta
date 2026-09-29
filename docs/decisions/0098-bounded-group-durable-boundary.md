@@ -1,12 +1,14 @@
 # 0098 — bounded group durable boundary
 
-> Implementation status at 75c9a20 (2026-09-29): the acknowledgement rule below
-> is not yet true of the live client, which acknowledges the fetched prefix
-> first. Direct messages advance the same pairwise session as group sends but
-> write nothing to the combined snapshot, so restoring the snapshot after an
-> interleaved direct message rewinds that session.
-> <!-- TODO(client-fixes): drop this note once receive is staged and direct
-> and group sends share one durable root. -->
+> Status (2026-09-29, after 0131 and 0132): the acknowledgement rule below is
+> true of a client owned by `GroupClient`, which commits each item's disposition
+> before it acknowledges, and which writes every pairwise operation through to
+> the snapshot (0132), so restoring the snapshot does not rewind a session. It
+> is not true of the plain `Client::receive`, `drain` and `inbound`, which
+> acknowledge first and write nothing to a snapshot. An event returned by
+> `GroupClient::receive` is committed before it is returned, but a crash between
+> that commit and the caller's use of it is not redelivered, and a failed
+> acknowledgement drops that call's events (0131).
 
 ## Decision
 

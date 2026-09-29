@@ -1,11 +1,11 @@
 # 0107 — bounded group provider binding
 
-> Implementation status at 75c9a20 (2026-09-29): the live receive path decrypts
-> with `party.decrypt`, which discards the provider outcome, so nothing outside
-> tests derives a member from it. The tests pass the authenticated identity and
-> the provider's state effect to the coordinator by hand.
-> <!-- TODO(client-fixes): drop this note once the receive path calls
-> `decrypt_with_outcome` and feeds the coordinator from it. -->
+> Status (2026-09-29, after 0131): `GroupClient::receive` decrypts with
+> `decrypt_with_outcome` and takes the authenticated peer and the state effect
+> from it; no caller supplies either. The plain `Client::receive` still decrypts
+> with `party.decrypt`, which discards the outcome. `GroupReceiveInput` is not
+> sealed: its fields are `pub(crate)`, so review, not the compiler, keeps other
+> code from building one by hand.
 
 ## Decision
 
