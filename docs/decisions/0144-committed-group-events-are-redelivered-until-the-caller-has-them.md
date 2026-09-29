@@ -1,6 +1,6 @@
 # 0144 — committed group events are redelivered, with their event ID, until the caller has them
 
-> Amends 0131 and 0133.
+> Amends 0131 and 0133. Amended by 0148 (points 2 and 5).
 
 `GroupClient::receive` commits an item's disposition and the provider state,
 acknowledges the committed prefix to the relay, and only then hands the events
@@ -28,7 +28,9 @@ stable ID" was not met, and 0131 and `docs/claims.md` said so.
    the error and its events were never seen), a `receive` future that was
    dropped after its commits, a process that stopped between the commit and the
    caller's use of the event, and an `Unknown` write that landed (the item is
-   committed, the coordinator froze before it could be returned). `receive_next`
+   committed, the coordinator froze before it could be returned). (As first
+   written, the call after a dropped future failed on the relay connection
+   before it could return anything; 0148 fixes that.) `receive_next`
    treats a redelivered event as mail.
 
 3. **What counts as delivered.** The events a `receive` call returned with `Ok`
@@ -49,7 +51,8 @@ stable ID" was not met, and 0131 and `docs/claims.md` said so.
    stays until the caller acknowledges it, and the retention that redelivery
    needs is no longer than that.
 
-5. **A gap is reported, not silent.** `Inbound.lost_events` is the number of
+5. **A gap is reported, not silent.** (0148: reported by one call and cleared
+   by the next, not on every call for ever.) `Inbound.lost_events` is the number of
    events the receiver has issued at or above the cursor that are no longer
    retained (`GroupReceiver::events_issued` minus the ones the `inbox` still
    holds). Retention is the 64 newest `inbox` records, and one `receive` call now
