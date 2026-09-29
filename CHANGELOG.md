@@ -10,7 +10,7 @@ commits carry their story.
 ## Unreleased
 
 - Experimental, not wired to any client, server route or SDK surface: hosted
-  device-inventory storage and signing (decision 0127).
+  device-inventory storage and signing (decision 0140).
   - `tacenta-accounts` stores a per-account device inventory (in memory, and in
     Postgres behind the `postgres` feature with migrations 0005 and 0006),
     with exact-predecessor generations and idempotent retries.

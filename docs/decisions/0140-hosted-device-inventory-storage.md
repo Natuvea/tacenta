@@ -1,4 +1,4 @@
-# 0127 — hosted device-inventory storage
+# 0140 — hosted device-inventory storage
 
 **Status: experimental. Nothing calls it.** No server route, client, SDK
 surface (`sdk/surface.json` lists none of it) or binary uses this code. It
