@@ -43,7 +43,8 @@ that is now installed. That made the outcome depend on the order of the list.
    `pending`: a control is committed and not accepted; `dispatch_pending_controls`
    sends it when it is still waiting for the relay. A recipient whose handoff is
    final also stays here and nothing sends it again: its third and final attempt
-   was not confirmed (0134; `install_roster_result_guards` covers this), or the
+   was not confirmed (0134;
+   `r091_a_control_whose_attempts_are_used_up_is_pending_not_unprepared` covers this), or the
    control was cancelled. The cancelled arm exists in the code and no test reaches
    it through `install_roster`: the revocation of an invitation is what cancels a
    handoff, and it also ends that recipient's entitlement to be told. `unprepared` (new): nothing was

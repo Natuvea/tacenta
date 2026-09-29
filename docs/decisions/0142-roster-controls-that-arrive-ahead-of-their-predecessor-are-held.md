@@ -148,7 +148,7 @@ group again. Three ordinary sequences reproduced it.
    batch, the retried older control, the admitted member's first message), the
    window and the capacity, a restart with a held control, a control that is not
    from the authority, and the crash-between-commits recovery
-   (`drain_faults_and_receiver_schedule`, 108 runs); the group crate's
+   (`a_fault_at_every_commit_of_a_reverse_order_drain_still_converges`, 108 runs); the group crate's
    `tests/limits.rs` and unit tests pin the two-slot bound for unlisted senders
    and the codec.
 4. **Does it preserve wire compatibility with a named profile?** Yes. No wire
