@@ -1,6 +1,6 @@
 # 0143 — the coordinator opens only its own state, fences a second writer, and keeps the freeze until recovery succeeds
 
-> Amends 0091, 0132 and 0134.
+> Amends 0091, 0132 and 0134. Amended by 0147 (`recover` and a store that went back).
 
 `GroupClient` (0131) makes the operation snapshot the only durable copy of the
 client's pairwise state (0132) and latches after a write that did not commit
@@ -43,7 +43,10 @@ that no snapshot recorded. Each was reproduced against the integrated branch.
    last recovered or published and commits with `commit_after`; a refusal
    latches like any other failed write, so the coordinator is frozen and its
    `recover` reads the other writer's snapshot and resets the client's
-   pairwise state to it. Nothing was sent for the refused commit: every
+   pairwise state to it. If the snapshot it reads is older than one this
+   coordinator committed (a backup put back), `recover` refuses it (0147); as
+   first written this point sent every case, a restored backup included, to
+   `recover`, which adopted the older state. Nothing was sent for the refused commit: every
    pairwise operation commits before its ciphertext leaves the process
    (0132).
 
@@ -92,7 +95,9 @@ that no snapshot recorded. Each was reproduced against the integrated branch.
   reconnect, not data.
 - The fence does not authenticate the store. A party that can write the store
   can write any generation and any state (the snapshot is unsealed and has no
-  rollback detection, 0078 is not attached).
+  rollback detection, 0078 is not attached). Since 0147 a coordinator refuses to
+  recover from a store behind what it committed itself; a new coordinator over
+  the same store has no such memory.
 - `recover` on a store that holds no snapshot is a `Recovery` error and leaves
   the coordinator frozen.
 
