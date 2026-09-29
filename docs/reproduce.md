@@ -190,7 +190,7 @@ for the eighth) and then stays at its ceiling.
 
 That is 4.7 times the snapshot and twice the time of the first send. The probe
 process's maximum resident set was 29 to 33 MB and its user CPU 4.9 s. The
-whole demo in one process, which now runs 323 tests: 61 s elapsed (159 s CPU,
+whole demo in one process, which ran 323 tests at that revision (379 now): 61 s elapsed (159 s CPU,
 813 MB) cold and 43 s (113 s CPU, 95 MB) warm. Nothing was measured at 32, 128 or
 512 members, with the outbox holding its eight live sends, or on another host.
 
