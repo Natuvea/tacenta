@@ -152,6 +152,8 @@ async fn joined(
     (member, store)
 }
 
+mod boundaries;
+
 #[tokio::test]
 async fn a_crash_between_receive_and_commit_redelivers_the_group_message() {
     let (directory, relay) = start_server().await;
