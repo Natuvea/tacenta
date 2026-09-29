@@ -148,7 +148,7 @@ step "revocation" 1 \
 echo "group client: staged receive, write-through direct messages, latch, bounds, boundaries"
 # The measurement probe in the same module is ignored and is skipped here; the
 # measurement script runs it.
-step "GroupClient live traces and boundary traces" 33 \
+step "GroupClient live traces and boundary traces" 34 \
   cargo test --locked -p tacenta-client --lib group_client::tests -- --skip group_scale_probe
 step "coordinator functions: bounds, latch, validate before encrypt, unknown-write sites" 37 \
   cargo test --locked -p tacenta-client --lib group_operations::review_tests
