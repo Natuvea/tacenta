@@ -495,7 +495,11 @@ not in our proofs' dependency cone.
   (wasm): the client compiles to WebAssembly (`crates/tacenta-wasm`) over
   the WebSocket carriage the gateway serves, and `sdk/typescript` is the
   TypeScript head on it, with an end-to-end test in Node run by the
-  release pipeline (decision 0090); not yet published to a registry.
+  release pipeline (decision 0090); not yet published to a registry. That test
+  does not read `Message.kind`, the envelope class this record added to the
+  TypeScript `Message` (decision 0116): that change was type-checked only as a
+  fragment against a hand-written stub of the WebAssembly declarations, and was
+  neither built against the generated bindings nor run.
   A packaged xcframework / `.aar`, async export, and an example app are
   downstream work.
 - **Bounded group experiment** (`tacenta-group`, and `GroupClient` with the
@@ -518,14 +522,19 @@ not in our proofs' dependency cone.
   receive that commits each item's disposition together with the provider state
   before it acknowledges the relay prefix, takes the authenticated peer and the
   state effect from the provider's outcome, and offers a committed group event
-  again, with its event ID, until the caller has acknowledged it (0144);
+  again, with its event ID, until the caller has acknowledged it (the next
+  `receive`, or `acknowledge_delivery`, acknowledges what the previous call
+  handed over) and reports an event it cannot offer once (0144, 0148), with a
+  relay connection that a dropped `receive` future leaves in step (0148);
   direct messages written through to the same snapshot; a latch on any write that
   is not `committed`; a refusal to `open` a client whose state is not the
-  snapshot's and to commit over a snapshot the coordinator has not seen (0143);
-  validation before encryption; a roster install that tells the member it removes
-  wherever that member is listed (0141); roster controls that arrive ahead of
-  their predecessor, or before the coordinator has a roster, kept and applied in
-  order (0142); and boundary traces: a member removed while a message is in
+  snapshot's, to commit over a snapshot the coordinator has not seen (0143) and
+  to `recover` from a store that holds an older snapshot than the coordinator
+  committed (0147); validation before encryption; a roster install that tells
+  the member it removes wherever that member is listed, whatever a registered
+  stranger has sent the authority first (0141, 0145); roster controls that arrive
+  ahead of their predecessor, or before the coordinator has a roster, kept and
+  applied in order within the bounds below (0142, 0146); and boundary traces: a member removed while a message is in
   flight (authority and recipient side), replay of a delivered ciphertext before
   and after a restore, the dedup window, the future window and queue, the outbox
   and invitation-book caps, and a ninth member refused on the roster, invitation
@@ -533,7 +542,7 @@ not in our proofs' dependency cone.
   The limits are pinned by literal numbers at both edges: eight members, 1,024
   payload bytes, the 64-sequence dedup window, the two-revision future window,
   four deferred contexts (two of them open to senders the roster does not list
-  yet) and four held roster controls, eight live and sixteen retained sends and
+  yet, one per identity) and four held roster controls, eight live and sixteen retained sends and
   control handoffs, thirty-two invitations, thirty-two relay items per receive
   call, and the snapshot's 64 inbox, 512 dedup and 64 control records. **Four
   bounds sit above every valid value and are pinned by their constant and by the
@@ -544,13 +553,22 @@ not in our proofs' dependency cone.
   A repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
   three-client invitation, restart, admission, removal, revocation and
   direct-message trace through the in-process directory, relay and crypto
-  provider, and runs the suites above. **What a green run establishes** is that
-  the tests it names exist, ran and passed, with none ignored, failed or marked
-  `should_panic`, and that their names and counts equal the checked-in manifest
-  (`tooling/group-chat-demo-tests.txt`); a rename, a deletion or an addition fails
-  it. It does **not** establish that a test still checks what its name says: a
-  body that returns early, asserts `true`, asserts in a task nobody joins, or is
-  empty, under a listed name, passes. Its live traces keep operation state in an
+  provider, and runs the suites above. **What a green run establishes**, against
+  an unedited manifest, is that the tests it names exist, ran and passed, with
+  none ignored, failed or marked `should_panic`, that their names and counts equal
+  the checked-in manifest (`tooling/group-chat-demo-tests.txt`), and that no test
+  is claimed by two steps. It does **not** establish that a test still checks what
+  its name says (a body that returns early, asserts `true`, asserts in a task or a
+  thread nobody joins, catches its own panic, returns under
+  `cfg!(debug_assertions)`, or is empty, under a listed name, passes); it does
+  not detect a change made together with the manifest edit that lists it (a
+  rename, a deletion, or a regression whose only killer test is removed from the
+  source and the manifest in one commit; a step removed from both the script and
+  the manifest); it does not know whether the output is libtest's or the binary is
+  built from the tree (forged output, a test target with `harness = false`, a
+  `cargo` earlier on PATH, a stale binary all pass); and it fails closed under load
+  when libtest prints its notice for a test that has run more than 60 seconds.
+  Its live traces keep operation state in an
   in-memory store whose writes always succeed; the native file-backed store is
   exercised by one step and by unit tests, and it is neither sealed nor
   protected against rollback, and it reports every write error as `failed` and
@@ -575,20 +593,42 @@ not in our proofs' dependency cone.
     application and an extension, a restored backup) would encrypt at a ratchet
     position the first has used; since 0143 `open` refuses a client whose state
     is not the snapshot's and a commit is refused when the store holds a snapshot
-    the coordinator has not seen, so the second writer freezes instead. That is a
-    fence, not a supported configuration: the default check is read-then-write,
-    the native store's lock is advisory and local, and a party that can write the
-    store can write anything (it is unsealed and has no rollback detection).
+    the coordinator has not seen, so the second writer's commit is refused, it
+    freezes and it does not send what it encrypted (it can still encrypt in memory
+    at a position the first has used before that commit). A store put back to an
+    older snapshot under a running coordinator is fenced the same way, and since
+    0147 `recover` refuses to adopt the older snapshot (`GroupError::Rollback`) and
+    stays frozen; the way on is a new coordinator over state the caller vouches for,
+    whose peers drop what is sent at the positions they have seen. That is a fence,
+    not a supported configuration: the default check is read-then-write, the native
+    store's lock is advisory and local, a new coordinator has no memory of what
+    the previous one committed, so rollback goes undetected across coordinators, and
+    a party that can write the store can write anything (it is unsealed).
   - **No catch-up.** A roster control that never arrives (lost by the relay,
     dropped with an offline device's queue, abandoned by the authority) leaves a
     member behind: nothing asks for it again and the authority records relay
     acceptance, not receipt. A control is applied at once when it is one revision
     ahead of the member's roster, held when it is two to five ahead, and refused
-    when it is more than five ahead. A message to a pending invitee that beats the
-    roster that admits it is lost (the receiver of a non-member holds nothing).
+    when it is more than five ahead; at most four are held, one per revision. A
+    coordinator with no roster view keeps the four lowest revisions it is sent and
+    reaches at most four revisions past the roster it joins from (0146). A message
+    to a pending invitee that beats the roster that admits it is lost (the receiver
+    of a non-member holds nothing).
     Controls that arrive ahead of their predecessor are kept (0142), so a
     reordering, a retry order or a batch that holds the bootstrap and a successor
-    no longer strands a member; the limit is delivery, not order.
+    is followed as far as those bounds allow; past them, or when a control never
+    arrives, the member is stranded, so the limits are delivery and distance as well
+    as order.
+  - **What a peer that is not in the group can still do.** The first message of a
+    just-admitted member that reaches another member before the roster that admits
+    it is kept unless two registered strangers that know the group ID took the two
+    deferral slots open to senders the roster does not list: nothing a member has
+    before the roster arrives tells a just-admitted member from another peer, and
+    the member's second early message is refused (0146). A stranger cannot
+    stop an install from telling the member it removes (0145); it can fill the
+    control transcript, and every junk message costs a whole-snapshot rewrite.
+    A member that holds a removal it cannot apply yet still sends to the member
+    the removal removes until the predecessor arrives (0146).
   - The acknowledgement waits for the commit only through `GroupClient`. The
     plain `Client::receive`, `drain` and `inbound`, which the FFI and
     WebAssembly heads export, still acknowledge the fetched prefix before any
@@ -596,8 +636,14 @@ not in our proofs' dependency cone.
     durable.
   - **Delivery is at-least-once for group events and at-most-once for direct
     messages.** A committed group event is offered again, with the same ID, until
-    the caller acknowledges it (0144); a process that stops after it was handed
-    over and before the acknowledgement sees it again. A direct message received
+    the caller has acknowledged it: `receive` acknowledges what the previous
+    completed call handed over when it is called again, and `acknowledge_delivery`
+    does it at once (0144); a process that stops after an event was handed over and
+    before the acknowledgement sees it again. An event that was evicted from the
+    retained records before it was handed over cannot be offered again (further
+    failing calls that keep committing mail are needed): the call that finds the
+    loss reports it in `lost_events`, the next call acknowledges it, and a process
+    that stops before that reports it again (0148). A direct message received
     under `GroupClient` is committed and handed over once: a crash between the
     commit and the caller's use of it loses it, and its plaintext is not kept.
     Accepted group plaintext stays in the unsealed snapshot until the caller
@@ -605,6 +651,12 @@ not in our proofs' dependency cone.
     and sixteen retained sends.
   - Under `GroupClient` every direct send and each received direct message costs
     one whole-snapshot commit.
+  - **A dropped future.** A `receive` future that is dropped leaves the relay
+    connection in step, and one dropped while its frame was being written makes the
+    connection refuse further requests so that the client reconnects (0148). The
+    directory and account connections are not cancel-safe (a dropped lookup inside
+    `send_group` or `install_roster` can leave a response for the next call), and a
+    future dropped between a decrypt and its commit is not covered.
   - `GroupReceiveInput` is not sealed: its fields are `pub(crate)`, so review
     keeps other code from building one by hand. `join_group` takes the roster and
     authority the local application passes, and does not compare them with the
@@ -616,8 +668,9 @@ not in our proofs' dependency cone.
   - The byte layouts of the group payloads, invitation records, receiver, view,
     book, control-outbox and held-controls state and the `TCG*` transcript
     records have no specification page or byte vector. `group-v1.json` is a
-    policy trace, not a byte vector. The Lean model differs from the code in the
-    twelve ways `docs/decisions/0137` lists, the receiver, outbox and coordinator
+    policy trace, not a byte vector. The Lean model differs from the code in at
+    least the nineteen ways `docs/decisions/0137` lists (the list may be
+    incomplete), the receiver, outbox and coordinator
     mechanisms have no model counterpart, the vector replay compares only
     acceptance, revision, roster and invitation status, and the model, the
     vectors and their theorems (whose axiom sets are pinned in

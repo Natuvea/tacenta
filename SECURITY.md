@@ -61,7 +61,10 @@ rediscovering it. At the time of writing:
 - The bounded experimental group profile has the gaps its section of
   `docs/claims.md` lists, among them: a roster control that never arrives leaves
   a member behind (there is no catch-up request); the operation snapshot is
-  unsealed, has no rollback detection and assumes one writer per store; accepted
+  unsealed, has no rollback detection across coordinators (a running coordinator
+  refuses to recover from a store behind what it committed) and assumes one
+  writer per store; a registered peer that is not in the group can take the two
+  deferral slots a just-admitted member's first message needs; accepted
   group plaintext stays in that snapshot until the caller acknowledges it; a
   direct message received under `GroupClient` has an at-most-once window; and its
   Lean model, vectors and theorems have had no human review.

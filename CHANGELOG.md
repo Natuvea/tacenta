@@ -33,12 +33,20 @@ commits carry their story.
   whose state is not the snapshot's (`GroupError::StateMismatch`); the
   `OperationStore` port gains `durable_generation` and `commit_after`, and a
   coordinator's commit is refused when the store holds a snapshot it has not
-  seen; `receive` offers a committed group event again, with its event ID, until
-  `acknowledge_delivery` (`Inbound::redelivered`, `Inbound::lost_events`,
-  `GroupClient::delivery_cursor`); `install_roster` tells the member it removes
+  seen, and `recover` refuses a store that holds an older snapshot than the
+  coordinator committed (`GroupError::Rollback`); `receive` offers a committed
+  group event again, with its event ID, until the caller has acknowledged it: the
+  next `receive`, or `acknowledge_delivery`, acknowledges what the previous call
+  handed over (`Inbound::redelivered`, `Inbound::lost_events`, which the call that
+  finds a loss reports and the next call clears, `GroupClient::delivery_cursor`); `install_roster` tells the member it removes
   wherever it is listed and reports `Install::unprepared`; a roster control that
   arrives ahead of its predecessor is kept (`GroupOutcome::RosterDeferred`,
-  `GroupClient::held_roster_controls`); `GroupReceiver::events_issued` is new.
+  `GroupClient::held_roster_controls`; a coordinator with no roster view keeps
+  the four lowest revisions it is sent, and a sender the roster does not list
+  holds one deferred context per identity); `GroupReceiver::events_issued` is
+  new. `Connection::request` in `tacenta-transport` no longer answers a request
+  with the response of one whose future was dropped, and refuses further requests
+  once one was dropped half way through its frame (`BrokenPipe`).
   Client export order is now a function of the state (`export_state` writes the
   peer sessions in address order).
 
