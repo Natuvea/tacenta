@@ -1,6 +1,6 @@
 # 0132 — one durable root for pairwise state
 
-Amends 0098 ("recovery never rewinds pairwise state") and 0091.
+Amends 0098 ("recovery never rewinds pairwise state") and 0091. Amended by 0143.
 
 ## Decision
 
@@ -58,6 +58,17 @@ also a reuse of one message key for two plaintexts.
   of this record and is open.
 - The secure-store counter of 0078 is still advanced by the same calls, on the
   same fail-closed (send) and best-effort (receive) rules.
+- **One writer.** The single root is single only if one coordinator writes it.
+  A second coordinator on the same store (an application and an extension, a
+  restored backup run beside the original) encrypts at a ratchet position the
+  first has already used, and the peer loses one of the two messages
+  (reproduced: 1 of 2 received). Since 0143 the second writer's commit is
+  refused, the coordinator freezes and `recover` adopts the other writer's
+  snapshot, so the position is not reused on the wire; that is a fence, not a
+  supported configuration. `GroupClient::open` also refuses a client whose
+  state is not the snapshot's (0143). One writer per store remains a
+  precondition, stated in `docs/claims.md` and in the module documentation of
+  `group_client`.
 
 ## The five questions
 

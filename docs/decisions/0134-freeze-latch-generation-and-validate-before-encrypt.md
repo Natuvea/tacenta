@@ -1,6 +1,6 @@
 # 0134 — freeze latch, monotonic generations, validate before encrypt
 
-Amends 0091, 0098, 0106, 0117 and 0124. Amended by 0135.
+Amends 0091, 0098, 0106, 0117 and 0124. Amended by 0135 and 0143.
 
 ## Decision
 
@@ -14,7 +14,9 @@ every preparation, reservation, dispatch and receive returns `frozen` before it
 encrypts, decrypts or sends. The latch is cleared only by `recover`, which reads
 the store's durable snapshot, rebuilds every in-memory value from it, resets the
 client's provider state to the recovered `provider_state`, and only then lets
-operations resume. The in-memory provider state that a frozen operation had
+operations resume (0143: the coordinator stays frozen until every one of those
+steps has succeeded, and a store that has moved past the coordinator's last
+generation refuses its next commit). The in-memory provider state that a frozen operation had
 already advanced is discarded by that reset; the ciphertext it produced was never
 recorded and never left the process.
 
