@@ -1,5 +1,8 @@
 # 0105 — bounded group logical intent record
 
+> Bytes specified by 0149 (`spec/group-wire-formats.md`), which lists where this
+> text and the code differ (OP-1).
+
 ## Decision
 
 Before preparing any recipient ciphertext, the client durably records a

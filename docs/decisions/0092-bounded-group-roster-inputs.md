@@ -1,6 +1,7 @@
 # 0092 — bounded group roster inputs
 
-> Amended by 0136.
+> Amended by 0136. Bytes specified by 0149 (`spec/group-wire-formats.md`), which
+> lists where this text and the code differ (OP-1).
 
 ## Decision
 
