@@ -1,5 +1,7 @@
 # 0124 — bounded outbound roster control
 
+Amended by 0133, 0134, 0135 and 0141.
+
 ## Decision
 
 An authority sends a roster successor through a bounded durable control outbox.
@@ -30,10 +32,13 @@ ciphertext can lose the authenticated control boundary across a crash.
 A production group protocol may replace pairwise fan-out with signed epoch
 distribution, but must keep an explicit durable control-delivery boundary.
 
-## Amendment (0133, 0134)
+## Amendment (0133, 0134, 0141)
 
 The control outbox no longer keeps a finished handoff for the life of the
 group: at most 8 live and 16 retained terminal handoffs (0133). The
 three-attempt limit follows the group outbox exactly: the third reservation is
 the final attempt and enters `exhausted_unknown` (0106, 0134); the relay's
 acceptance of it is recorded as `relay_accepted` (0135).
+Who may receive an install is decided once, up front, against the roster being
+replaced, the successor and unexpired invitees, and the member an install removes
+is a recipient wherever it is listed (0141).

@@ -1,5 +1,7 @@
 # 0125 — bounded invitation bootstrap control
 
+Amended by 0141 (an invitation in a closed group is refused).
+
 ## Decision
 
 The first-profile group envelope gains two product-owned control records before
