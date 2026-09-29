@@ -665,9 +665,28 @@ not in our proofs' dependency cone.
     from the local snapshot, so its evidence is no longer kept. An unreachable
     route for one recipient is reported as `Frozen` and stops the fan-out for the
     recipients after it in that call.
-  - The byte layouts of the group payloads, invitation records, receiver, view,
-    book, control-outbox and held-controls state and the `TCG*` transcript
-    records have no specification page or byte vector. `group-v1.json` is a
+  - The byte layouts of the peer-exchanged group formats (the group payload and
+    its five tags, the roster preimage, the application context, the invitation
+    bootstrap, acceptance and revocation) and of the logical-send intent are
+    specified in `spec/group-wire-formats.md` (decision 0149), with byte vectors
+    in `contracts/vectors/group-wire-v1.json`. A Rust test builds the vectors
+    from the page and replays them against the codecs, and a second reader
+    written from the page alone (`tooling/group_wire_reference.py`) replays them
+    too. **Tested, not proven**: a run of 131 single-change mutants of the Rust
+    codecs (`tooling/group-mutation/wire_mutants.py`) was killed by the vector
+    replay in 127 cases, 41 of which no other test in the crate kills; of the
+    other four, three survive and are equivalent (one bound no valid value
+    reaches, and two repeated checks of the member order) and one changes only
+    the order of members with equal identities, which the wire refuses anyway.
+    The mutants were written by the author of the vectors, and 29 of them after
+    the corpus was extended to cover what the second reader's own fault run
+    missed, so they show what the corpus pins, not that nothing else is wrong.
+    The page lists eight open points where the code has no stated reason or
+    disagrees with a decision record, and says what the vectors do not pin (the
+    `lp16` length limit of a bootstrap target and the encoders' unreachable
+    bounds). The layouts of the receiver, view, book, control-outbox and
+    held-controls state, the `TCG*` transcript records and the snapshot framing
+    have no specification page or byte vector. `group-v1.json` is a
     policy trace, not a byte vector. The Lean model differs from the code in at
     least the nineteen ways `docs/decisions/0137` lists (the list may be
     incomplete), the receiver, outbox and coordinator
