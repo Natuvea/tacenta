@@ -115,9 +115,32 @@ the key handling protect, and each has a test that fails without it.
 - Callers own account-session authorization and proof of possession of the new
   key; nothing here checks either.
 
+## What was run against a real database
+
+On 2026-09-29 the accounts and server tests ran against PostgreSQL 16.2 (a
+throwaway server from the `pgserver` 0.1.4 package, in a scratch virtual
+environment, removed afterwards): the eight tests in `tests/pg.rs`, the rest of
+the `tacenta-accounts` suite with the `postgres` feature, and the server's
+`the_server_runs_accounts_on_postgres`. All passed.
+
+**Those passing runs did not show the race fix works.** With the row lock and the
+compare-and-set both removed, the two concurrency tests in `tests/pg.rs` still
+passed: each transaction is a fraction of a millisecond, so the tasks need not
+overlap. A test in `pg.rs` (`interleaving`) now forces the overlap: two
+transactions each wait, bounded, after reading the stored state until the other
+has read it. With the fix it passes. With both guards removed it fails, because
+both writes succeed and one mutation is lost. With either guard removed alone
+it still passes: the lock serialises the transactions, and the compare-and-set
+refuses the second write, so each covers the other in this scenario. Both stay,
+as two independent guards.
+
+Not shown: behaviour under `SERIALIZABLE` or `REPEATABLE READ` (the transaction
+sets `READ COMMITTED` explicitly and nothing else was tried), other Postgres
+versions, connection loss between the write and the commit, and load.
+
 ## What would reopen this
 
 Wiring a route or client to it; a second server instance; a Windows
 deployment; a specification page for the lifecycle rules; a result from the
-Postgres tests that disagrees with the model; or a retention need for retry
+Postgres tests that disagrees with the model (none so far); or a retention need for retry
 records or revoked bindings.

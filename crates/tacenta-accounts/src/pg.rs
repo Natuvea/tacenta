@@ -723,3 +723,200 @@ impl InventoryTx for PgInventoryTx<'_, '_> {
         Ok(())
     }
 }
+
+/// The lost-update race, forced on a real server.
+///
+/// `tests/pg.rs` runs mutations from many tasks, but each transaction is a
+/// fraction of a millisecond, so the tasks need not overlap and the race can
+/// go unseen. With the row lock and the compare-and-set both removed those
+/// tests still pass. This one makes the overlap certain: two transactions each
+/// wait, after reading the stored state, until the other has read it too, so
+/// both hold the same generation before either writes.
+///
+/// With the lock in place the second transaction cannot reach its read until
+/// the first commits, so the wait is bounded and expires; the first then
+/// commits and the second is refused. Without the lock and without the
+/// compare-and-set both writes succeed and one mutation is silently lost.
+///
+/// Skipped unless `TACENTA_TEST_DATABASE_URL` is set.
+#[cfg(test)]
+mod interleaving {
+    use super::*;
+    use crate::inventory::{encode_link_request, link_inventory};
+    use crate::inventory_tx::{InventoryTx, MutationError, PriorMutation, apply_mutation};
+    use crate::{DeviceInventory, InventoryError};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tacenta_core::crypto::groups::inventory::GROUP_EPOCH_V1;
+
+    /// Postgres, except that after the state is read the transaction waits
+    /// (bounded) for the other one to have read it as well.
+    struct Interposed<'a, 'c> {
+        inner: PgInventoryTx<'a, 'c>,
+        arrived: Arc<AtomicUsize>,
+    }
+
+    impl InventoryTx for Interposed<'_, '_> {
+        type Error = sqlx::Error;
+
+        async fn lock_account(
+            &mut self,
+            tenant: &TenantId,
+            username: &str,
+        ) -> Result<Option<String>, sqlx::Error> {
+            self.inner.lock_account(tenant, username).await
+        }
+
+        async fn prior_mutation(
+            &mut self,
+            tenant: &TenantId,
+            username: &str,
+            key: &[u8; 32],
+        ) -> Result<Option<PriorMutation>, sqlx::Error> {
+            self.inner.prior_mutation(tenant, username, key).await
+        }
+
+        async fn stored_state(
+            &mut self,
+            tenant: &TenantId,
+            username: &str,
+        ) -> Result<Option<Vec<u8>>, sqlx::Error> {
+            let state = self.inner.stored_state(tenant, username).await?;
+            self.arrived.fetch_add(1, Ordering::SeqCst);
+            for _ in 0..200 {
+                if self.arrived.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(state)
+        }
+
+        async fn compare_and_set_state(
+            &mut self,
+            tenant: &TenantId,
+            username: &str,
+            expected: Option<&[u8]>,
+            next: &[u8],
+        ) -> Result<bool, sqlx::Error> {
+            self.inner
+                .compare_and_set_state(tenant, username, expected, next)
+                .await
+        }
+
+        async fn record_mutation(
+            &mut self,
+            tenant: &TenantId,
+            username: &str,
+            key: &[u8; 32],
+            request: &[u8],
+            result: &[u8],
+        ) -> Result<(), sqlx::Error> {
+            self.inner
+                .record_mutation(tenant, username, key, request, result)
+                .await
+        }
+    }
+
+    async fn link_at_generation_one(
+        pool: PgPool,
+        tenant: TenantId,
+        arrived: Arc<AtomicUsize>,
+        id: u8,
+    ) -> Result<DeviceInventory, InventoryError> {
+        let binding = DeviceBinding {
+            device_id: u32::from(id),
+            identity_public_key: [id; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: None,
+        };
+        let request = encode_link_request(1, &binding);
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query("set transaction isolation level read committed")
+            .execute(&mut *tx)
+            .await
+            .expect("isolation");
+        let mut shim = Interposed {
+            inner: PgInventoryTx(&mut tx),
+            arrived,
+        };
+        let outcome = apply_mutation(
+            &mut shim,
+            &tenant,
+            "alice",
+            [id; 32],
+            &request,
+            move |handle, current| link_inventory(handle, current, 1, binding),
+        )
+        .await;
+        match outcome {
+            Ok(next) => {
+                tx.commit().await.expect("commit");
+                Ok(next)
+            }
+            Err(MutationError::Refused(refusal)) => Err(refusal),
+            Err(MutationError::Backend(error)) => panic!("backend failure: {error}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_transactions_that_both_read_generation_one_admit_exactly_one() {
+        let Ok(url) = std::env::var("TACENTA_TEST_DATABASE_URL") else {
+            eprintln!("skipping: set TACENTA_TEST_DATABASE_URL to run the Postgres tests");
+            return;
+        };
+        let store = PgAccounts::connect(&url).await.expect("connect");
+        store.migrate().await.expect("migrate");
+        store.truncate().await.expect("clean slate");
+        let (tenant, _) = store
+            .sign_up_tenant("Acme", "admin@acme.example", "correct horse")
+            .await
+            .unwrap();
+        store
+            .sign_up_user(&tenant.id, "alice", "hunter2!!")
+            .await
+            .unwrap();
+        // Generation 1 exists, so both mutations below are guarded updates.
+        let first = DeviceBinding {
+            device_id: 100,
+            identity_public_key: [100; 32],
+            capabilities: GROUP_EPOCH_V1,
+            replacement_predecessor: None,
+        };
+        store
+            .link_device_binding(&tenant.id, "alice", 0, [100; 32], first)
+            .await
+            .unwrap();
+
+        let arrived = Arc::new(AtomicUsize::new(0));
+        let a = tokio::spawn(link_at_generation_one(
+            store.pool.clone(),
+            tenant.id.clone(),
+            arrived.clone(),
+            1,
+        ));
+        let b = tokio::spawn(link_at_generation_one(
+            store.pool.clone(),
+            tenant.id.clone(),
+            arrived.clone(),
+            2,
+        ));
+        let results = [a.await.unwrap(), b.await.unwrap()];
+        let wins = results.iter().filter(|r| r.is_ok()).count();
+        let refused = results
+            .iter()
+            .filter(|r| matches!(r, Err(InventoryError::PredecessorMismatch)))
+            .count();
+        assert_eq!(wins, 1, "exactly one may take generation 2: {results:?}");
+        assert_eq!(refused, 1, "the other is refused as stale: {results:?}");
+
+        let stored = store
+            .device_inventory(&tenant.id, "alice")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.generation, 2);
+        assert_eq!(stored.active.len(), 2, "the first binding and the winner");
+    }
+}
