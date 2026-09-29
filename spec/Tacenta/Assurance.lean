@@ -3,6 +3,7 @@ import Tacenta.Accounts
 import Tacenta.RelayAuth
 import Tacenta.Ratchet
 import Tacenta.Stream
+import Tacenta.Group
 
 /-!
 # Axiom audit — machine-enforced
@@ -15,10 +16,11 @@ would add `sorryAx`) or a proof pulled in an unexpected axiom, this file — and
 the CI `spec` build — would fail.
 
 The state-machine theorems below depend on at most `propext` (propositional
-extensionality, a standard Lean axiom). The **wire** theorems additionally
-depend on `Quot.sound`, which arrives through the standard `List` and `Nat`
-libraries rather than from anything this repository writes. Both are among
-Lean's four standard axioms; neither is a soundness risk.
+extensionality, a standard Lean axiom). The **wire** theorems, and two of the
+bounded group-policy theorems, additionally depend on `Quot.sound`, which
+arrives through the standard `List` and `Nat` libraries rather than from
+anything this repository writes. Both are among Lean's four standard axioms;
+neither is a soundness risk.
 
 The one that matters is the fourth. **`sorryAx` is what this file exists to
 catch**, because a `sorry` makes a theorem prove nothing while still reading as
@@ -171,3 +173,19 @@ proved; pinning the axiom set turns that into a build failure.
 
 /-- info: 'Tacenta.Wire.Kind.toByte_ofByte?' depends on axioms: [propext] -/
 #guard_msgs in #print axioms Tacenta.Wire.Kind.toByte_ofByte?
+
+-- Bounded group policy (decision 0137): the four theorems of `Group.lean`. The
+-- model, the trace vectors it generates and these theorems have had no human
+-- review; this pins only the axioms they rest on.
+
+/-- info: 'Tacenta.Group.genesis_has_only_its_authority' does not depend on any axioms -/
+#guard_msgs in #print axioms Tacenta.Group.genesis_has_only_its_authority
+
+/-- info: 'Tacenta.Group.admission_follows_its_source' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in #print axioms Tacenta.Group.admission_follows_its_source
+
+/-- info: 'Tacenta.Group.invitation_does_not_advance_the_revision' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.invitation_does_not_advance_the_revision
+
+/-- info: 'Tacenta.Group.different_commitment_is_a_conflict' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in #print axioms Tacenta.Group.different_commitment_is_a_conflict
