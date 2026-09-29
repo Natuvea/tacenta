@@ -15,11 +15,14 @@ commits carry their story.
   `Message` values must pass it, and the WebAssembly `Message` gains a `kind`
   string. The TypeScript head does not expose `kind` yet. The class is the
   relay's outer label, not an authenticated property of the message.
-- A bounded experimental group profile (the `tacenta-group` crate and the
-  client's group-operation module: eight members, one device each, one
-  authority) is in the tree for tests and the group demo. No SDK head, the CLI
-  or the server reaches it. `docs/claims.md` states its limits and what it does
-  not yet do.
+- A bounded experimental group profile (the `tacenta-group` crate and, in
+  `tacenta-client`, the experimental `GroupClient` with its group-operation
+  modules: eight members, one device each, one authority) is in the tree for
+  tests and the group demo. `GroupClient` acknowledges group traffic only after
+  its disposition is committed; the plain `Client::receive` is unchanged. No SDK
+  head, the CLI or the server reaches it, and `GroupClient` is outside the SDK
+  surface manifest. `docs/claims.md` states its limits and what it does not yet
+  do.
 
 ## v1.12.1 (2026-09-11)
 
