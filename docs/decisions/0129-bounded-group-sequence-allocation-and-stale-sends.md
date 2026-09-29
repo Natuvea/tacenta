@@ -56,5 +56,7 @@ a replay window that admits out-of-order allocation.
 
 `GroupClient::send_group` allocates with `next_sequence`; it no longer keeps its
 own copy of the rule, and its sequences start again at zero at each revision.
-The client's compaction keeps the newest send for every revision and sender, so
-the retained maximum remains the high-water mark this record requires.
+The client's compaction keeps every live send and the sixteen most recent
+terminal ones, so the newest send of the current revision is always retained and
+the retained maximum remains the high-water mark this record requires; a send at
+an older revision is refused as stale.

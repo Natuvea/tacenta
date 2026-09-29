@@ -70,8 +70,11 @@ change". This record makes the five changes together, so the workarounds go.
    `GroupClient::send_group` computed the highest retained sequence itself,
    across every revision. It now asks the outbox, so the rule of 0129 has one
    owner and a sequence starts again at zero at each revision, as 0095 says.
-   Compaction keeps the newest send for every revision and sender, so the
-   retained maximum stays the high-water mark that 0129 requires.
+   Compaction keeps every live send and the sixteen most recent terminal ones, so
+   the newest send of the current revision is always retained and the retained
+   maximum stays the high-water mark that 0129 requires. A send at an older
+   revision is refused as stale, so a sequence dropped with an old revision's
+   sends cannot be reused.
 
 ## Considered
 
