@@ -143,35 +143,56 @@ the Rust toolchain and the load average; the demo's logs and its elapsed, user,
 system and maximum-resident figures, cold and warm; the deterministic 2, 3 and
 8 member roster and receiver-state sizes (real 32-byte identities: 219, 260 and
 465 roster bytes); the three-client native transaction, sender restart and
-snapshot figures; and, from the client's per-size probe, run once per size in
-its own process and twice, snapshot bytes, provider-state bytes, whole-snapshot
-commits per logical send, the time of that send, the median latency of one more
-commit at that size, the restart and recovery time, and the probe's CPU and
-maximum resident set. A missing measurement, including a missing probe, stops
-the runner. The runs are not seeded (keys come from the operating system), and
-the results are development evidence, not production budgets or 32, 128 or 512
-member results.
+snapshot figures; from the client's per-size probe, run once per size in its own
+process and twice, snapshot bytes, provider-state bytes, whole-snapshot commits
+per logical send, the time of that send, the median latency of one more commit
+at that size, the restart and recovery time, and the probe's CPU and maximum
+resident set; and, from a second probe, the same eight-member group after
+seventeen sends (below). A missing measurement, including a missing probe,
+stops the runner, and it asserts the values that do not depend on the machine
+(the roster and receiver-state bytes, and 4, 7, 22 and, in steady state, 22
+commits per logical send); times and snapshot bytes are reported, not asserted.
+The runs are not seeded (keys come from the operating system), and the results
+are development evidence, not production budgets or 32, 128 or 512 member
+results.
 
-One recorded run: the integration branch with a clean tree, tacenta-core
-`5a8f90c1`, an Apple M5 Pro with 18 logical CPUs and 64 GiB, `rustc
-1.99.0-nightly` (2026-07-14), a load average of about 8.4 from other work on the
-machine, native file store, one 1,000-byte logical send from the authority to
-every other member. Sizes were identical in the two passes of each size; times
-moved by up to about a quarter between passes.
+**The per-size table is one send from an empty outbox, and a group in use is
+larger and slower.** One recorded run: this branch at `8a1b2c5` with a clean
+tree, tacenta-core `5a8f90c1`, an Apple M5 Pro with 18 logical CPUs and 64 GiB,
+`rustc 1.99.0-nightly` (2026-07-14), a load average of about 2 when the runner
+started and about 10 while it ran (other work on the machine), native file
+store, one 1,000-byte logical send from the authority to every other member.
+Sizes were identical in the two passes of each size; times differed by up to
+about a fifth between passes.
 
 | Members | Roster bytes | Receiver state | Snapshot bytes | Provider state | Commits per logical send | Logical send | One commit at that size (median) | Restart and recover |
 |---|---|---|---|---|---|---|---|---|
-| 2 | 219 | 343 | 191,542 | 174,236 | 4 | 36 to 38 ms | 6.0 to 7.7 ms | 37 to 40 ms |
-| 3 | 260 | 384 | 221,149 | 188,442 | 7 | 68 to 69 ms | 7.9 to 8.0 ms | 39 to 40 ms |
-| 8 | 465 | 589 | 371,518 | 259,472 | 22 | 253 to 256 ms | 8.0 to 8.1 ms | 47 to 50 ms |
+| 2 | 219 | 343 | 191,542 | 174,236 | 4 | 38 to 44 ms | 8.0 to 8.1 ms | 41 ms |
+| 3 | 260 | 384 | 221,149 | 188,442 | 7 | 70 to 84 ms | 8.0 to 9.0 ms | 43 ms |
+| 8 | 465 | 589 | 371,518 | 259,472 | 22 | 258 to 262 ms | 8.0 to 10.2 ms | 55 to 56 ms |
 
 A logical send costs one commit for the intent and three per recipient (prepare,
 reserve, accept), each rewriting the whole snapshot, so the time of a send grows
 with the number of recipients times the snapshot size. The probe process's
-maximum resident set was 14 MB, 15 to 16 MB and 20 to 23 MB and its user CPU
-0.23 s, 0.34 s and 0.95 s at 2, 3 and 8 members. The whole demo in one process:
-27 s elapsed (68 s CPU, 657 MB) cold and 9 s (20 s CPU, 96 MB) warm. Nothing was
-measured at 32, 128 or 512 members or on another host.
+maximum resident set was 14 MB, 15 MB and 20 MB and its user CPU 0.22 s, 0.33 s
+and 0.93 s at 2, 3 and 8 members.
+
+Steady state, from the second probe: eight members, the authority sends
+seventeen 1,000-byte messages in a row (each delivered to all seven recipients),
+and the last is timed. The snapshot keeps every live send and the sixteen most
+recent terminal ones (0133), so it grows by about 90 KB per send until sixteen
+are retained (371,518 bytes for the first send, 461,937 for the second, 1,004,451
+for the eighth) and then stays at its ceiling.
+
+| Members | Sends | Snapshot bytes | Provider state | Outbox records | Commits per logical send | Last logical send | Terminal sends retained |
+|---|---|---|---|---|---|---|---|
+| 8 | 17 | 1,727,803 | 259,472 | 352 | 22 | 511 to 519 ms | 16 |
+
+That is 4.7 times the snapshot and twice the time of the first send. The probe
+process's maximum resident set was 29 to 33 MB and its user CPU 4.9 s. The
+whole demo in one process, which now runs 323 tests: 61 s elapsed (159 s CPU,
+813 MB) cold and 43 s (113 s CPU, 95 MB) warm. Nothing was measured at 32, 128 or
+512 members, with the outbox holding its eight live sends, or on another host.
 
 ```bash
 tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
