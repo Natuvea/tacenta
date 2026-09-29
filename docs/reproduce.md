@@ -157,25 +157,27 @@ are development evidence, not production budgets or 32, 128 or 512 member
 results.
 
 **The per-size table is one send from an empty outbox, and a group in use is
-larger and slower.** One recorded run: this branch at `8a1b2c5` with a clean
+larger and slower.** One recorded run: this branch at `2abab5e` with a clean
 tree, tacenta-core `5a8f90c1`, an Apple M5 Pro with 18 logical CPUs and 64 GiB,
-`rustc 1.99.0-nightly` (2026-07-14), a load average of about 2 when the runner
-started and about 10 while it ran (other work on the machine), native file
-store, one 1,000-byte logical send from the authority to every other member.
-Sizes were identical in the two passes of each size; times differed by up to
-about a fifth between passes.
+`rustc 1.99.0-nightly` (2026-07-14), a load average of about 1 when the runner
+started, native file store, one 1,000-byte logical send from the authority to
+every other member. Sizes were identical in the two passes of each size; times
+were within about 3 percent between passes. An earlier run of the same code with
+other work on the machine (load average up to about 10) gave 38 to 44, 70 to 84
+and 258 to 262 ms per send and 511 to 519 ms in steady state: read the times as
+indicative.
 
 | Members | Roster bytes | Receiver state | Snapshot bytes | Provider state | Commits per logical send | Logical send | One commit at that size (median) | Restart and recover |
 |---|---|---|---|---|---|---|---|---|
-| 2 | 219 | 343 | 191,542 | 174,236 | 4 | 38 to 44 ms | 8.0 to 8.1 ms | 41 ms |
-| 3 | 260 | 384 | 221,149 | 188,442 | 7 | 70 to 84 ms | 8.0 to 9.0 ms | 43 ms |
-| 8 | 465 | 589 | 371,518 | 259,472 | 22 | 258 to 262 ms | 8.0 to 10.2 ms | 55 to 56 ms |
+| 2 | 219 | 343 | 191,542 | 174,236 | 4 | 37 to 38 ms | 8.0 ms | 46 ms |
+| 3 | 260 | 384 | 221,149 | 188,442 | 7 | 72 ms | 8.0 ms | 49 ms |
+| 8 | 465 | 589 | 371,518 | 259,472 | 22 | 268 ms | 8.0 ms | 58 to 59 ms |
 
 A logical send costs one commit for the intent and three per recipient (prepare,
 reserve, accept), each rewriting the whole snapshot, so the time of a send grows
 with the number of recipients times the snapshot size. The probe process's
-maximum resident set was 14 MB, 15 MB and 20 MB and its user CPU 0.22 s, 0.33 s
-and 0.93 s at 2, 3 and 8 members.
+maximum resident set was 14 MB, 15 MB and 20 MB and its user CPU 0.21 s, 0.33 s
+and 0.92 s at 2, 3 and 8 members.
 
 Steady state, from the second probe: eight members, the authority sends
 seventeen 1,000-byte messages in a row (each delivered to all seven recipients),
@@ -186,12 +188,12 @@ for the eighth) and then stays at its ceiling.
 
 | Members | Sends | Snapshot bytes | Provider state | Outbox records | Commits per logical send | Last logical send | Terminal sends retained |
 |---|---|---|---|---|---|---|---|
-| 8 | 17 | 1,727,803 | 259,472 | 352 | 22 | 511 to 519 ms | 16 |
+| 8 | 17 | 1,727,803 | 259,472 | 352 | 22 | 502 to 510 ms | 16 |
 
-That is 4.7 times the snapshot and twice the time of the first send. The probe
-process's maximum resident set was 29 to 33 MB and its user CPU 4.9 s. The
-whole demo in one process, which ran 323 tests at that revision (379 now): 61 s elapsed (159 s CPU,
-813 MB) cold and 43 s (113 s CPU, 95 MB) warm. Nothing was measured at 32, 128 or
+That is 4.7 times the snapshot and about 1.9 times the time of the first send.
+The probe process's maximum resident set was 29 MB and its user CPU 4.9 s. The
+whole demo in one process, which runs 379 tests: 62 s elapsed (165 s CPU, 859 MB)
+cold and 42 s (118 s CPU, 94 MB) warm. Nothing was measured at 32, 128 or
 512 members, with the outbox holding its eight live sends, or on another host.
 
 ```bash
