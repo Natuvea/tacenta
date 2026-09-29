@@ -238,3 +238,59 @@ fn r148_the_newest_queue_checkpoint_survives_eviction() {
     assert_eq!(snapshot.group_controls.len(), MAX_GROUP_CONTROL_RECORDS);
     assert_eq!(snapshot.group_controls[0], queue);
 }
+
+/// In `commit_next_deferred_roster`, the group outbox is not handed to the transition, so a
+/// held control that is applied does not stop the sends of older revisions the way a control from the
+/// wire does (`commit_group_payload_with_deferred` passes it). The coordinator drains the queue at
+/// once after the view moves, so no incomplete send of the current revision can exist there; this
+/// pins the function's own contract.
+#[test]
+fn a_held_control_that_is_applied_cancels_the_sends_of_older_revisions() {
+    let base = Roster::new(
+        gid(),
+        1,
+        [7; 32],
+        alice(),
+        POLICY_VERSION_V1,
+        false,
+        vec![alice(), bob()],
+    )
+    .unwrap();
+    let commitment = roster_commitment(&base.encode().unwrap());
+    let mut view = RosterView::accept_source(&alice(), base.clone(), commitment).unwrap();
+    let mut receiver = GroupReceiver::new(base.clone(), commitment, alice());
+    let mut outbox = GroupOutbox::new(gid());
+    let send =
+        LogicalSend::new(&base, commitment, alice(), 0, vec![bob()], b"hi".to_vec()).unwrap();
+    let id = send.id.clone();
+    outbox.record(send).unwrap();
+    assert!(!outbox.send(&id).unwrap().is_terminal());
+    let successor = Roster::new(
+        gid(),
+        2,
+        commitment,
+        alice(),
+        POLICY_VERSION_V1,
+        false,
+        vec![alice(), bob()],
+    )
+    .unwrap();
+    let mut queue = DeferredRosters::default();
+    assert_eq!(queue.hold(successor), Hold::Held);
+    let mut snapshot = OperationSnapshot::empty(1);
+    let applied = commit_next_deferred_roster(
+        &mut DiscardStore,
+        &mut snapshot,
+        &mut view,
+        &mut receiver,
+        &mut outbox,
+        &mut queue,
+    )
+    .unwrap()
+    .expect("the held control is the successor of the view");
+    assert_eq!(applied.disposition, RosterDisposition::Accepted);
+    assert!(
+        outbox.send(&id).unwrap().is_terminal(),
+        "the send of revision 1 was stopped by the applied revision 2"
+    );
+}

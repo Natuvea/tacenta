@@ -122,3 +122,46 @@ fn r165_a_record_with_two_controls_for_one_revision_is_not_canonical() {
         Err(GroupError::NonCanonical)
     );
 }
+
+/// In `DeferredRosters::decode_record`, the `TCGQ` tag is not checked (any four bytes are
+/// skipped), so a record of another kind of the same length and layout is read as a queue.
+/// `recover_group_deferred_rosters` selects records by their tag, which is why nothing else notices.
+#[test]
+fn a_record_that_does_not_begin_with_the_queue_tag_is_malformed() {
+    let mut queue = DeferredRosters::default();
+    let held = roster_of(group(), 2, [7; DIGEST_LEN], vec![alice(), bob()]);
+    assert_eq!(queue.hold(held), Hold::Held);
+    let mut record = queue.encode_record(group()).unwrap();
+    assert!(DeferredRosters::decode_record(&record, group(), &alice()).is_ok());
+    record[..4].copy_from_slice(b"TCGX");
+    assert_eq!(
+        DeferredRosters::decode_record(&record, group(), &alice()),
+        Err(GroupError::Malformed)
+    );
+}
+
+/// In `DeferredRosters::decode_record`, the refusal of a record that declares more than
+/// `MAX_DEFERRED_ROSTERS` controls is removed. The earlier test changed the count byte of a record
+/// with four controls, which the truncation check refuses anyway. A record with five whole controls
+/// would restore a queue longer than its bound, and `hold` (which refuses only at exactly four)
+/// would then grow it without limit.
+#[test]
+fn a_record_with_five_whole_controls_is_malformed() {
+    let five: Vec<Roster> = (2..=6)
+        .map(|revision| roster_of(group(), revision, [7; DIGEST_LEN], vec![alice(), bob()]))
+        .collect();
+    let four = DeferredRosters {
+        rosters: five[..4].to_vec(),
+    };
+    let record = four.encode_record(group()).unwrap();
+    assert_eq!(
+        DeferredRosters::decode_record(&record, group(), &alice()),
+        Ok(four)
+    );
+    let too_many = DeferredRosters { rosters: five };
+    let record = too_many.encode_record(group()).unwrap();
+    assert_eq!(
+        DeferredRosters::decode_record(&record, group(), &alice()),
+        Err(GroupError::Malformed)
+    );
+}
