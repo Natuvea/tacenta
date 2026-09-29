@@ -315,9 +315,10 @@ pub struct Install {
     /// waiting for the relay, which
     /// [`dispatch_pending_controls`](GroupClient::dispatch_pending_controls)
     /// sends, and also one whose handoff is final and that nothing sends again:
-    /// the third and final attempt was not confirmed (0134), or the control was
-    /// cancelled, for example by the revocation of the invitation of that
-    /// recipient (0125, 0126).
+    /// the third and final attempt was not confirmed (0134; a test covers this),
+    /// or the control was cancelled (the code path exists; no test reaches it
+    /// through `install_roster`, because the revocation that cancels a handoff also
+    /// ends the recipient's entitlement to be told).
     pub pending: Vec<Member>,
     /// Recipients for whom nothing was committed (a transient failure while
     /// preparing, or a full control outbox); call
