@@ -25,3 +25,10 @@ the snapshot a fixed record-count bound.
 
 A signed replicated control log can use its own compaction proof, but must
 provide an equally explicit storage and recovery bound.
+
+## Amendment (0129)
+
+The 64-record bound is unchanged. A new checkpoint (`TCGV`, `TCGB`, `TCGO`,
+`TCGX`) now replaces the previous checkpoint of its kind in the same candidate
+snapshot, so at most one of each is retained and the byte size of the transcript
+is bounded, not only its record count.

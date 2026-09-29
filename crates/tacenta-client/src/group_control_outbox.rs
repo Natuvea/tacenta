@@ -1,10 +1,18 @@
-//! Durable state for exact-ciphertext roster-control handoffs.
+//! Durable state for exact-ciphertext roster-control handoffs (0124).
+//!
+//! The outbox holds at most eight live handoffs and sixteen retained terminal
+//! handoffs, so a finished handoff never wedges the group (0129). The third
+//! reservation of a handoff is its final attempt and enters `exhausted_unknown`
+//! before it is sent, exactly as in the application outbox (0106, 0130).
 
 use tacenta_core::crypto::groups::payload_commitment;
 use tacenta_group::{Error as GroupError, GroupPayload, MAX_DEVICE_LEN, MAX_IDENTITY_LEN, Member};
 
-const DOMAIN: &[u8] = b"Tacenta Group Control Outbox State v1";
-const MAX_HANDOFFS: usize = 8;
+const DOMAIN: &[u8] = b"Tacenta Group Control Outbox State v2";
+/// Handoffs that are not yet terminal (`prepared`, `handed_off`).
+const MAX_LIVE_HANDOFFS: usize = 8;
+/// Terminal handoffs kept as evidence; the oldest are dropped beyond this.
+const MAX_TERMINAL_HANDOFFS: usize = 16;
 const MAX_ATTEMPTS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +25,22 @@ pub(crate) enum Disposition {
     CancelledAfterHandoff,
 }
 
+/// The canonical order of entries: payload commitment, then recipient. The
+/// live vector is kept in it, so a state and its decoding compare equal.
+fn canonical_order(a: &Handoff, b: &Handoff) -> std::cmp::Ordering {
+    payload_commitment(&a.payload)
+        .cmp(&payload_commitment(&b.payload))
+        .then_with(|| a.recipient.identity().cmp(b.recipient.identity()))
+        .then_with(|| a.recipient.device().cmp(b.recipient.device()))
+}
+
+impl Disposition {
+    /// A terminal handoff never sends again; it is retained only as evidence.
+    fn is_terminal(self) -> bool {
+        !matches!(self, Disposition::Prepared | Disposition::HandedOff)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Handoff {
     pub(crate) recipient: Member,
@@ -24,6 +48,8 @@ pub(crate) struct Handoff {
     pub(crate) ciphertext: Vec<u8>,
     pub(crate) attempts_reserved: u8,
     pub(crate) disposition: Disposition,
+    /// Allocation order, used only to decide which terminal entry is oldest.
+    pub(crate) sequence: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -32,6 +58,36 @@ pub(crate) struct Outbox {
 }
 
 impl Outbox {
+    fn live(&self) -> usize {
+        self.handoffs
+            .iter()
+            .filter(|handoff| !handoff.disposition.is_terminal())
+            .count()
+    }
+
+    /// Drops the oldest terminal handoffs beyond the retained bound.
+    fn reclaim(&mut self) {
+        loop {
+            let terminal = self
+                .handoffs
+                .iter()
+                .filter(|handoff| handoff.disposition.is_terminal())
+                .count();
+            if terminal <= MAX_TERMINAL_HANDOFFS {
+                return;
+            }
+            let oldest = self
+                .handoffs
+                .iter()
+                .enumerate()
+                .filter(|(_, handoff)| handoff.disposition.is_terminal())
+                .min_by_key(|(_, handoff)| handoff.sequence)
+                .map(|(index, _)| index)
+                .expect("a terminal handoff exists above the bound");
+            self.handoffs.remove(oldest);
+        }
+    }
+
     pub(crate) fn record_prepared(
         &mut self,
         recipient: Member,
@@ -48,7 +104,7 @@ impl Outbox {
                 Err(GroupError::Conflict)
             };
         }
-        if self.handoffs.len() == MAX_HANDOFFS
+        if self.live() >= MAX_LIVE_HANDOFFS
             || !matches!(
                 GroupPayload::decode(&payload),
                 Ok(GroupPayload::Roster(_))
@@ -59,16 +115,29 @@ impl Outbox {
         {
             return Err(GroupError::OutboxFull);
         }
+        let sequence = self
+            .handoffs
+            .iter()
+            .map(|handoff| handoff.sequence)
+            .max()
+            .map_or(0, |highest| highest.saturating_add(1));
         self.handoffs.push(Handoff {
             recipient,
             payload,
             ciphertext,
             attempts_reserved: 0,
             disposition: Disposition::Prepared,
+            sequence,
         });
+        self.handoffs.sort_by(canonical_order);
+        self.reclaim();
         Ok(())
     }
 
+    /// Reserves the next attempt for an exact prepared handoff. The third
+    /// reservation is the final attempt: it returns the handoff with
+    /// `exhausted_unknown` already recorded, so its bytes may be sent once and
+    /// no fourth reservation exists (0130).
     pub(crate) fn reserve(
         &mut self,
         recipient: &Member,
@@ -92,13 +161,15 @@ impl Outbox {
                 return Err(GroupError::WrongDisposition);
             }
         }
-        if handoff.attempts_reserved == MAX_ATTEMPTS {
-            handoff.disposition = Disposition::ExhaustedUnknown;
-            return Ok(handoff.clone());
-        }
         handoff.attempts_reserved += 1;
-        handoff.disposition = Disposition::HandedOff;
-        Ok(handoff.clone())
+        handoff.disposition = if handoff.attempts_reserved == MAX_ATTEMPTS {
+            Disposition::ExhaustedUnknown
+        } else {
+            Disposition::HandedOff
+        };
+        let reserved = handoff.clone();
+        self.reclaim();
+        Ok(reserved)
     }
 
     /// Stops any unsent control, or retry of an uncertain prior handoff, for
@@ -119,6 +190,7 @@ impl Outbox {
                 disposition => disposition,
             };
         }
+        self.reclaim();
     }
 
     pub(crate) fn handoff(
@@ -151,7 +223,22 @@ impl Outbox {
             return Err(GroupError::WrongDisposition);
         }
         handoff.disposition = Disposition::RelayAccepted;
+        self.reclaim();
         Ok(())
+    }
+
+    /// Every retained handoff that has not reached a terminal disposition.
+    pub(crate) fn pending(&self) -> Vec<Handoff> {
+        self.handoffs
+            .iter()
+            .filter(|handoff| !handoff.disposition.is_terminal())
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len_for_tests(&self) -> usize {
+        self.handoffs.len()
     }
 
     pub(crate) fn encode_state(&self) -> Result<Vec<u8>, GroupError> {
@@ -164,16 +251,16 @@ impl Outbox {
             out.extend_from_slice(value);
             Ok(())
         }
-        if self.handoffs.len() > MAX_HANDOFFS {
+        let terminal = self
+            .handoffs
+            .iter()
+            .filter(|handoff| handoff.disposition.is_terminal())
+            .count();
+        if self.live() > MAX_LIVE_HANDOFFS || terminal > MAX_TERMINAL_HANDOFFS {
             return Err(GroupError::OutboxFull);
         }
         let mut entries = self.handoffs.clone();
-        entries.sort_by(|a, b| {
-            payload_commitment(&a.payload)
-                .cmp(&payload_commitment(&b.payload))
-                .then_with(|| a.recipient.identity().cmp(b.recipient.identity()))
-                .then_with(|| a.recipient.device().cmp(b.recipient.device()))
-        });
+        entries.sort_by(canonical_order);
         let mut state = DOMAIN.to_vec();
         state.push(u8::try_from(entries.len()).map_err(|_| GroupError::Malformed)?);
         for entry in entries {
@@ -190,6 +277,7 @@ impl Outbox {
                 Disposition::Cancelled => 4,
                 Disposition::CancelledAfterHandoff => 5,
             });
+            state.extend_from_slice(&entry.sequence.to_be_bytes());
         }
         Ok(state)
     }
@@ -217,7 +305,7 @@ impl Outbox {
         }
         let mut cursor = &bytes[DOMAIN.len()..];
         let count = usize::from(*take(&mut cursor, 1)?.first().ok_or(GroupError::Malformed)?);
-        if count > MAX_HANDOFFS {
+        if count > MAX_LIVE_HANDOFFS + MAX_TERMINAL_HANDOFFS {
             return Err(GroupError::OutboxFull);
         }
         let mut outbox = Self::default();
@@ -239,18 +327,45 @@ impl Outbox {
                 5 => Disposition::CancelledAfterHandoff,
                 _ => return Err(GroupError::Malformed),
             };
+            let sequence = u64::from_be_bytes(
+                take(&mut cursor, 8)?
+                    .try_into()
+                    .map_err(|_| GroupError::Malformed)?,
+            );
             if attempts > MAX_ATTEMPTS
                 || (disposition == Disposition::Prepared && attempts != 0)
-                || (disposition == Disposition::HandedOff && attempts == 0)
+                || (disposition == Disposition::HandedOff
+                    && (attempts == 0 || attempts == MAX_ATTEMPTS))
+                || (disposition == Disposition::ExhaustedUnknown && attempts != MAX_ATTEMPTS)
                 || (disposition == Disposition::Cancelled && attempts != 0)
                 || (disposition == Disposition::CancelledAfterHandoff && attempts == 0)
+                || !matches!(
+                    GroupPayload::decode(&payload),
+                    Ok(GroupPayload::Roster(_))
+                        | Ok(GroupPayload::InvitationBootstrap(_))
+                        | Ok(GroupPayload::InvitationAcceptance(_))
+                        | Ok(GroupPayload::InvitationRevocation(_))
+                )
             {
                 return Err(GroupError::Malformed);
             }
-            outbox.record_prepared(Member::new(identity, device), payload, ciphertext)?;
-            let handoff = outbox.handoffs.last_mut().expect("recorded handoff");
-            handoff.attempts_reserved = attempts;
-            handoff.disposition = disposition;
+            let recipient = Member::new(identity, device);
+            let commitment = payload_commitment(&payload);
+            if outbox.handoffs.iter().any(|known| {
+                known.sequence == sequence
+                    || (known.recipient == recipient
+                        && payload_commitment(&known.payload) == commitment)
+            }) {
+                return Err(GroupError::Malformed);
+            }
+            outbox.handoffs.push(Handoff {
+                recipient,
+                payload,
+                ciphertext,
+                attempts_reserved: attempts,
+                disposition,
+                sequence,
+            });
         }
         if !cursor.is_empty() {
             return Err(GroupError::Malformed);
@@ -320,13 +435,15 @@ mod tests {
             .record_prepared(bob(), payload.clone(), vec![7, 8])
             .unwrap();
 
-        for attempt in 1..=MAX_ATTEMPTS {
+        // Two ordinary attempts, then the third reservation is the final one
+        // and is exhausted before it is sent (0106, 0130).
+        for attempt in 1..=2 {
             let handoff = outbox.reserve(&bob(), &payload).unwrap();
             assert_eq!(handoff.attempts_reserved, attempt);
             assert_eq!(handoff.disposition, Disposition::HandedOff);
         }
         let exhausted = outbox.reserve(&bob(), &payload).unwrap();
-        assert_eq!(exhausted.attempts_reserved, MAX_ATTEMPTS);
+        assert_eq!(exhausted.attempts_reserved, 3);
         assert_eq!(exhausted.disposition, Disposition::ExhaustedUnknown);
         assert_eq!(
             outbox.reserve(&bob(), &payload),
@@ -364,7 +481,8 @@ mod tests {
             Err(GroupError::WrongDisposition)
         );
         let mut malformed_cancelled = outbox.encode_state().unwrap();
-        let cancelled_attempt = malformed_cancelled.len() - 2;
+        // The entry ends with attempts, disposition and an eight-byte sequence.
+        let cancelled_attempt = malformed_cancelled.len() - 10;
         malformed_cancelled[cancelled_attempt] = 1;
         assert_eq!(
             Outbox::decode_state(&malformed_cancelled),
@@ -384,7 +502,7 @@ mod tests {
         let state = retried.encode_state().unwrap();
         assert_eq!(Outbox::decode_state(&state), Ok(retried));
         let mut malformed_after_handoff = state;
-        let after_handoff_attempt = malformed_after_handoff.len() - 2;
+        let after_handoff_attempt = malformed_after_handoff.len() - 10;
         malformed_after_handoff[after_handoff_attempt] = 0;
         assert_eq!(
             Outbox::decode_state(&malformed_after_handoff),
@@ -417,5 +535,118 @@ mod tests {
             Outbox::decode_state(&outbox.encode_state().unwrap()),
             Ok(outbox)
         );
+    }
+
+    fn decode_after_patching(
+        state: &mut [u8],
+        attempts_from_end: usize,
+        attempts: u8,
+    ) -> Result<Outbox, GroupError> {
+        let at = state.len() - attempts_from_end;
+        state[at] = attempts;
+        Outbox::decode_state(state)
+    }
+
+    #[test]
+    fn a_state_with_an_impossible_attempt_count_is_refused() {
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let payload = GroupPayload::Roster(roster).encode().unwrap();
+        // Each entry ends with attempts, disposition and an eight-byte sequence.
+        let attempts_from_end = 10;
+
+        let mut handed_off = Outbox::default();
+        handed_off
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        handed_off.reserve(&bob(), &payload).unwrap();
+        let mut state = handed_off.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(handed_off));
+        // Handed off with the final attempt's count would be exhausted.
+        assert_eq!(
+            decode_after_patching(&mut state, attempts_from_end, 3),
+            Err(GroupError::Malformed)
+        );
+
+        let mut exhausted = Outbox::default();
+        exhausted
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        for _ in 0..3 {
+            exhausted.reserve(&bob(), &payload).unwrap();
+        }
+        let mut state = exhausted.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(exhausted));
+        // Exhausted before three attempts were reserved cannot have happened.
+        assert_eq!(
+            decode_after_patching(&mut state, attempts_from_end, 2),
+            Err(GroupError::Malformed)
+        );
+    }
+
+    #[test]
+    fn the_entry_bounds_hold_on_encode_and_on_decode() {
+        let roster = |revision: u64| {
+            GroupPayload::Roster(
+                Roster::new(
+                    GroupId::new(*b"bounded-group-id"),
+                    revision,
+                    [0; DIGEST_LEN],
+                    alice(),
+                    POLICY_VERSION_V1,
+                    false,
+                    vec![alice(), bob()],
+                )
+                .unwrap(),
+            )
+            .encode()
+            .unwrap()
+        };
+        // Nine live handoffs cannot be recorded, and cannot be encoded either.
+        let mut outbox = Outbox::default();
+        for revision in 1..=8 {
+            outbox
+                .record_prepared(bob(), roster(revision), vec![revision as u8])
+                .unwrap();
+        }
+        let mut over = outbox.clone();
+        over.handoffs.push(Handoff {
+            recipient: bob(),
+            payload: roster(9),
+            ciphertext: vec![9],
+            attempts_reserved: 0,
+            disposition: Disposition::Prepared,
+            sequence: 9,
+        });
+        assert_eq!(over.encode_state(), Err(GroupError::OutboxFull));
+        // Seventeen terminal handoffs cannot be encoded.
+        let mut terminal = Outbox::default();
+        for revision in 1..=17u64 {
+            terminal.handoffs.push(Handoff {
+                recipient: bob(),
+                payload: roster(revision),
+                ciphertext: vec![revision as u8],
+                attempts_reserved: 1,
+                disposition: Disposition::RelayAccepted,
+                sequence: revision,
+            });
+        }
+        assert_eq!(terminal.encode_state(), Err(GroupError::OutboxFull));
+        // A state that claims more than twenty-four entries is refused before
+        // any entry is read.
+        let mut claim = DOMAIN.to_vec();
+        claim.push(25);
+        assert_eq!(Outbox::decode_state(&claim), Err(GroupError::OutboxFull));
+        let mut claim = DOMAIN.to_vec();
+        claim.push(24);
+        assert_eq!(Outbox::decode_state(&claim), Err(GroupError::Malformed));
     }
 }

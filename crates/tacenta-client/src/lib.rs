@@ -26,6 +26,12 @@
 //! # Ok(()) }
 //! ```
 //!
+//! **Experimental group coordinator.** [`group_client::GroupClient`] owns a
+//! client and an operation store and is the only place the bounded group
+//! experiment's receive, send and membership operations are reachable (decisions
+//! 0127 to 0130). It is not part of the SDK surface manifest or of any binding,
+//! and its shape may change.
+//!
 //! With explicit addresses:
 //!
 //! ```no_run
@@ -54,7 +60,7 @@ use rand::TryRngCore as _;
 // default type parameter -- so a caller writing `Client` gets open-tacenta's
 // provider. Nothing else in this file names a provider's concrete types, which
 // is what makes it a client of the seam rather than of any one provider.
-use tacenta_core::crypto::{Address, CryptoProvider, DefaultProvider};
+use tacenta_core::crypto::{Address, CryptoProvider, CryptoStateEffect, DefaultProvider};
 use tacenta_core::persist::{SealError, seal, unseal};
 use tacenta_relay::{Request, Response, decode_response, encode_request};
 use tacenta_transport::{Connection, DirConnection};
@@ -63,17 +69,16 @@ use tacenta_wire::{Envelope, Kind};
 mod secure_store;
 pub use secure_store::{SecureStore, SecureStoreError};
 mod dial;
-// GC-03's deterministic harness exercises the port before live operations can
-// provide the provider-state effect required for a real durable commit.
-#[allow(dead_code)]
+// GC-03's deterministic harness models the acknowledgement order over opaque
+// bytes. It is a model, not the live path, and nothing outside its own tests
+// runs it (0091, 0127).
+#[cfg(test)]
 mod durable;
-#[allow(dead_code)]
 mod group_control_outbox;
-#[allow(dead_code)]
 mod group_operations;
-// GC-03's port is intentionally not wired into live DM operations until the
-// provider outcome contract supplies the state effect that must be persisted.
-#[allow(dead_code)]
+// The experimental group coordinator (0127): the one non-test owner of the
+// mailbox, the pairwise state and the operation snapshot while it lives.
+pub mod group_client;
 mod operation_store;
 mod operations;
 use dial::Dialer;
@@ -199,11 +204,19 @@ pub struct Received {
     pub from: DeviceAddr,
     pub plaintext: Vec<u8>,
     /// The relay envelope class that selected this payload's application
-    /// parser. A group coordinator accepts only [`MessageKind::Group`].
+    /// parser. It is a routing label chosen by the sender and carried by the
+    /// relay, **not an authenticated field**: a relay can relabel a direct
+    /// envelope as group or the reverse (decision 0116). Nothing may be
+    /// trusted because of it; group state changes only on a payload that
+    /// decodes under its own domain and names the pairwise-authenticated peer.
     pub kind: MessageKind,
 }
 
-/// The authenticated application class of a decrypted relay envelope.
+/// The relay envelope class of a decrypted message: an unauthenticated
+/// routing label, not an authenticated application class (decision 0116). The
+/// pairwise associated data does not cover it, so a relay that relabels an
+/// envelope causes misrouting or lost availability, never a group state change
+/// the payload's own authentication would not allow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageKind {
     Direct,
@@ -334,7 +347,7 @@ mod tests {
         recover_group_control_outbox, recover_group_invitation_book, recover_group_outbox,
         recover_group_receiver, recover_group_roster_view,
     };
-    use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore};
+    use crate::operation_store::{CommitOutcome, OperationSnapshot, OperationStore, StoreError};
     use std::net::{IpAddr, Ipv4Addr};
     use tacenta_group::{
         ApplicationContext, DIGEST_LEN, GroupId, GroupOutbox, GroupPayload, GroupReceiver,
@@ -350,7 +363,7 @@ mod tests {
         }
     }
 
-    async fn start_server() -> (std::net::SocketAddr, std::net::SocketAddr) {
+    pub(crate) async fn start_server() -> (std::net::SocketAddr, std::net::SocketAddr) {
         let server = Server::bind(&ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             directory_port: 0,
@@ -2334,7 +2347,7 @@ mod tests {
             CommitOutcome::Committed
         }
 
-        fn recover(&mut self) -> std::result::Result<Option<OperationSnapshot>, ()> {
+        fn recover(&mut self) -> std::result::Result<Option<OperationSnapshot>, StoreError> {
             Ok(self.snapshot.clone())
         }
     }
@@ -2835,6 +2848,8 @@ mod tests {
             Ok(ReceiveDisposition::Accepted { event_id: 0 })
         );
     }
+
+    mod review_live;
 
     #[test]
     fn contacts_dedup_remove_and_round_trip() {
@@ -3761,6 +3776,32 @@ struct Dialed {
 /// keeps them together.
 pub type DefaultClient = Client<DefaultProvider>;
 
+/// What one relay poll returned and has not yet acknowledged (0127).
+struct Fetched {
+    /// The cursor position the batch begins at.
+    from: u64,
+    messages: Vec<tacenta_relay::StoredMessage>,
+}
+
+/// One fetched item after decryption with its provider outcome (0127).
+struct StagedItem {
+    from: DeviceAddr,
+    /// The crypto-layer address the item was decrypted for; its device is the
+    /// device of the authenticated member.
+    peer: Address,
+    /// The envelope class: a routing label, not authenticated (0116).
+    kind: MessageKind,
+    /// `None` when the provider refused the ciphertext.
+    plaintext: Option<Vec<u8>>,
+    /// The identity the provider authenticated the peer as.
+    authenticated_identity: Option<Vec<u8>>,
+    /// What the operation did to the pairwise state.
+    effect: CryptoStateEffect,
+    /// The state as exported right after this item; empty when the effect is
+    /// `Unchanged`.
+    provider_state: Vec<u8>,
+}
+
 /// A connected client: an identity, a directory connection, an
 /// authenticated relay connection, and the peers it has open sessions with.
 ///
@@ -4403,6 +4444,21 @@ impl<P: CryptoProvider> Client<P> {
     /// after it has durably committed a canonical group handoff; direct send
     /// keeps the existing `Dm` envelope class.
     async fn send_as(&mut self, to: &DeviceAddr, message: &[u8], kind: Kind) -> Result<()> {
+        let prepared = self.prepare_send_as(to, message, kind).await?;
+        self.dispatch_prepared_send(&prepared).await
+    }
+
+    /// Everything of a send up to the wire: establishes a session on first
+    /// contact, encrypts once and records the ratchet advance with the secure
+    /// store. The returned bytes are what a retry sends again. A coordinator
+    /// that owns the pairwise state exports it and commits it between this and
+    /// [`dispatch_prepared_send`](Client::dispatch_prepared_send) (0128).
+    async fn prepare_send_as(
+        &mut self,
+        to: &DeviceAddr,
+        message: &[u8],
+        kind: Kind,
+    ) -> Result<PreparedSend> {
         // Before any ratchet step or store commit: a message the relay would
         // refuse is the caller's mistake, and costs nothing here.
         if message.len() > MAX_MESSAGE_BYTES {
@@ -4438,14 +4494,13 @@ impl<P: CryptoProvider> Client<P> {
         // message goes out, so a restore of any state older than this send is
         // caught (the per-send window). No-op unless a store is attached.
         self.commit_ratchet_advance()?;
-        let prepared = PreparedSend::new(encode_request(&Request::Send {
+        Ok(PreparedSend::new(encode_request(&Request::Send {
             to: to.clone(),
             envelope: Envelope {
                 kind,
                 payload: framed,
             },
-        }));
-        self.dispatch_prepared_send(&prepared).await
+        })))
     }
 
     /// Encrypts one canonical group context exactly once for its bound
@@ -4634,16 +4689,13 @@ impl<P: CryptoProvider> Client<P> {
     /// One poll: fetch whatever the relay holds for this device, decrypt
     /// what decrypts, acknowledge everything fetched. Empty if nothing was
     /// pending (or the whole batch was poison).
+    ///
+    /// **This acknowledges before any group disposition exists**, so it is for
+    /// direct messages only. Group traffic is received through
+    /// [`group_client::GroupClient`], which commits each item first (0127).
     async fn poll_batch(&mut self) -> Result<Vec<Received>> {
         let mut rng = rand::rngs::OsRng.unwrap_err();
-        let poll = encode_request(&Request::Poll {
-            device: self.me.clone(),
-        });
-        let Some(Response::Delivered { from, messages }) =
-            decode_response(&self.relay.request(&poll).await?)
-        else {
-            return Err(Error::Protocol("expected a delivery"));
-        };
+        let Fetched { from, messages } = self.fetch_staged().await?;
 
         let mut received = Vec::with_capacity(messages.len());
         for message in &messages {
@@ -4682,8 +4734,101 @@ impl<P: CryptoProvider> Client<P> {
         Ok(received)
     }
 
-    /// The acknowledgement stage is distinct from fetching and processing so a
-    /// durable receiver can later insert its commit boundary before this call.
+    /// Fetches what the relay holds for this device and acknowledges nothing
+    /// (0127). The caller processes the items in order and acknowledges the
+    /// prefix it has committed with
+    /// [`acknowledge_fetched`](Client::acknowledge_fetched).
+    async fn fetch_staged(&mut self) -> Result<Fetched> {
+        let poll = encode_request(&Request::Poll {
+            device: self.me.clone(),
+        });
+        let Some(Response::Delivered { from, messages }) =
+            decode_response(&self.relay.request(&poll).await?)
+        else {
+            return Err(Error::Protocol("expected a delivery"));
+        };
+        Ok(Fetched { from, messages })
+    }
+
+    /// Decrypts one fetched item with the provider's outcome (0127): the
+    /// pairwise-authenticated peer identity and the crypto-state effect come
+    /// from the provider, never from the caller. When the item changed the
+    /// pairwise state the state is exported here, immediately after this item,
+    /// so a durable receiver can commit it with the item's disposition.
+    async fn open_staged(&mut self, message: &tacenta_relay::StoredMessage) -> Result<StagedItem> {
+        let kind: MessageKind = message.envelope.kind.into();
+        let Ok(peer) = peer_address(&message.from) else {
+            return Ok(StagedItem {
+                from: message.from.clone(),
+                peer: Address::new(message.from.user.clone(), 0),
+                kind,
+                plaintext: None,
+                authenticated_identity: None,
+                effect: CryptoStateEffect::Unchanged,
+                provider_state: Vec::new(),
+            });
+        };
+        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let outcome = self
+            .party
+            .decrypt_with_outcome(&peer, &message.envelope.payload, &mut rng)
+            .await;
+        let effect = outcome.state_effect;
+        let plaintext = outcome.result.ok();
+        if plaintext.is_some() && self.sessions.insert(message.from.clone()) {
+            // First contact from a new peer establishes a session — a
+            // session-affecting event (0078, decision 2).
+            self.state_generation += 1;
+        }
+        if plaintext.is_some() {
+            // Best-effort on receive, exactly as in `poll_batch`: the item is
+            // already decrypted, and the send path is the fail-closed one.
+            let _ = self.commit_ratchet_advance();
+        }
+        let provider_state = if effect == CryptoStateEffect::Unchanged {
+            Vec::new()
+        } else {
+            self.export_state().await?
+        };
+        Ok(StagedItem {
+            from: message.from.clone(),
+            peer,
+            kind,
+            plaintext,
+            authenticated_identity: outcome.authenticated_peer,
+            effect,
+            provider_state,
+        })
+    }
+
+    /// Whether an exported state carries this client's own identity: a cheap
+    /// check that a coordinator's snapshot belongs to the client handed to it.
+    fn state_has_this_identity(&self, state: &[u8]) -> bool {
+        split_state(state).is_ok_and(|split| split.identity == self.party.export_identity())
+    }
+
+    /// Replaces this client's identity, prekeys and sessions with a state
+    /// exported earlier, keeping its connections (0130). A coordinator does this
+    /// on recovery: the in-memory pairwise state a frozen operation advanced is
+    /// discarded, and the durable state is the only one that continues.
+    async fn restore_state_in_place(&mut self, state: &[u8]) -> Result<()> {
+        let split = split_state(state)?;
+        let device =
+            u8::try_from(self.me.device).map_err(|_| Error::Protocol("device id out of range"))?;
+        let mut party = P::from_identity(&self.me.user, device, split.identity).map_err(crypto)?;
+        restore_prekeys_into(&mut party, &split)?;
+        self.party = party;
+        self.sessions.clear();
+        self.session_provider = SessionProvider::of::<P>();
+        self.restore_sessions(split.provider, split.sessions)
+            .await?;
+        self.state_generation = split.generation;
+        Ok(())
+    }
+
+    /// The acknowledgement stage is distinct from fetching and processing: a
+    /// durable receiver commits every item's disposition, then acknowledges
+    /// the prefix it committed (0127).
     async fn acknowledge_fetched(&mut self, from: u64, count: usize) -> Result<()> {
         if count == 0 {
             return Ok(());

@@ -1,8 +1,10 @@
-//! Opaque durable-operation state for the group-chat preparation work.
+//! Opaque durable-operation state for the group-chat work (0091, 0128, 0130).
 //!
 //! This is intentionally independent of a group codec and of a concrete file
-//! store. It gives crash schedules a versioned value to commit and recover
-//! without claiming that current direct-message operations already use it.
+//! store: a snapshot is versioned opaque values, and a store is a narrow
+//! commit and recover port. [`DurableStore`] is the handle the coordinator holds:
+//! it latches after a write that did not commit and keeps generations
+//! monotonic across a write whose outcome was unknown.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
@@ -12,8 +14,10 @@ use std::path::{Path, PathBuf};
 /// snapshots.
 pub(crate) const OPERATION_SNAPSHOT_VERSION: u8 = 2;
 
+/// One combined durable value: opaque provider state, group state and the
+/// bounded record collections of decision 0129.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct OperationSnapshot {
+pub struct OperationSnapshot {
     pub(crate) version: u8,
     pub(crate) generation: u64,
     pub(crate) provider_state: Vec<u8>,
@@ -26,6 +30,16 @@ pub(crate) struct OperationSnapshot {
 }
 
 impl OperationSnapshot {
+    /// The snapshot's monotonic generation.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The provider state a client restarts from (`connect_with_state`).
+    pub fn provider_state(&self) -> &[u8] {
+        &self.provider_state
+    }
+
     pub(crate) fn empty(generation: u64) -> Self {
         Self {
             version: OPERATION_SNAPSHOT_VERSION,
@@ -40,8 +54,9 @@ impl OperationSnapshot {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn encode(&self) -> Option<Vec<u8>> {
+    /// The snapshot's bytes, for a platform store to persist. `None` only if a
+    /// value is longer than four gibibytes.
+    pub fn encode(&self) -> Option<Vec<u8>> {
         fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
             out.extend_from_slice(&u32::try_from(bytes.len()).ok()?.to_be_bytes());
             out.extend_from_slice(bytes);
@@ -69,13 +84,14 @@ impl OperationSnapshot {
         Some(out)
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
     pub(crate) fn encoded_len(&self) -> Option<usize> {
         self.encode().map(|bytes| bytes.len())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn decode(bytes: &[u8]) -> Option<Self> {
+    /// The inverse of [`encode`](Self::encode); `None` on any malformation,
+    /// an unknown version or trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
         fn take<'a>(cursor: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
             let (head, tail) = cursor.split_at_checked(count)?;
             *cursor = tail;
@@ -136,30 +152,133 @@ impl OperationSnapshot {
     }
 }
 
+/// What a store reports for one write (0091): independent of any crypto
+/// outcome. `Unknown` may or may not have reached durable storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CommitOutcome {
+pub enum CommitOutcome {
     Committed,
     Failed,
     Unknown,
 }
 
+/// A store could not produce its newest durable snapshot: the value was
+/// unreadable, torn, of an unknown version, or the medium failed. It carries no
+/// detail on purpose; recovery either yields a snapshot or refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoreError;
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the operation store could not be recovered")
+    }
+}
+
+impl std::error::Error for StoreError {}
+
 /// The narrow port a platform store implements for operation recovery.
-pub(crate) trait OperationStore {
+pub trait OperationStore {
     fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome;
-    fn recover(&mut self) -> Result<Option<OperationSnapshot>, ()>;
+    fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError>;
+
+    /// Whether an earlier write left this store latched (0130): while it is,
+    /// the coordinator starts no pairwise operation and publishes nothing. A
+    /// plain store never latches; [`DurableStore`] does.
+    fn is_frozen(&self) -> bool {
+        false
+    }
+
+    /// The generation the next candidate must carry, or `None` when the
+    /// counter is exhausted. A latching store keeps it above every generation
+    /// it has ever been asked to publish, so an unknown write is never
+    /// followed by a different snapshot under the same number (0130).
+    fn next_generation(&self, current: u64) -> Option<u64> {
+        current.checked_add(1)
+    }
+}
+
+impl<T: OperationStore + ?Sized> OperationStore for Box<T> {
+    fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+        (**self).commit(snapshot)
+    }
+    fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
+        (**self).recover()
+    }
+    fn is_frozen(&self) -> bool {
+        (**self).is_frozen()
+    }
+    fn next_generation(&self, current: u64) -> Option<u64> {
+        (**self).next_generation(current)
+    }
+}
+
+/// The store handle a coordinator holds (0130).
+///
+/// A write that is `failed` or `unknown` latches it: it then refuses every
+/// commit, without forwarding it, and reports itself frozen so that the
+/// coordinator declines to encrypt, decrypt or dispatch, until
+/// [`recover`](OperationStore::recover) has read the durable snapshot. The
+/// highest generation it has attempted or recovered is remembered so candidate
+/// generations only increase.
+pub struct DurableStore {
+    inner: Box<dyn OperationStore + Send>,
+    frozen: bool,
+    high_water: u64,
+}
+
+impl DurableStore {
+    /// Wrap a platform or native store.
+    pub fn new(inner: impl OperationStore + Send + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+            frozen: false,
+            high_water: 0,
+        }
+    }
+}
+
+impl OperationStore for DurableStore {
+    fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+        if self.frozen {
+            return CommitOutcome::Failed;
+        }
+        self.high_water = self.high_water.max(snapshot.generation);
+        let outcome = self.inner.commit(snapshot);
+        if outcome != CommitOutcome::Committed {
+            self.frozen = true;
+        }
+        outcome
+    }
+
+    fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
+        let recovered = self.inner.recover()?;
+        if let Some(snapshot) = &recovered {
+            self.high_water = self.high_water.max(snapshot.generation);
+        }
+        self.frozen = false;
+        Ok(recovered)
+    }
+
+    fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    fn next_generation(&self, current: u64) -> Option<u64> {
+        current.max(self.high_water).checked_add(1)
+    }
 }
 
 /// Native reference implementation of the operation-store port.  Platform
 /// bindings provide their own store; this uses the product's crash-safe atomic
 /// writer without adding a database dependency to the initial coordinator.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct FileOperationStore {
+pub struct FileOperationStore {
     path: PathBuf,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileOperationStore {
-    pub(crate) fn new(path: impl AsRef<Path>) -> Self {
+    /// A store that publishes the snapshot to `path` atomically.
+    pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
         }
@@ -178,11 +297,13 @@ impl OperationStore for FileOperationStore {
         }
     }
 
-    fn recover(&mut self) -> Result<Option<OperationSnapshot>, ()> {
+    fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
         match std::fs::read(&self.path) {
-            Ok(bytes) => OperationSnapshot::decode(&bytes).map(Some).ok_or(()),
+            Ok(bytes) => OperationSnapshot::decode(&bytes)
+                .map(Some)
+                .ok_or(StoreError),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(_) => Err(()),
+            Err(_) => Err(StoreError),
         }
     }
 }
@@ -242,7 +363,7 @@ mod tests {
         ));
         std::fs::write(&path, b"TCOP\x02").unwrap();
 
-        assert_eq!(FileOperationStore::new(&path).recover(), Err(()));
+        assert_eq!(FileOperationStore::new(&path).recover(), Err(StoreError));
         let _ = std::fs::remove_file(path);
     }
 
@@ -287,5 +408,71 @@ mod tests {
             OperationSnapshot::decode(&migrated.encode().unwrap()),
             Some(migrated)
         );
+    }
+
+    /// Counts what reaches it and answers from a script.
+    struct Counting {
+        commits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        outcomes: std::collections::VecDeque<CommitOutcome>,
+        durable: Option<OperationSnapshot>,
+    }
+
+    impl OperationStore for Counting {
+        fn commit(&mut self, snapshot: &OperationSnapshot) -> CommitOutcome {
+            self.commits
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let outcome = self
+                .outcomes
+                .pop_front()
+                .unwrap_or(CommitOutcome::Committed);
+            if outcome == CommitOutcome::Committed {
+                self.durable = Some(snapshot.clone());
+            }
+            outcome
+        }
+        fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
+            Ok(self.durable.clone())
+        }
+    }
+
+    #[test]
+    fn a_latched_durable_store_does_not_forward_a_commit_to_the_store_under_it() {
+        let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut store = DurableStore::new(Counting {
+            commits: commits.clone(),
+            outcomes: [CommitOutcome::Unknown].into(),
+            durable: None,
+        });
+        assert_eq!(
+            store.commit(&OperationSnapshot::empty(1)),
+            CommitOutcome::Unknown
+        );
+        assert!(store.is_frozen());
+        assert_eq!(
+            store.commit(&OperationSnapshot::empty(2)),
+            CommitOutcome::Failed
+        );
+        assert_eq!(
+            commits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second commit reached the store under the latch"
+        );
+    }
+
+    #[test]
+    fn recovery_raises_the_generation_floor_to_what_the_store_holds() {
+        let mut durable = OperationSnapshot::empty(10);
+        durable.provider_state = vec![1];
+        let mut store = DurableStore::new(Counting {
+            commits: Default::default(),
+            outcomes: Default::default(),
+            durable: Some(durable),
+        });
+        // A caller whose own copy is at 3 still gets a number above 10.
+        assert_eq!(store.next_generation(3), Some(4));
+        assert!(store.recover().unwrap().is_some());
+        assert_eq!(store.next_generation(3), Some(11));
+        assert_eq!(store.next_generation(20), Some(21));
+        assert_eq!(store.next_generation(u64::MAX), None);
     }
 }

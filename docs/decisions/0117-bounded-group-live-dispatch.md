@@ -41,3 +41,12 @@ both the group outbox's immutable bytes and the provider's restart state.
 A transactional provider/store integration can replace the reference
 freeze-and-recover boundary only if it preserves exact-ciphertext retries and
 the same relay-acceptance rule.
+
+## Amendment (0130)
+
+"It must recover the selected durable generation before it can retry" is
+enforced: a non-committed write latches the store handle, and every later
+preparation, dispatch and receive returns `frozen` before it encrypts or sends
+until `recover` has run (0130). The third attempt is dispatched once and its
+acceptance is returned as success while the durable disposition stays
+`exhausted_unknown` (0130).
