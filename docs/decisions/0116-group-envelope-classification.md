@@ -31,7 +31,7 @@ coordinator consumes only group-classified plaintext is a caller convention,
 implemented in `GroupClient::receive`; nothing in the envelope enforces it.
 
 The Rust client and its FFI/WASM projections expose the same class, documented
-as a routing label; the TypeScript head does not surface it yet. Existing
+as a routing label, and so does the TypeScript head's `Message.kind`. Existing
 direct sends continue to create the `direct` class.
 
 ## Considered

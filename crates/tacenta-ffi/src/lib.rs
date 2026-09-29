@@ -106,7 +106,9 @@ impl From<tacenta_client::RestoreOutcome> for RestoreOutcome {
     }
 }
 
-/// The authenticated relay envelope class of an inbound message.
+/// The relay envelope class of an inbound message. It is a routing label that
+/// the sender chooses and the relay carries; nothing authenticates it, so a
+/// relay can relabel a message (decision 0116).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MessageKind {
     Direct,

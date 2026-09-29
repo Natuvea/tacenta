@@ -13,8 +13,10 @@ commits carry their story.
   envelope class as `kind` (`Direct`, `Group` or `Receipt`): the UniFFI record
   that Swift and Kotlin use gains a `kind` field, so code that constructs
   `Message` values must pass it, and the WebAssembly `Message` gains a `kind`
-  string. The TypeScript head does not expose `kind` yet. The class is the
-  relay's outer label, not an authenticated property of the message.
+  string. The TypeScript head's `Message` carries it as `kind` (`"direct"`,
+  `"group"` or `"receipt"`; a constructor default of `"direct"` keeps code that
+  builds `Message` values compiling). The class is the relay's outer label, not
+  an authenticated property of the message.
 - A bounded experimental group profile (the `tacenta-group` crate and, in
   `tacenta-client`, the experimental `GroupClient` with its group-operation
   modules: eight members, one device each, one authority) is in the tree for
