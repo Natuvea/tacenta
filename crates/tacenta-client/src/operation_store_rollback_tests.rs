@@ -95,6 +95,20 @@ fn a_store_found_empty_after_a_commit_yields_nothing() {
     assert_eq!(handle.recover_not_behind(), Ok(None));
 }
 
+/// Finding the store empty forgets what the handle last observed and nothing else: a backup that
+/// is put back afterwards is still a rollback, because the mark is the highest generation ever
+/// committed or recovered, not the last one seen.
+#[test]
+fn an_empty_store_does_not_forget_what_was_committed() {
+    let (mut handle, outside) = handle_at_three();
+    outside.put(None);
+    assert_eq!(handle.recover_not_behind(), Ok(None));
+    outside.put(Some(at(2)));
+    assert_eq!(handle.recover_not_behind(), Err(RecoverError::RolledBack));
+    outside.put(Some(at(3)));
+    assert_eq!(handle.recover_not_behind().unwrap().unwrap().generation, 3);
+}
+
 /// A write that failed, or whose outcome was unknown, does not raise the mark: whether an unknown
 /// write landed is what recovery finds out, and both answers are legitimate.
 #[test]

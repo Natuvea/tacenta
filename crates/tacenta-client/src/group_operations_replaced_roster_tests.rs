@@ -191,6 +191,32 @@ fn the_replaced_roster_is_read_only_from_a_checkpoint_that_is_the_views_predeces
     );
 }
 
+/// A record for the view's group whose roster is another group's is not read, even when its
+/// commitment is the digest the view names as its predecessor (a view attached from a source roster
+/// can name any digest). The commitment check alone would accept it.
+#[test]
+fn a_replaced_roster_of_another_group_is_not_read_even_with_the_right_digest() {
+    let foreign = roster_in(other_gid(), 3, [7; 32], vec![alice(), bob()]);
+    let source = roster_in(gid(), 4, digest_of(&foreign), vec![alice()]);
+    let view = RosterView::accept_source(&alice(), source.clone(), digest_of(&source))
+        .expect("a source view");
+    let mut snapshot = OperationSnapshot::empty(1);
+    snapshot.group_controls =
+        vec![encode_replaced_roster_record(gid(), &foreign.encode().unwrap()).unwrap()];
+    assert!(replaced_roster_members(&snapshot, &view).is_empty());
+    // The same record for the same group ID and a roster of that group is read.
+    let own = roster_in(gid(), 3, [7; 32], vec![alice(), bob()]);
+    let source = roster_in(gid(), 4, digest_of(&own), vec![alice()]);
+    let view = RosterView::accept_source(&alice(), source.clone(), digest_of(&source))
+        .expect("a source view");
+    snapshot.group_controls =
+        vec![encode_replaced_roster_record(gid(), &own.encode().unwrap()).unwrap()];
+    assert_eq!(
+        replaced_roster_members(&snapshot, &view),
+        vec![alice(), bob()]
+    );
+}
+
 /// The newest checkpoint of a group survives sixty-four later control records, and a checkpoint of
 /// another group is a different checkpoint: it neither replaces the first nor is replaced by it.
 #[test]
