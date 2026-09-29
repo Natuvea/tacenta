@@ -36,6 +36,13 @@ commits carry their story.
   once one was dropped half way through its frame (`BrokenPipe`).
   Client export order is now a function of the state (`export_state` writes the
   peer sessions in address order).
+- The byte layouts of the peer-exchanged group formats (the group payload and its
+  five tags, the roster preimage, the application context, the invitation
+  bootstrap, acceptance and revocation, and the logical-send intent) are
+  specified in `spec/group-wire-formats.md`, with byte vectors in
+  `contracts/vectors/group-wire-v1.json` (decision 0149). No behaviour changed;
+  the page lists eight open points where the code has no stated reason or
+  disagrees with a decision record.
 
 ## v1.12.1 (2026-09-11)
 

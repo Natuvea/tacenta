@@ -40,6 +40,10 @@ jobs:
       - run: bash tooling/check-versions.sh
       - run: bash tooling/check-conformance-lines.sh
       - run: bash tooling/check-surface.sh
+      # The group wire vectors are written by a Rust test (the rust job diffs the
+      # committed file) and replayed here by a second reader written from the spec
+      # page (decision 0149).
+      - run: bash tooling/check-group-wire-vectors.sh
       - run: bash tooling/check-tree-clean.sh
       # check-advisories skips itself when cargo-audit is absent, and the
       # GitHub-hosted image does not ship it; install so the scan runs.

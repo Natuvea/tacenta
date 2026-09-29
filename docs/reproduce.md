@@ -72,6 +72,13 @@ lake exe vectors user     | diff -u ../contracts/vectors/user-v1.json     -
 lake exe vectors stream   | diff -u ../contracts/vectors/stream-v1.json   -
 lake exe vectors group    | diff -u ../contracts/vectors/group-v1.json    -
 
+# The group wire formats have no Lean model, so their byte vectors are written by a
+# Rust test (decision 0149) and replayed by a second reader written from
+# spec/group-wire-formats.md. The first command fails if the committed file differs
+# from the test's builder; the second replays every vector through the reader.
+cargo test --locked -p tacenta-group --test group_wire_vectors
+bash ../tooling/check-group-wire-vectors.sh
+
 # Refinement theorems over the committed translation of the shipped Rust.
 cd ../verification && lake exe cache get && lake build
 ```
@@ -136,6 +143,17 @@ with the other vector sets:
 ```bash
 (cd spec && lake exe vectors group) | diff -u contracts/vectors/group-v1.json -
 ```
+
+The byte layouts of the peer-exchanged group formats are specified in
+`spec/group-wire-formats.md`. Their vectors, `contracts/vectors/group-wire-v1.json`,
+are not generated from the model: `crates/tacenta-group/tests/group_wire_vectors.rs`
+builds them from the page and replays them against the Rust codecs, and
+`tooling/group_wire_reference.py`, written from the page alone, replays them too
+(`bash tooling/check-group-wire-vectors.sh`, which CI runs). After a deliberate
+change to a layout, rewrite the file with
+`TACENTA_WRITE_GROUP_WIRE_VECTORS=1 cargo test -p tacenta-group --test group_wire_vectors`
+and review the diff. A single-change mutation run over these codecs is
+`python3 tooling/group-mutation/mutate.py --mutants wire_mutants.py`.
 
 To capture comparable cold and warm process-level measurements, pass an output
 directory. The runner records the product revision, the tacenta-core revision
@@ -203,7 +221,7 @@ That is 4.6 times the snapshot and about 2.2 times the time of the first send,
 and 1.47 MB of the snapshot is the outbox and the other collections, not the
 provider state (259,472 bytes) or the receiver state (589 bytes). The probe
 process's maximum resident set was 41 MB and its user CPU 5.6 s. The whole demo
-in one process, which runs 448 tests: 86 s elapsed (345 s CPU, 900 MB) cold and
+in one process, which ran 448 tests when this was measured (it runs 452 now: the four wire-vector tests came later): 86 s elapsed (345 s CPU, 900 MB) cold and
 59 s (279 s CPU, 100 MB) warm, at that load. Nothing was measured at 32, 128 or
 512 members, with the outbox holding its eight live sends, or on another host,
 and the commit latency was measured at the sizes of the first table only.
