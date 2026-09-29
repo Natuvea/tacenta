@@ -53,9 +53,11 @@
 #     earlier on PATH that replays recorded output, and a stale binary (a source
 #     file whose modification time is older than the build) all pass. The script
 #     trusts the toolchain and the build;
-#   - that it survives load. libtest prints a notice for a test that has been
-#     running for more than 60 seconds; the script cannot parse that line and
-#     fails the step closed, so a slow runner can fail a run with nothing wrong.
+#   - that no test was slow. libtest prints `test NAME has been running for over
+#     60 seconds` for a test that runs that long; the script reads that one line
+#     as a note (printed, not counted) and does not fail on it, because a loaded
+#     machine would otherwise fail a run with nothing wrong. Any other line it
+#     cannot parse still fails the step.
 #
 # A deliberate change to the tests is made in one commit: change the tests, run
 # this script with --update-manifest, and review the manifest's diff.
@@ -183,7 +185,8 @@ step() {
   # (`tacenta_group`, `limits`); the offending lines go to $work/bad.
   : >"$work/found"
   : >"$work/bad"
-  counts=$(awk -v found="$work/found" -v bad="$work/bad" '
+  : >"$work/slow"
+  counts=$(awk -v found="$work/found" -v bad="$work/bad" -v slow="$work/slow" '
     BEGIN { target = "?" }
     /^ +Running / {
       target = "?"
@@ -203,6 +206,10 @@ step() {
         if ($i == "failed;") failed += $(i - 1)
         if ($i == "ignored;") ignored += $(i - 1)
       }
+      next
+    }
+    /^test [^ \t]+ has been running for over [0-9]+ seconds$/ {
+      print $0 > slow
       next
     }
     /^test / {
@@ -251,6 +258,9 @@ step() {
   odd=$9
 
   problems=0
+
+  [ ! -s "$work/slow" ] ||
+    echo "group demo:   [$id] note: libtest reported a slow test (not a failure): $(tr '\n' '|' <"$work/slow")" >&2
 
   [ "$results" -gt 0 ] && [ "$passed" -gt 0 ] || problem "ran zero tests"
   [ "$failed" -eq 0 ] && [ "$fails" -eq 0 ] ||
@@ -377,12 +387,13 @@ echo "group client: staged receive, write-through direct messages, latch, bounds
 # the measurement script runs them.
 step group-client-traces "GroupClient live traces and boundary traces" \
   cargo test --locked -p tacenta-client --lib group_client::tests -- --skip group_scale_probe
-step group-operations-review "coordinator functions: bounds, latch, validate before encrypt, unknown-write sites" \
-  cargo test --locked -p tacenta-client --lib group_operations::review_tests
+step group-operations-review "coordinator functions: bounds, latch, validate before encrypt, unknown-write sites, the replaced-roster checkpoint" \
+  cargo test --locked -p tacenta-client --lib group_operations::review_tests \
+  group_operations::replaced_roster_tests
 step review-live "live guards of the preparation and dispatch functions" \
   cargo test --locked -p tacenta-client --lib tests::review_live
-step operation-store "operation store: latch, generations, the fence, the native store under contention" \
-  cargo test --locked -p tacenta-client --lib operation_store::tests
+step operation-store "operation store: latch, generations, the fence, rollback, the native store under contention" \
+  cargo test --locked -p tacenta-client --lib operation_store::tests operation_store::rollback_tests
 step deferred-rosters "held roster controls: the queue and its record" \
   cargo test --locked -p tacenta-client --lib group_deferred_rosters::tests
 
@@ -390,7 +401,7 @@ echo "group profile: guards pinned after the mutation reruns"
 step group-guards "group crate guards: send recovery, receiver, roster view, invitation rules" \
   cargo test --locked -p tacenta-group --test logical_send_guards --test send_recovery_transcripts \
   --test receiver_guards --test receiver_events_and_removal_guards --test roster_guards \
-  --test invitation_rules
+  --test invitation_rules --test unlisted_deferral_guards
 step client-guards "client guards: operation store, control outbox, group operations" \
   cargo test --locked -p tacenta-client --lib guard_tests
 

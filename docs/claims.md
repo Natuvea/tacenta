@@ -566,8 +566,9 @@ not in our proofs' dependency cone.
   source and the manifest in one commit; a step removed from both the script and
   the manifest); it does not know whether the output is libtest's or the binary is
   built from the tree (forged output, a test target with `harness = false`, a
-  `cargo` earlier on PATH, a stale binary all pass); and it fails closed under load
-  when libtest prints its notice for a test that has run more than 60 seconds.
+  `cargo` earlier on PATH, a stale binary all pass). It reads libtest's notice for
+  a test that has run more than 60 seconds as a note and does not fail on it; it
+  used to fail the step closed, which a loaded machine reached.
   Its live traces keep operation state in an
   in-memory store whose writes always succeed; the native file-backed store is
   exercised by one step and by unit tests, and it is neither sealed nor
