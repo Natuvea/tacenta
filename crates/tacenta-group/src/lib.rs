@@ -168,8 +168,10 @@ impl Member {
     }
 
     /// The canonical roster order (decision 0127): the identity bytes, then
-    /// the device bytes. It is never the order of their concatenation.
-    pub(crate) fn canonical_cmp(&self, other: &Self) -> Ordering {
+    /// the device bytes. It is never the order of their concatenation. It is
+    /// public so that a caller that builds rosters or recipient lists sorts with
+    /// this rule and not a copy of it (decision 0135).
+    pub fn canonical_cmp(&self, other: &Self) -> Ordering {
         self.identity
             .cmp(&other.identity)
             .then_with(|| self.device.cmp(&other.device))

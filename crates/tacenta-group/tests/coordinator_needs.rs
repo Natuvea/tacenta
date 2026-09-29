@@ -572,3 +572,71 @@ fn a_source_roster_is_refused_unless_it_names_the_authenticated_authority() {
         Err(RosterRefusal::InvalidSource)
     );
 }
+
+// ---------------------------------------------------------------------------
+// 4. The canonical member order is public (decision 0135, item 4)
+// ---------------------------------------------------------------------------
+
+fn mk(identity: &[u8], device: &[u8]) -> Member {
+    Member::new(identity.to_vec(), device.to_vec())
+}
+
+#[test]
+fn the_canonical_member_order_is_the_identity_then_device_pair() {
+    use std::cmp::Ordering;
+    // A proper prefix sorts first even when its device bytes are larger; the
+    // order of the concatenations would say the opposite.
+    assert_eq!(
+        mk(b"a", &[0xff]).canonical_cmp(&mk(b"ab", &[])),
+        Ordering::Less
+    );
+    assert_eq!(
+        mk(b"ab", &[]).canonical_cmp(&mk(b"a", &[0xff])),
+        Ordering::Greater
+    );
+    // Equal concatenations are two members, ordered by identity.
+    assert_eq!(
+        mk(b"a", b"bc").canonical_cmp(&mk(b"ab", b"c")),
+        Ordering::Less
+    );
+    // The device only breaks a tie between equal identities.
+    assert_eq!(
+        mk(b"a", &[1]).canonical_cmp(&mk(b"a", &[2])),
+        Ordering::Less
+    );
+    assert_eq!(
+        mk(b"a", &[2]).canonical_cmp(&mk(b"a", &[2])),
+        Ordering::Equal
+    );
+}
+
+#[test]
+fn sorting_by_the_public_order_yields_exactly_the_rosters_the_crate_accepts() {
+    let mut members = vec![
+        mk(b"ab", &[]),
+        mk(b"a", &[0xff]),
+        mk(b"b", &[1]),
+        mk(b"ab", &[1]),
+        mk(b"", &[7]),
+    ];
+    // A roster needs one member per identity: keep the first of each.
+    members.sort_by(Member::canonical_cmp);
+    members.dedup_by(|later, earlier| later.identity() == earlier.identity());
+    let authority = members[0].clone();
+    let build = |members: Vec<Member>| {
+        Roster::new(
+            group(),
+            1,
+            [0; DIGEST_LEN],
+            authority.clone(),
+            POLICY_VERSION_V1,
+            false,
+            members,
+        )
+        .map(|_| ())
+    };
+    assert_eq!(build(members.clone()), Ok(()));
+    let mut reversed = members;
+    reversed.reverse();
+    assert_eq!(build(reversed), Err(Error::NonCanonical));
+}

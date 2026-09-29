@@ -369,11 +369,7 @@ impl<P: CryptoProvider> GroupClient<P> {
     pub fn next_roster(&self, mut members: Vec<Member>) -> Result<Roster, GroupError> {
         let state = self.group.as_ref().ok_or(GroupError::NoGroup)?;
         let view = state.view.as_ref().ok_or(GroupError::Policy)?;
-        members.sort_by(|left, right| {
-            left.identity()
-                .cmp(right.identity())
-                .then_with(|| left.device().cmp(right.device()))
-        });
+        members.sort_by(Member::canonical_cmp);
         Roster::new(
             state.group_id,
             view.roster()
@@ -836,12 +832,7 @@ impl<P: CryptoProvider> GroupClient<P> {
         let state = group.as_mut().ok_or(GroupError::NoGroup)?;
         let view = state.view.as_ref().ok_or(GroupError::Policy)?;
         let mut routes = recipients.to_vec();
-        routes.sort_by(|left, right| {
-            left.0
-                .identity()
-                .cmp(right.0.identity())
-                .then_with(|| left.0.device().cmp(right.0.device()))
-        });
+        routes.sort_by(|left, right| left.0.canonical_cmp(&right.0));
         let sequence = state
             .outbox
             .sends()

@@ -69,3 +69,9 @@ binding and stays correct if the one-device rule is later relaxed.
 A multi-device profile, a variable-width or non-byte identity encoding, or a
 published byte vector that fixes a different order needs a versioned roster
 format and a migration rule.
+
+## Amendment (0135)
+
+`Member::canonical_cmp` is public. The client sorts rosters and recipient
+lists with it in production code instead of a copy of the rule, so the two
+cannot drift.

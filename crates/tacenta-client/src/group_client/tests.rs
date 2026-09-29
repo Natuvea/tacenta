@@ -815,6 +815,28 @@ async fn joining_from_a_source_roster_refuses_another_authority_and_a_closed_ros
 }
 
 #[tokio::test]
+async fn next_roster_orders_members_by_the_group_crates_own_rule() {
+    let (directory, relay) = start_server().await;
+    let store = SharedStore::default();
+    let mut alice = coordinator(directory, relay, "+alice", &store).await;
+    alice.create_group(gid()).unwrap();
+    let alice_member = alice.member().unwrap();
+    // Identities that are prefixes of one another, given in the wrong order:
+    // as pairs ("a", [ff]) sorts before ("ab", []); as concatenations it would
+    // sort after it.
+    let prefixed = Member::new(b"a".to_vec(), vec![0xff]);
+    let longer = Member::new(b"ab".to_vec(), vec![]);
+    let roster = alice
+        .next_roster(vec![longer.clone(), alice_member.clone(), prefixed.clone()])
+        .unwrap();
+    let position = |member: &Member| roster.members.iter().position(|m| m == member).unwrap();
+    assert!(position(&prefixed) < position(&longer));
+    let mut expected = roster.members.clone();
+    expected.sort_by(Member::canonical_cmp);
+    assert_eq!(roster.members, expected);
+}
+
+#[tokio::test]
 async fn an_authority_grows_a_live_group_from_one_to_eight_members() {
     let (directory, relay) = start_server().await;
     let alice_store = SharedStore::default();
