@@ -28,6 +28,14 @@ The crash boundary between pairwise preparation and relay handoff must not let
 a restart repeat a ratchet step or claim an unrecorded attempt. The explicit
 unknown terminal state remains truthful when delivery cannot be observed.
 
+## Amendment (0135)
+
+The third reservation is the final attempt and is `exhausted_unknown` before
+its bytes are sent. If the relay then accepts them, `record_relay_accepted`
+takes the recipient from `exhausted_unknown` to `relay_accepted`, and the `TCGA`
+record replays from either state. A final attempt that the relay never accepted
+stays `exhausted_unknown`.
+
 ## What would reopen this
 
 A production transport receipt or different retry budget requires a versioned

@@ -219,7 +219,12 @@ impl Outbox {
                     && payload_commitment(&handoff.payload) == commitment
             })
             .ok_or(GroupError::Malformed)?;
-        if handoff.disposition != Disposition::HandedOff {
+        // The final attempt is `exhausted_unknown` from its reservation, before
+        // it is sent, so it is accepted from that state too (0135).
+        if !matches!(
+            handoff.disposition,
+            Disposition::HandedOff | Disposition::ExhaustedUnknown
+        ) {
             return Err(GroupError::WrongDisposition);
         }
         handoff.disposition = Disposition::RelayAccepted;
@@ -450,6 +455,52 @@ mod tests {
             Err(GroupError::WrongDisposition)
         );
 
+        let state = outbox.encode_state().unwrap();
+        assert_eq!(Outbox::decode_state(&state), Ok(outbox));
+    }
+
+    #[test]
+    fn the_final_attempt_is_accepted_from_exhausted_unknown_and_survives_encoding() {
+        let roster = Roster::new(
+            GroupId::new(*b"bounded-group-id"),
+            1,
+            [0; DIGEST_LEN],
+            alice(),
+            POLICY_VERSION_V1,
+            false,
+            vec![alice(), bob()],
+        )
+        .unwrap();
+        let payload = GroupPayload::Roster(roster).encode().unwrap();
+        let mut outbox = Outbox::default();
+        outbox
+            .record_prepared(bob(), payload.clone(), vec![7, 8])
+            .unwrap();
+        // Not accepted before any reservation.
+        assert_eq!(
+            outbox.accept(&bob(), &payload),
+            Err(GroupError::WrongDisposition)
+        );
+        for _ in 0..3 {
+            outbox.reserve(&bob(), &payload).unwrap();
+        }
+        assert_eq!(
+            outbox.handoff(&bob(), &payload).unwrap().disposition,
+            Disposition::ExhaustedUnknown
+        );
+        outbox.accept(&bob(), &payload).unwrap();
+        let accepted = outbox.handoff(&bob(), &payload).unwrap();
+        assert_eq!(accepted.disposition, Disposition::RelayAccepted);
+        assert_eq!(accepted.attempts_reserved, 3);
+        // Accepted once; a second acceptance and a fourth reservation refuse.
+        assert_eq!(
+            outbox.accept(&bob(), &payload),
+            Err(GroupError::WrongDisposition)
+        );
+        assert_eq!(
+            outbox.reserve(&bob(), &payload),
+            Err(GroupError::WrongDisposition)
+        );
         let state = outbox.encode_state().unwrap();
         assert_eq!(Outbox::decode_state(&state), Ok(outbox));
     }

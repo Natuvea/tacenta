@@ -11,7 +11,8 @@ use crate::group_operations::{
     commit_group_control_outbox_transition, commit_group_invitation_transition,
     commit_logical_intent, commit_outbox_handoff_reservation, dispatch_outbound_roster_control,
     dispatch_outbox_group_handoff, prepare_authority_roster_control,
-    prepare_outbound_roster_control, prepare_outbox_group_recipient,
+    prepare_outbound_roster_control, prepare_outbox_group_recipient, recover_group_control_outbox,
+    recover_group_outbox,
 };
 use crate::operation_store::{
     CommitOutcome, DurableStore, OperationSnapshot, OperationStore, StoreError,
@@ -548,7 +549,7 @@ async fn a_second_preparation_after_frozen_neither_succeeds_nor_encrypts() {
 }
 
 #[tokio::test]
-async fn the_final_attempt_is_sent_once_returned_ok_and_never_recorded_as_accepted() {
+async fn the_final_attempt_is_sent_once_and_recorded_as_relay_accepted() {
     let (directory, relay) = start_server().await;
     let mut alice = connect(directory, relay, "+alice").await;
     let mut bob = connect(directory, relay, "+bob").await;
@@ -581,8 +582,9 @@ async fn the_final_attempt_is_sent_once_returned_ok_and_never_recorded_as_accept
     .unwrap();
     commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &b).unwrap();
     commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &b).unwrap();
-    // The third reservation is the final attempt: sent once, reported as
-    // success, still recorded as exhausted-unknown.
+    // The third reservation is the final attempt: it is recorded as
+    // exhausted-unknown before it is sent, sent once, and once the relay has
+    // accepted it, recorded as relay-accepted (decision 0135).
     let result = dispatch_outbox_group_handoff(
         &mut alice,
         &mut store,
@@ -595,9 +597,69 @@ async fn the_final_attempt_is_sent_once_returned_ok_and_never_recorded_as_accept
     .await;
     assert!(result.is_ok(), "{:?}", result.as_ref().map(|_| ()));
     assert_eq!(bob.drain().await.unwrap().len(), 1);
+    let progress = &outbox.send(&id).unwrap().recipients()[0];
+    assert_eq!(progress.disposition, RecipientDisposition::RelayAccepted);
+    assert_eq!(progress.attempts_reserved, 3);
+    // The durable record says the same: a restart recovers the acceptance.
+    assert_eq!(recover_group_outbox(&snapshot, gid()).unwrap(), outbox);
+    // A fourth request is refused before anything reaches the relay.
+    let fourth = dispatch_outbox_group_handoff(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        &mut outbox,
+        &id,
+        &b,
+        bob.address(),
+    )
+    .await;
+    assert!(matches!(fourth, Err(GroupLiveError::Policy)));
+    assert!(bob.drain().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_final_attempt_that_was_reserved_but_never_accepted_stays_exhausted_and_is_not_resent() {
+    let (directory, relay) = start_server().await;
+    let mut alice = connect(directory, relay, "+alice").await;
+    let mut bob = connect(directory, relay, "+bob").await;
+    let (a, b) = (member(&alice), member(&bob));
+    let roster = successor(&a, 1, [0; DIGEST_LEN], vec![a.clone(), b.clone()]);
+    let send = LogicalSend::new(
+        &roster,
+        [7; DIGEST_LEN],
+        a.clone(),
+        0,
+        vec![b.clone()],
+        b"reserved only".to_vec(),
+    )
+    .unwrap();
+    let id = send.id.clone();
+    let mut store = GroupStore { snapshot: None };
+    let mut snapshot = OperationSnapshot::empty(0);
+    let mut outbox = GroupOutbox::new(gid());
+    commit_logical_intent(&mut store, &mut snapshot, &mut outbox, send).unwrap();
+    prepare_outbox_group_recipient(
+        &mut alice,
+        &mut store,
+        &mut snapshot,
+        &mut outbox,
+        &id,
+        &b,
+        bob.address(),
+    )
+    .await
+    .unwrap();
+    // Three reservations are committed and nothing is ever sent: the process
+    // went away, or the relay never took the bytes. Nothing was accepted.
+    for _ in 0..3 {
+        commit_outbox_handoff_reservation(&mut store, &mut snapshot, &mut outbox, &id, &b).unwrap();
+    }
+    let recovered = recover_group_outbox(&snapshot, gid()).unwrap();
+    assert_eq!(recovered, outbox);
     assert_eq!(
-        outbox.send(&id).unwrap().recipients()[0].disposition,
-        RecipientDisposition::ExhaustedUnknown
+        recovered.send(&id).unwrap().recipients()[0].disposition,
+        RecipientDisposition::ExhaustedUnknown,
+        "an unaccepted final attempt is not recorded as accepted"
     );
     // A fourth request is refused before anything reaches the relay.
     let fourth = dispatch_outbox_group_handoff(
@@ -615,7 +677,7 @@ async fn the_final_attempt_is_sent_once_returned_ok_and_never_recorded_as_accept
 }
 
 #[tokio::test]
-async fn the_control_outbox_follows_the_same_final_attempt_rule() {
+async fn the_control_outbox_records_acceptance_of_the_final_attempt_too() {
     let (directory, relay) = start_server().await;
     let mut alice = connect(directory, relay, "+alice").await;
     let mut bob = connect(directory, relay, "+bob").await;
@@ -653,10 +715,12 @@ async fn the_control_outbox_follows_the_same_final_attempt_rule() {
     .await;
     assert!(result.is_ok(), "{:?}", result.as_ref().map(|_| ()));
     assert_eq!(bob.drain().await.unwrap().len(), 1);
-    assert_eq!(
-        outbox.handoff(&b, &handoff.payload).unwrap().disposition,
-        ControlDisposition::ExhaustedUnknown
-    );
+    let accepted = outbox.handoff(&b, &handoff.payload).unwrap();
+    assert_eq!(accepted.disposition, ControlDisposition::RelayAccepted);
+    assert_eq!(accepted.attempts_reserved, 3);
+    // The durable state carries it and decodes to the same outbox.
+    let recovered = recover_group_control_outbox(&snapshot).unwrap();
+    assert_eq!(recovered, outbox);
     let fourth = dispatch_outbound_roster_control(
         &mut alice,
         &mut store,

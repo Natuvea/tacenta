@@ -863,13 +863,10 @@ where
         .dispatch_group_ciphertext(route, &handoff.ciphertext)
         .await
         .map_err(|error| live_client_error(error.kind()))?;
-    if handoff.disposition == ControlDisposition::ExhaustedUnknown {
-        // The third reservation was the final attempt (0106, 0134). The relay
-        // accepted it, and that is reported as success; the durable state stays
-        // `exhausted_unknown` because acceptance is recorded only from
-        // `handed_off`. A fourth request is refused by `reserve` above.
-        return Ok(handoff);
-    }
+    // The third reservation was the final attempt (0106, 0134) and is recorded
+    // as exhausted before it is sent. Once the relay has accepted it, that
+    // acceptance is recorded too (0135); a fourth request is refused by
+    // `reserve` above, before any relay request.
     commit_group_control_outbox_transition(store, snapshot, outbox, |candidate| {
         candidate.accept(recipient, payload)
     })
@@ -1477,11 +1474,9 @@ where
         .dispatch_group_ciphertext(route, ciphertext)
         .await
         .map_err(|error| live_client_error(error.kind()))?;
-    if handoff.disposition == RecipientDisposition::ExhaustedUnknown {
-        // The third reservation was the final attempt (0106, 0134); the relay
-        // accepted it, and the durable state stays `exhausted_unknown`.
-        return Ok(handoff);
-    }
+    // The third reservation was the final attempt (0106, 0134) and is recorded
+    // as exhausted before it is sent. The relay has accepted this send, so the
+    // acceptance is recorded whichever attempt it was (0135).
     commit_outbox_relay_acceptance(store, snapshot, outbox, id, recipient).map_err(Into::into)
 }
 

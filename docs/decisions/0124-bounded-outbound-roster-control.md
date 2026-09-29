@@ -35,4 +35,5 @@ distribution, but must keep an explicit durable control-delivery boundary.
 The control outbox no longer keeps a finished handoff for the life of the
 group: at most 8 live and 16 retained terminal handoffs (0133). The
 three-attempt limit follows the group outbox exactly: the third reservation is
-the final attempt and enters `exhausted_unknown` (0106, 0134).
+the final attempt and enters `exhausted_unknown` (0106, 0134); the relay's
+acceptance of it is recorded as `relay_accepted` (0135).

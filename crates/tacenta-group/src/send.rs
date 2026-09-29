@@ -213,6 +213,7 @@ impl GroupOutbox {
                         record.commitment,
                         record.ciphertext,
                         &payload_commitment,
+                        false,
                     )?;
                 }
                 b"TCGH" => {
@@ -228,6 +229,7 @@ impl GroupOutbox {
                         record.commitment,
                         record.ciphertext,
                         &payload_commitment,
+                        false,
                     )?;
                     let send = outbox.send_mut(&logical_id_from_context(&record.context)?)?;
                     let prior_attempts =
@@ -256,13 +258,9 @@ impl GroupOutbox {
                         record.commitment,
                         record.ciphertext,
                         &payload_commitment,
+                        true,
                     )?;
                     let send = outbox.send_mut(&logical_id_from_context(&record.context)?)?;
-                    if send.progress(&record.context.recipient)?.disposition
-                        != RecipientDisposition::HandedOff
-                    {
-                        return Err(Error::WrongDisposition);
-                    }
                     send.record_relay_accepted(&record.context.recipient)?;
                 }
                 _ if tag.starts_with(b"TCG") => return Err(Error::Malformed),
@@ -343,6 +341,10 @@ fn decode_handoff_suffix(bytes: &[u8]) -> Result<(u8, RecipientDisposition), Err
     Ok((*attempts, disposition))
 }
 
+/// Replays the preparation a progress record repeats. With `after_final_attempt`
+/// set (the `TCGA` record) a recipient that is already `exhausted_unknown` is
+/// checked against the stored bytes instead: the record must repeat the exact
+/// commitment and ciphertext that were handed off (decision 0135).
 fn apply_recovered_preparation(
     outbox: &mut GroupOutbox,
     group_id: GroupId,
@@ -350,6 +352,7 @@ fn apply_recovered_preparation(
     commitment: [u8; DIGEST_LEN],
     ciphertext: Vec<u8>,
     payload_commitment: &impl Fn(&[u8]) -> [u8; DIGEST_LEN],
+    after_final_attempt: bool,
 ) -> Result<(), Error> {
     if context.group_id != group_id {
         return Ok(());
@@ -361,6 +364,18 @@ fn apply_recovered_preparation(
     let send = outbox.send_mut(&logical_id_from_context(context)?)?;
     if send.application_context(&context.recipient)? != *context {
         return Err(Error::Conflict);
+    }
+    if after_final_attempt {
+        let stored = send.progress(&context.recipient)?;
+        if stored.disposition == RecipientDisposition::ExhaustedUnknown {
+            return if stored.context_commitment == Some(commitment)
+                && stored.ciphertext.as_deref() == Some(ciphertext.as_slice())
+            {
+                Ok(())
+            } else {
+                Err(Error::Conflict)
+            };
+        }
     }
     send.record_prepared(&context.recipient, commitment, ciphertext)?;
     Ok(())
@@ -628,13 +643,20 @@ impl LogicalSend {
 
     /// Relay acceptance ends automatic retries but is not an application
     /// receipt.
+    ///
+    /// A recipient that is `exhausted_unknown` may be accepted too (decision
+    /// 0135). The third reservation is the final attempt and enters that state
+    /// before the bytes are sent, so it is the state of a recipient whose final
+    /// send the relay has just accepted. `reserve_handoff` reaches it only after
+    /// storing a ciphertext and reserving three attempts, and refuses a fourth,
+    /// so no further guard is needed here.
     pub fn record_relay_accepted(
         &mut self,
         recipient: &Member,
     ) -> Result<&RecipientProgress, Error> {
         let progress = self.progress_mut(recipient)?;
         match progress.disposition {
-            RecipientDisposition::HandedOff => {
+            RecipientDisposition::HandedOff | RecipientDisposition::ExhaustedUnknown => {
                 progress.disposition = RecipientDisposition::RelayAccepted;
                 Ok(progress)
             }
@@ -642,7 +664,6 @@ impl LogicalSend {
             | RecipientDisposition::Prepared
             | RecipientDisposition::Cancelled
             | RecipientDisposition::CancelledAfterHandoff
-            | RecipientDisposition::ExhaustedUnknown
             | RecipientDisposition::RelayAccepted => Err(Error::WrongDisposition),
         }
     }

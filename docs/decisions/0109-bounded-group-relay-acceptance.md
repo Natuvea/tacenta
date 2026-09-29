@@ -30,3 +30,8 @@ Relay acknowledgement is observable, while application consumption is not.
 
 A production receipt protocol can add authenticated application status as a
 separate operation; it cannot reinterpret this relay observation.
+
+## Amendment (0135)
+
+Acceptance is recorded from `handed_off`, and from `exhausted_unknown` for the
+final attempt, whose reservation enters that state before the bytes are sent.

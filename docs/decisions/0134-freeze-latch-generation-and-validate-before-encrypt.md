@@ -36,13 +36,13 @@ byte-for-byte unchanged.
 **The final attempt.** A recipient gets at most three handoff reservations, in
 the application outbox and in the control outbox alike (0124). The third
 reservation records `exhausted_unknown` before the bytes are sent, and the
-coordinator sends that third and final attempt once. A relay acceptance of the
-final attempt is returned as success and is **not** recorded as
-`relay_accepted`: the group crate's state machine records acceptance only from
-`handed_off`, and the coordinator does not write a record its own recovery would
-refuse. The durable disposition therefore stays `exhausted_unknown` ("delivery
-unknown, no more retries"), which understates a delivery that happened and never
-overstates one. A fourth request is refused before any relay request. Before
+coordinator sends that third and final attempt once. When the relay accepts it,
+the acceptance is recorded as `relay_accepted` (0135 lets the group crate's
+state machine, its `TCGA` recovery and the control outbox record acceptance from
+`exhausted_unknown`); a final attempt that was reserved and never accepted stays
+`exhausted_unknown` ("delivery unknown, no more retries"), so the record never
+claims an acceptance the relay did not give. A fourth request is refused before
+any relay request. Before
 this record the application outbox sent the third attempt and then returned
 `policy` after the relay had accepted it, while the control outbox allowed a
 third `handed_off` attempt and exhausted only on a fourth request; both now
@@ -58,10 +58,11 @@ follow the rule above.
   store handle, so a caller cannot forget it.
 - Make the third attempt a non-dispatch marker. Rejected: it silently reduces
   the retry budget documented in 0124 to two sends.
-- Record acceptance of the final attempt. Needs a group-crate change
-  (`record_relay_accepted` from `exhausted_unknown` when three attempts are
-  reserved, and the matching `TCGA` recovery, which today requires
-  `handed_off`); named in the report, not done here.
+- Record acceptance of the final attempt. It needed a group-crate change
+  (`record_relay_accepted` from `exhausted_unknown` and the matching `TCGA`
+  recovery, which required `handed_off`). This record left the durable state at
+  `exhausted_unknown`, which understated a delivery that had happened; 0135
+  made the change and the acceptance is now recorded.
 
 ## The five questions
 
@@ -71,7 +72,8 @@ follow the rule above.
    `frozen` neither succeeds nor changes the provider state; generations in a
    scripted store strictly increase across an unknown write; a refused
    preparation leaves the exported state identical; the third attempt is
-   delivered once, returned `ok`, and a fourth is refused with no relay request.
+   delivered once, recorded as relay-accepted (0135), and a fourth is refused
+   with no relay request.
 4. **Does it preserve wire compatibility with a named profile?** Yes; no wire
    change.
 5. **Product coupling entering the core?** No.
@@ -87,5 +89,4 @@ sent from what is recorded.
 ## What would reopen this
 
 A store that can report the outcome of a specific generation without a full
-recovery, or a group-crate state machine that records acceptance of the final
-attempt.
+recovery.
