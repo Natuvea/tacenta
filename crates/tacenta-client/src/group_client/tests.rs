@@ -175,6 +175,7 @@ mod roster_installation;
 mod route_and_authority_guards;
 mod scale_probe;
 mod send_and_control_dispatch;
+mod store_rollback;
 mod stranger_traffic;
 
 #[tokio::test]

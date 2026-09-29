@@ -34,9 +34,13 @@
 //! coordinator writes it. [`open`](GroupClient::open) refuses a client whose
 //! pairwise state is not the snapshot's, and the store handle refuses to
 //! publish over a snapshot the coordinator has not seen (0143), so a second
-//! coordinator on the same store freezes instead of encrypting at a position
-//! the first has used. That is a fence, not a supported configuration: run one
-//! coordinator per store.
+//! coordinator on the same store has the commit that would publish its state
+//! refused, freezes and sends nothing it encrypted; it can still encrypt in
+//! memory at a position the first has used before that commit. A store that
+//! goes back under a running coordinator is fenced the same way, and
+//! [`recover`](GroupClient::recover) refuses to adopt the older snapshot
+//! (0147). That is a fence, not a supported configuration: run one coordinator
+//! per store.
 //!
 //! The bytes of every record here are product-owned and have no vectors yet;
 //! see the review's CR-12.
@@ -54,6 +58,7 @@ use tacenta_relay::DeviceAddr;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::operation_store::FileOperationStore;
+use crate::operation_store::RecoverError;
 pub use crate::operation_store::{
     CommitOutcome, DurableStore, OperationSnapshot, OperationStore, StoreError,
 };
@@ -104,6 +109,16 @@ pub enum GroupError {
     /// (messages were sent or received through it since). Connect the client
     /// from [`recovered_provider_state`] (0143).
     StateMismatch,
+    /// The store holds an older snapshot than this coordinator has already
+    /// committed, or none: it went back (a backup put back, a sync tool, a
+    /// medium that lost writes). [`recover`](GroupClient::recover) refuses to
+    /// adopt it, because the coordinator would then encrypt at ratchet
+    /// positions its peers have already seen, and stays frozen (0147). To go on
+    /// from the older state, drop this coordinator and open a new one over a
+    /// client connected from [`recovered_provider_state`]: that is the caller
+    /// vouching for the state, and the peers drop what is sent at the positions
+    /// they have seen. Or start a new identity.
+    Rollback,
 }
 
 impl std::fmt::Display for GroupError {
@@ -118,6 +133,10 @@ impl std::fmt::Display for GroupError {
             GroupError::StateMismatch => write!(
                 f,
                 "the client's pairwise state is not the operation snapshot's"
+            ),
+            GroupError::Rollback => write!(
+                f,
+                "the operation store is behind what this coordinator committed"
             ),
         }
     }
@@ -584,16 +603,19 @@ impl<P: CryptoProvider> GroupClient<P> {
     /// frozen operation held in memory is discarded; a ciphertext it produced
     /// was never recorded and never sent. The coordinator stays frozen until
     /// every step has succeeded: a `recover` that fails, for any reason,
-    /// leaves it frozen, and the call can be repeated (0143).
+    /// leaves it frozen, and the call can be repeated (0143). A store that holds
+    /// an older snapshot than this coordinator has committed is
+    /// [`GroupError::Rollback`]: nothing is adopted and the coordinator stays
+    /// frozen (0147).
     pub async fn recover(&mut self) -> Result<(), GroupError> {
         // Reading the store lifts its own latch; this coordinator's freeze must
         // outlive that until the state has been restored and rebuilt.
         self.poisoned = true;
-        let snapshot = self
-            .store
-            .recover()
-            .map_err(|_| GroupError::Recovery)?
-            .ok_or(GroupError::Recovery)?;
+        let snapshot = match self.store.recover_not_behind() {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) | Err(RecoverError::Unreadable) => return Err(GroupError::Recovery),
+            Err(RecoverError::RolledBack) => return Err(GroupError::Rollback),
+        };
         self.client
             .restore_state_in_place(&snapshot.provider_state)
             .await?;

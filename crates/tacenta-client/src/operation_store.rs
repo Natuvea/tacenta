@@ -272,6 +272,20 @@ pub struct DurableStore {
     /// The generation of the newest snapshot this handle recovered or
     /// published; `None` while it has seen an empty store.
     observed: Option<u64>,
+    /// The highest generation of a write that reported `committed`, or of a
+    /// snapshot this handle recovered (0147). A write that failed or was in
+    /// doubt does not raise it.
+    committed: Option<u64>,
+}
+
+/// Why [`DurableStore::recover_not_behind`] did not yield a snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecoverError {
+    /// The store could not be read.
+    Unreadable,
+    /// The store holds a snapshot older than one this handle saw committed
+    /// (0147).
+    RolledBack,
 }
 
 impl DurableStore {
@@ -282,7 +296,38 @@ impl DurableStore {
             frozen: false,
             high_water: 0,
             observed: None,
+            committed: None,
         }
+    }
+
+    /// As [`recover`](OperationStore::recover), except that it refuses a store
+    /// whose snapshot has a lower generation than the highest this handle saw
+    /// committed or recovered (0147). A store that holds nothing is not a
+    /// rollback here: the caller reports it as a failed recovery (0143). A
+    /// refusal leaves the handle latched and remembers nothing new, so the same
+    /// store is refused again. A new handle has seen nothing and accepts any
+    /// snapshot.
+    pub(crate) fn recover_not_behind(&mut self) -> Result<Option<OperationSnapshot>, RecoverError> {
+        let recovered = self.inner.recover().map_err(|_| RecoverError::Unreadable)?;
+        if let (Some(committed), Some(snapshot)) = (self.committed, &recovered)
+            && snapshot.generation < committed
+        {
+            self.frozen = true;
+            return Err(RecoverError::RolledBack);
+        }
+        Ok(self.adopt(recovered))
+    }
+
+    /// What a recovery does to the handle: remembers the snapshot, lifts the
+    /// latch.
+    fn adopt(&mut self, recovered: Option<OperationSnapshot>) -> Option<OperationSnapshot> {
+        if let Some(snapshot) = &recovered {
+            self.high_water = self.high_water.max(snapshot.generation);
+            self.committed = self.committed.max(Some(snapshot.generation));
+        }
+        self.observed = recovered.as_ref().map(|snapshot| snapshot.generation);
+        self.frozen = false;
+        recovered
     }
 }
 
@@ -295,6 +340,7 @@ impl OperationStore for DurableStore {
         let outcome = self.inner.commit_after(self.observed, snapshot);
         if outcome == CommitOutcome::Committed {
             self.observed = Some(snapshot.generation);
+            self.committed = self.committed.max(Some(snapshot.generation));
         } else {
             self.frozen = true;
         }
@@ -303,12 +349,7 @@ impl OperationStore for DurableStore {
 
     fn recover(&mut self) -> Result<Option<OperationSnapshot>, StoreError> {
         let recovered = self.inner.recover()?;
-        if let Some(snapshot) = &recovered {
-            self.high_water = self.high_water.max(snapshot.generation);
-        }
-        self.observed = recovered.as_ref().map(|snapshot| snapshot.generation);
-        self.frozen = false;
-        Ok(recovered)
+        Ok(self.adopt(recovered))
     }
 
     fn is_frozen(&self) -> bool {
@@ -774,3 +815,7 @@ mod generation_guard_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "operation_store_fence_guard_tests.rs"]
 mod fence_guard_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "operation_store_rollback_tests.rs"]
+mod rollback_tests;

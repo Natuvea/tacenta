@@ -1,6 +1,6 @@
 # 0147 — `recover` refuses a store that is behind what the coordinator committed
 
-> Amends 0143.
+> Amends 0143, and corrects a sentence of 0132.
 
 0143 fences a second writer: `DurableStore` remembers the generation it last
 recovered or published and commits with `commit_after` against it, so a store
@@ -37,7 +37,8 @@ rollback without a word.
 
 2. **`recover` refuses a store behind that mark.** `GroupClient::recover` reads
    through the handle, and when the store holds a snapshot older than the mark
-   (or no snapshot at all) it fails with the new `GroupError::Rollback`. It
+   it fails with the new `GroupError::Rollback`. A store that holds no snapshot
+   is `Recovery`, as 0143 says: there is nothing to adopt and nothing to compare. It
    changes nothing: the client's provider state, the coordinator's snapshot and
    group state and the store are as they were, the store handle stays latched,
    and the coordinator stays frozen. Calling `recover` again gives the same
