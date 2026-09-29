@@ -522,6 +522,14 @@ pub struct Connection {
     /// Dropped with the connection, which ends the reader task and with it
     /// the socket; nothing lingers on the runtime once the caller lets go.
     _stop: tokio::sync::oneshot::Sender<()>,
+    /// Requests whose frames were written and whose responses have not been
+    /// taken. A request whose future was dropped after its frame went out leaves
+    /// one here; the next request drains it first, so it cannot read an older
+    /// request's response (0148).
+    outstanding: usize,
+    /// A request future was dropped, or its write failed, while its frame was
+    /// being written: half a frame may be on the wire, so nothing more is sent.
+    torn: bool,
 }
 
 impl Connection {
@@ -677,14 +685,42 @@ impl Connection {
             _stop: stop_tx,
             pushes,
             signal,
+            outstanding: 0,
+            torn: false,
         })
     }
 
     /// Send an encoded request frame and await the encoded response.
     /// The caller encodes/decodes with `tacenta_relay`'s protocol
     /// functions; this only moves bytes.
+    ///
+    /// The future may be dropped at any await. A request dropped after its frame
+    /// was written leaves its response to arrive later; the next call takes and
+    /// discards it before it writes, so it is never mistaken for the next
+    /// call's own. A request dropped while its frame was being written may have
+    /// left half a frame on the wire: the connection then refuses every request
+    /// with `BrokenPipe` and the caller reconnects (0148).
     pub async fn request(&mut self, request: &[u8]) -> std::io::Result<Vec<u8>> {
+        if self.torn {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "a request was dropped while its frame was being written",
+            ));
+        }
+        while self.outstanding > 0 {
+            self.take_response().await?;
+            self.outstanding -= 1;
+        }
+        self.torn = true;
         write_frame(&mut self.write, request).await?;
+        self.torn = false;
+        self.outstanding += 1;
+        let response = self.take_response().await?;
+        self.outstanding -= 1;
+        Ok(response)
+    }
+
+    async fn take_response(&mut self) -> std::io::Result<Vec<u8>> {
         self.responses
             .recv()
             .await
@@ -894,6 +930,84 @@ mod tests {
                 from: 0,
                 messages: vec![msg(&alice, 0x42)],
             })
+        );
+    }
+    /// A request whose future is dropped after its frame was written leaves its response on the way.
+    /// The next request must not take it for its own: the caller that cancels a wait (a timeout
+    /// around a receive) and asks again gets the answer to the second question (0148). The server
+    /// side is scripted, so the frame is known to have been written, and the answer to it is known
+    /// not to have arrived, when the future is dropped.
+    #[tokio::test]
+    async fn a_request_dropped_after_its_frame_was_written_does_not_answer_the_next_request() {
+        let (client_end, server_end) = tokio::io::duplex(4096);
+        let (mut server_read, mut server_write) = tokio::io::split(server_end);
+        let (seen_tx, mut seen) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (answer_tx, mut answers) = mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            write_frame(&mut server_write, b"challenge").await.unwrap();
+            read_frame(&mut server_read).await.unwrap();
+            write_frame(&mut server_write, &[1]).await.unwrap();
+            tokio::spawn(async move {
+                while let Some(answer) = answers.recv().await {
+                    let mut frame = vec![TAG_RESPONSE];
+                    frame.extend_from_slice(&answer);
+                    write_frame(&mut server_write, &frame).await.unwrap();
+                }
+            });
+            while let Ok(Some(frame)) = read_frame(&mut server_read).await {
+                let _ = seen_tx.send(frame);
+            }
+        });
+        let bob = DeviceAddr::new("+bob", 1);
+        let mut conn = Connection::establish(client_end, &bob, sign_as(&bob))
+            .await
+            .unwrap();
+
+        // The first request runs until the server has read its frame, and is dropped there.
+        {
+            let mut first = Box::pin(conn.request(b"first"));
+            tokio::select! {
+                _ = &mut first => panic!("nothing answered the first request yet"),
+                frame = seen.recv() => assert_eq!(frame.as_deref(), Some(b"first".as_slice())),
+            }
+        }
+        // Its answer arrives afterwards, and so does the answer to the next request.
+        answer_tx.send(b"answer to first".to_vec()).unwrap();
+        answer_tx.send(b"answer to second".to_vec()).unwrap();
+        let answer = conn.request(b"second").await.unwrap();
+        assert_eq!(answer, b"answer to second");
+        assert_eq!(seen.recv().await.as_deref(), Some(b"second".as_slice()));
+        // And the connection carries on in step.
+        answer_tx.send(b"answer to third".to_vec()).unwrap();
+        assert_eq!(conn.request(b"third").await.unwrap(), b"answer to third");
+    }
+
+    /// A request dropped while its frame is being written may have left half a frame on the wire.
+    /// Nothing more can be sent on that connection: the next request fails at once, so its caller
+    /// reconnects, instead of writing a second frame after a partial one (0148).
+    #[tokio::test]
+    async fn a_request_dropped_half_way_through_its_frame_poisons_the_connection() {
+        let (client_end, mut server_end) = tokio::io::duplex(8);
+        let bob = DeviceAddr::new("+bob", 1);
+        tokio::spawn(async move {
+            write_frame(&mut server_end, b"challenge").await.unwrap();
+            read_frame(&mut server_end).await.unwrap();
+            write_frame(&mut server_end, &[1]).await.unwrap();
+            // Reads nothing more, so a large frame fills the pipe and the write stalls.
+            std::future::pending::<()>().await;
+        });
+        let mut conn = Connection::establish(client_end, &bob, sign_as(&bob))
+            .await
+            .unwrap();
+        let stalled =
+            tokio::time::timeout(Duration::from_millis(50), conn.request(&[7u8; 64])).await;
+        assert!(stalled.is_err(), "the write is stuck on the full pipe");
+        let next = tokio::time::timeout(Duration::from_millis(500), conn.request(b"x"))
+            .await
+            .expect("the next request answers at once");
+        assert_eq!(
+            next.expect_err("the connection is unusable").kind(),
+            std::io::ErrorKind::BrokenPipe
         );
     }
 }

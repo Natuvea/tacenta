@@ -845,3 +845,69 @@ async fn duo_with_group_bob() -> (
     bob.receive(0).await.unwrap();
     (alice, bob, bob_store, bob_member, bob_route, alice_store)
 }
+
+/// A consumer that crashes right after each `receive` while a registered peer floods junk: the
+/// event is evicted from the retained `inbox` records before it was acknowledged, and the loss is
+/// reported, once per process, and then cleared by the acknowledgement the next call makes (0148).
+/// Before 0148 every later call reported `lost_events = 1`, the cursor stayed 0 and `receive_next`
+/// returned at once instead of waiting.
+#[tokio::test]
+async fn a_lost_event_is_reported_once_and_then_cleared() {
+    let mut p = pair_behind_proxy().await;
+    let mut mallory = plain(p.directory, p.relay, "+mallory").await;
+    p.alice
+        .send_group(
+            &[(p.bob_member.clone(), p.bob_route.clone())],
+            b"the only copy".to_vec(),
+        )
+        .await
+        .unwrap();
+    let alice_member = p.alice_member.clone();
+    for _ in 0..4 {
+        for _ in 0..32 {
+            mallory
+                .send_as(&p.bob_route, b"junk that is no group payload", Kind::Group)
+                .await
+                .unwrap();
+        }
+        p.bob.receive(0).await.unwrap();
+        // The consumer crashes on the event before it stores it.
+        let fresh = restart(&p.bob_config, &p.bob_store).await;
+        drop(std::mem::replace(&mut p.bob, fresh));
+        p.bob
+            .join_group(genesis_of(&alice_member), alice_member.clone())
+            .unwrap();
+    }
+    let mut later = Vec::new();
+    for _ in 0..4 {
+        let inbound = p.bob.receive(0).await.unwrap();
+        later.push((inbound.redelivered.len(), inbound.lost_events));
+    }
+    assert_eq!(
+        later,
+        [(0, 1), (0, 0), (0, 0), (0, 0)],
+        "the loss is reported once and the next call acknowledges it"
+    );
+    assert_eq!(
+        p.bob.delivery_cursor(),
+        1,
+        "the cursor moved past the lost event"
+    );
+    let waited =
+        tokio::time::timeout(std::time::Duration::from_millis(300), p.bob.receive_next(0)).await;
+    assert!(
+        waited.is_err(),
+        "receive_next waits for mail instead of returning at once"
+    );
+    // Once acknowledged, the report does not come back after a restart.
+    let fresh = restart(&p.bob_config, &p.bob_store).await;
+    drop(std::mem::replace(&mut p.bob, fresh));
+    p.bob
+        .join_group(genesis_of(&alice_member), alice_member.clone())
+        .unwrap();
+    let inbound = p.bob.receive(0).await.unwrap();
+    assert_eq!(
+        inbound.lost_events, 0,
+        "it was acknowledged before the restart"
+    );
+}

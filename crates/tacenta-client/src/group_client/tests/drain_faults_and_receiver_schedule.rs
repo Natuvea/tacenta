@@ -1,7 +1,8 @@
 //! A fault at every commit of a held-control drain (decisions 0142, 0143), and a randomised
 //! receiver schedule that checks what a consumer relies on (decision 0144): an event that a
 //! completed call handed over and a later call acknowledged is never shown again, event IDs
-//! ascend inside a call and across calls, and nothing is lost silently.
+//! ascend inside a call and across calls, and nothing is lost silently. A dropped `receive` future
+//! (a timeout around a wait) does not desynchronise the relay connection or lose an event (0148).
 //!
 //! `GROUP_SCHEDULE_SEEDS`, `GROUP_SCHEDULE_OPS` and `GROUP_SCHEDULE_BASE` tune the schedule
 //! (defaults 12, 50 and 1). The second test makes a registered peer flood junk payloads between
@@ -434,4 +435,53 @@ async fn the_receiver_schedule_never_shows_an_acknowledged_event_again() {
 #[tokio::test]
 async fn the_receiver_schedule_under_a_junk_flood_reports_every_loss() {
     run_schedule(true).await;
+}
+
+/// A `receive` future dropped after a random time (a timeout around the wait): the next call must
+/// not fail, and no event may be lost. Before 0148 a request dropped after its frame was written
+/// left its response on the connection, and the next call answered `expected a delivery` or
+/// `acknowledgement was not accepted`.
+#[tokio::test]
+async fn a_cancelled_receive_does_not_break_the_next_call() {
+    let Duo {
+        mut alice,
+        mut bob,
+        bob_member,
+        bob_route,
+        ..
+    } = duo().await;
+    let routes = vec![(bob_member, bob_route)];
+    let mut rng = Xorshift(7);
+    let (mut cancelled, mut sent) = (0, Vec::new());
+    let mut shown: Vec<Vec<u8>> = Vec::new();
+    for attempt in 0..120 {
+        let payload = format!("c{attempt}").into_bytes();
+        alice.send_group(&routes, payload.clone()).await.unwrap();
+        sent.push(payload);
+        let micros = 20 + rng.below(3000);
+        match tokio::time::timeout(std::time::Duration::from_micros(micros), bob.receive(0)).await {
+            Ok(inbound) => {
+                shown.extend(inbound.unwrap().events().iter().map(|e| e.payload.clone()))
+            }
+            Err(_) => {
+                cancelled += 1;
+                let next = bob.receive(0).await.unwrap_or_else(|error| {
+                    panic!("attempt {attempt}: the call after a cancelled one failed: {error:?}")
+                });
+                shown.extend(next.events().iter().map(|e| e.payload.clone()));
+            }
+        }
+    }
+    for _ in 0..3 {
+        let inbound = bob.receive(0).await.unwrap();
+        shown.extend(inbound.events().iter().map(|e| e.payload.clone()));
+    }
+    assert!(cancelled > 0, "the schedule cancelled no receive");
+    for payload in &sent {
+        assert!(
+            shown.contains(payload),
+            "{} was never shown",
+            String::from_utf8_lossy(payload)
+        );
+    }
 }

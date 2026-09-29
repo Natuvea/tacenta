@@ -254,7 +254,10 @@ pub struct Inbound {
     pub redelivered: Vec<GroupEvent>,
     /// Events that were issued and are no longer retained, so they cannot be
     /// redelivered (0144); zero unless calls kept failing while mail kept
-    /// arriving.
+    /// arriving. The call that finds a loss reports it, and the next call
+    /// acknowledges it like an event, so it is reported once per process: a
+    /// process that stops before that acknowledgement reports it again after a
+    /// restart (0148).
     pub lost_events: u64,
     /// The group-class items, in relay order.
     pub items: Vec<GroupReceipt>,
@@ -704,6 +707,9 @@ impl<P: CryptoProvider> GroupClient<P> {
         inbound.lost_events = issued
             .saturating_sub(self.snapshot.delivery_cursor)
             .saturating_sub(undelivered.len() as u64);
+        // Every event issued before this call is either offered below or the loss
+        // this call reports; once it returns, both are handed over (0148).
+        let issued_before_this_call = issued;
         inbound.redelivered = undelivered
             .iter()
             .map(|(event_id, context)| GroupEvent::new(*event_id, context))
@@ -740,6 +746,9 @@ impl<P: CryptoProvider> GroupClient<P> {
         // handed anything over without recording it (0144).
         if let Some(highest) = inbound.events().iter().map(|event| event.event_id).max() {
             self.handed_over = self.handed_over.max(highest.saturating_add(1));
+        }
+        if inbound.lost_events > 0 {
+            self.handed_over = self.handed_over.max(issued_before_this_call);
         }
         Ok(inbound)
     }
