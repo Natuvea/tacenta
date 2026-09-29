@@ -7,16 +7,17 @@
 //!
 //! A [`GroupClient`] takes a connected [`Client`] by value together with an
 //! [`OperationStore`]. While it lives it is the only owner of the client's
-//! mailbox and pairwise state, which is what makes three things true that the
+//! mailbox and pairwise state, which is what makes four things true that the
 //! plain `Client` cannot promise:
 //!
 //! - **Receive is staged.** [`receive`](GroupClient::receive) decrypts each item
 //!   with the provider's outcome, commits its disposition and the provider
 //!   state together, and only then acknowledges the committed prefix (0131).
 //!   The authenticated peer and the state effect come from the provider. A
-//!   committed group event that the caller was not handed, or has not
-//!   acknowledged, is offered again with its event ID (0144); a direct message
-//!   is handed over once.
+//!   committed group event that the caller was not handed is offered again with
+//!   its event ID (0144), and so is one it was handed until the next `receive`
+//!   or an `acknowledge_delivery`, which acknowledge what the previous call
+//!   handed over; a direct message is handed over once.
 //! - **One durable root.** Every pairwise operation, direct messages included,
 //!   commits the exported provider state before it has an external effect
 //!   (0132). A restart from the snapshot cannot rewind the ratchet.
@@ -310,10 +311,13 @@ pub struct Install {
     /// accepted). A recipient already delivered by an earlier call is reported
     /// here again on a retry (0141).
     pub delivered: Vec<Member>,
-    /// Recipients whose control is committed and not accepted yet; retry with
-    /// [`dispatch_pending_controls`](GroupClient::dispatch_pending_controls).
-    /// A recipient whose third and final attempt was not confirmed stays here
-    /// and is not retried (0134).
+    /// Recipients whose control is committed and not accepted: one still
+    /// waiting for the relay, which
+    /// [`dispatch_pending_controls`](GroupClient::dispatch_pending_controls)
+    /// sends, and also one whose handoff is final and that nothing sends again:
+    /// the third and final attempt was not confirmed (0134), or the control was
+    /// cancelled, for example by the revocation of the invitation of that
+    /// recipient (0125, 0126).
     pub pending: Vec<Member>,
     /// Recipients for whom nothing was committed (a transient failure while
     /// preparing, or a full control outbox); call
@@ -1099,13 +1103,16 @@ impl<P: CryptoProvider> GroupClient<P> {
     /// already installed is only fanned out. `admission` marks an invitation
     /// admitted in the same commit.
     ///
-    /// The result does not depend on the order of `recipients` (0141). Every
-    /// recipient is checked up front: a member of the roster being replaced, of
-    /// the successor, or an unexpired invitee, and once the successor is
-    /// installed also a member of the roster it replaced (the member it
-    /// removes). One that is none of those, or an empty list for a successor
-    /// that is not installed yet, is refused with [`GroupError::Policy`] before
-    /// anything changes.
+    /// Who may be told does not depend on the order of `recipients` (0141).
+    /// Every recipient is checked up front: a member of the roster being
+    /// replaced, of the successor, or an unexpired invitee, and once the
+    /// successor is installed also a member of the roster it replaced (the
+    /// member it removes, 0145). One that is none of those, or an empty list for
+    /// a successor that is not installed yet, is refused with
+    /// [`GroupError::Policy`] before anything changes. What is reported can
+    /// depend on the order: an error while preparing the first recipient, before
+    /// anything is installed, fails the call, and the same failure for a later
+    /// recipient is reported in `unprepared`.
     pub async fn install_roster(
         &mut self,
         successor: Roster,
