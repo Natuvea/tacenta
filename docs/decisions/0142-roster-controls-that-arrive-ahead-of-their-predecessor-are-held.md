@@ -1,6 +1,6 @@
 # 0142 — roster controls that arrive ahead of their predecessor are held, not refused
 
-> Amends 0102, 0114, 0124 and 0139.
+> Amends 0102, 0114, 0124 and 0139. Amended by 0146 (points 2 and 4).
 
 The authority fans a roster successor out to each member as a separate pairwise
 message (0124). Nothing orders those messages across recipients, across retries
@@ -46,7 +46,8 @@ group again. Three ordinary sequences reproduced it.
 2. **A coordinator that has no view yet holds the controls it is sent.** After
    `await_group` the pinned authority and the group are known but not the roster.
    A roster control from the pinned authority for that group is held (the same
-   queue, at most four, no window because the base revision is unknown), and the
+   queue, at most four, no window because the base revision is unknown; when
+   it is full a lower revision takes the highest one's place, 0146), and the
    `join_group` that gives the coordinator its view applies it. That is what the
    bootstrap-plus-successor batch needs.
 
@@ -60,7 +61,11 @@ group again. Three ordinary sequences reproduced it.
    repeated until nothing applies. A held control that the view then refuses for
    another reason is dropped by the commit that refused it. Because the queue is
    durable and draining is idempotent, a crash between two of these commits is
-   finished by the next attach.
+   finished by the next attach;
+   `drain_faults_and_receiver_schedule::a_fault_at_every_commit_of_a_reverse_order_drain_still_converges`
+   fails a commit of each kind at each of the first twelve commits of a drain, in
+   three arrival orders (108 runs), and every run ends at the last revision with
+   nothing held, before and after a restart.
 
 4. **A future application context from a sender the roster does not yet list is
    deferred.** `GroupReceiver::receive` judged the sender's activity against the
@@ -70,10 +75,13 @@ group again. Three ordinary sequences reproduced it.
    the two-revision window, is deferred whoever the sender is, and revalidation
    against the roster that arrives decides it (0102), exactly as it does for a
    sender that is already listed. Deferral of such senders is limited to **2**
-   of the 4 deferred slots, so a peer that is not in the group cannot use up the
-   room a member's early message needs. The receiver's state codec accepts up to
-   two deferred contexts whose sender the roster does not list (it required every
-   deferred sender to be listed). The local member must still be active to defer
+   of the 4 deferred slots and, since 0146, to one per identity. (As first
+   written this sentence went on to say that a peer that is not in the group
+   could not use up the room a member's early message needs. One such peer
+   could, by sending two contexts; two still can, and 0146 states that limit.)
+   The receiver's state codec accepts up to two deferred contexts whose sender
+   the roster does not list (it required every deferred sender to be listed),
+   from two identities (0146). The local member must still be active to defer
    anything (a terminal receiver, 0139, holds nothing).
 
 ## Limits this record leaves, exactly
@@ -89,6 +97,10 @@ group again. Three ordinary sequences reproduced it.
 - A control held while the coordinator has no view is applied only if the
   source roster the caller joins from is the predecessor it names; held controls
   the joined roster has already passed are dropped.
+- **Two registered identities can still take both slots that are open to
+  senders the roster does not list**, and the first message of a just-admitted
+  member is then refused and lost (0146). A coordinator with no view reaches at
+  most four revisions past its source roster from what it was sent (0146).
 - **A pending invitee's early application message is still lost.** The receiver
   of a member that is not in the current roster is a terminal state (0139) and
   holds nothing, so a message from another member for the revision that admits it
@@ -135,7 +147,8 @@ group again. Three ordinary sequences reproduced it.
    runs the three sequences through a real provider and relay (the invitee's
    batch, the retried older control, the admitted member's first message), the
    window and the capacity, a restart with a held control, a control that is not
-   from the authority, and the crash-between-commits recovery; the group crate's
+   from the authority, and the crash-between-commits recovery
+   (`drain_faults_and_receiver_schedule`, 108 runs); the group crate's
    `tests/limits.rs` and unit tests pin the two-slot bound for unlisted senders
    and the codec.
 4. **Does it preserve wire compatibility with a named profile?** Yes. No wire
