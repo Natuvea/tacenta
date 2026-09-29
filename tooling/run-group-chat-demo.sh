@@ -355,6 +355,17 @@ step group-operations-review "coordinator functions: bounds, latch, validate bef
   cargo test --locked -p tacenta-client --lib group_operations::review_tests
 step review-live "live guards of the preparation and dispatch functions" \
   cargo test --locked -p tacenta-client --lib tests::review_live
+step operation-store "operation store: latch, generations, the fence, the native store under contention" \
+  cargo test --locked -p tacenta-client --lib operation_store::tests
+step deferred-rosters "held roster controls: the queue and its record" \
+  cargo test --locked -p tacenta-client --lib group_deferred_rosters::tests
+
+echo "group profile: guards pinned after the mutation reruns"
+step group-guards "group crate guards: send recovery, receiver, roster view, invitation rules" \
+  cargo test --locked -p tacenta-group --test logical_send_guards --test send_recovery_transcripts \
+  --test receiver_guards --test roster_guards --test invitation_rules
+step client-guards "client guards: operation store, control outbox, group operations" \
+  cargo test --locked -p tacenta-client --lib guard_tests
 
 if [ "$mode" = update ]; then
   {

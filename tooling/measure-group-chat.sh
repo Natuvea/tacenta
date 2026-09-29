@@ -14,10 +14,18 @@
 #     process and twice, and records snapshot bytes, commits per logical send,
 #     commit latency, restart cost, CPU and maximum resident set for each size.
 #     The probe is an ignored client test (`group_client::tests::scale_probe::
-#     group_scale_probe`); a missing probe stops the script.
+#     group_scale_probe`); a missing probe stops the script. It is ONE send from
+#     an empty outbox;
+#  4. runs the steady-state probe (`...::group_scale_probe_steady_state`, the
+#     same eight-member group after seventeen sends), once per pass and twice,
+#     and records snapshot bytes, commits and time of the last send. A snapshot
+#     of a group in use is several times the size of the first send's.
 #
 # Every extraction is required. A missing line, a missing timing field or a
 # missing /usr/bin/time stops the script with a message; nothing is defaulted.
+# The values that do not depend on the machine are asserted, not only their
+# presence: the roster and receiver-state bytes, the commits per logical send.
+# Times and snapshot bytes of the probes are reported, not asserted.
 # These are local comparison measurements, not production budgets, and they
 # say nothing about 32, 128 or 512 members.
 set -eu
@@ -53,6 +61,19 @@ esac
 #     roster_bytes=.. receiver_state_bytes=.. commit_median_micros=..
 # (one line; wrapped here only for reading). It is run with --ignored.
 probe=group_client::tests::scale_probe::group_scale_probe
+
+# The steady-state probe's contract: an ignored lib test with this name that
+# builds eight real clients with 32-byte identities and has the authority send
+# GROUP_STEADY_SENDS (17) logical messages of 1,000 bytes in a row through a
+# GroupClient over a native file store, printing one `group-steady-send` line per
+# send and a last line
+#   group-steady members=8 sends=17 snapshot_bytes=B logical_send_commits=22
+#     logical_send_micros=T terminal_sends_retained=R provider_state_bytes=..
+#     outbox_records=.. inbox_records=.. control_records=..
+# (one line). The per-size probe above is ONE send from an empty outbox; this is
+# the same group after seventeen, with sixteen terminal sends retained (0133).
+steady_probe=group_client::tests::scale_probe::group_scale_probe_steady_state
+steady_sends=17
 
 core_source=$(awk '
   /^name = "tacenta-core"$/ { found = 1; next }
@@ -155,8 +176,30 @@ for members in 2 3 8; do
       >"$log" 2>"$output/scale-$members-$pass.time" ||
       fail "the scale probe failed for $members members; see $log"
     need "$log" "^group-scale members=$members snapshot_bytes="
+    case $members in
+    2) want_roster=219 want_receiver=343 ;;
+    3) want_roster=260 want_receiver=384 ;;
+    8) want_roster=465 want_receiver=589 ;;
+    esac
+    want_commits=$((1 + 3 * (members - 1)))
+    need "$log" "^group-scale members=$members .* logical_send_commits=$want_commits "
+    need "$log" "^group-scale members=$members .* roster_bytes=$want_roster receiver_state_bytes=$want_receiver "
     echo "members=$members run=$pass $(grep "^group-scale members=$members " "$log" | head -1 | cut -d' ' -f3-) $(timing "$output/scale-$members-$pass.time")" >>"$scale"
   done
+done
+
+echo "$client_list" | grep -q "^$steady_probe: test\$" ||
+  fail "the client crate has no $steady_probe test"
+steady="$output/steady.txt"
+: >"$steady"
+for pass in first second; do
+  log="$output/steady-$pass.log"
+  GROUP_STEADY_SENDS=$steady_sends /usr/bin/time "$time_flag" "$exe" "$steady_probe" --ignored --exact --nocapture \
+    >"$log" 2>"$output/steady-$pass.time" ||
+    fail "the steady-state probe failed; see $log"
+  need "$log" "^group-steady members=8 sends=$steady_sends snapshot_bytes=[0-9]* logical_send_commits=22 "
+  need "$log" "^group-steady members=8 sends=$steady_sends .* terminal_sends_retained=16 "
+  echo "members=8 run=$pass $(grep '^group-steady members=8 ' "$log" | head -1 | cut -d' ' -f3-) $(timing "$output/steady-$pass.time")" >>"$steady"
 done
 
 {
@@ -175,8 +218,11 @@ done
   echo "whole-demo process, warm"
   timing "$output/warm.time"
   echo
-  echo "per member count (client probe, one process per size and pass)"
+  echo "per member count, ONE logical send from an empty outbox (client probe, one process per size and pass)"
   cat "$scale"
+  echo
+  echo "steady state: eight members after $steady_sends logical sends, last send (client probe, one process per pass)"
+  cat "$steady"
 } >"$output/summary.txt"
 
 cat >"$output/README.txt" <<'EOF'
@@ -200,6 +246,13 @@ provider-state bytes, whole-snapshot commits per logical send, the time of that
 send, the median latency of one more commit at the final size, the restart and
 recovery time, and the probe process's CPU and maximum resident set. Nothing
 here is a production budget or a 32, 128 or 512-member result.
+
+steady.txt has one line per pass from the steady-state probe: the same
+eight-member group after seventeen 1,000-byte logical sends, with sixteen
+terminal sends retained in the snapshot (0133). scale.txt is one send from an
+empty outbox and understates what a group in use costs; steady.txt is the
+figure to read for that. steady-*.log also has one line per send, so the growth
+to the retained-sends bound can be seen.
 EOF
 
 echo "group-chat measurements written to $output"
