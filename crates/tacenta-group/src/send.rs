@@ -4,6 +4,7 @@ use crate::{
     ApplicationContext, DIGEST_LEN, Error, GroupId, MAX_LIVE_LOGICAL_SENDS, MAX_MEMBERS,
     MAX_PAYLOAD_LEN, Member, RESERVED_REVISION, Roster,
 };
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 const LOGICAL_SEND_DOMAIN: &[u8] = b"Tacenta Group Logical Send v1";
@@ -78,6 +79,7 @@ pub struct LogicalSend {
 pub struct GroupOutbox {
     group_id: GroupId,
     sends: Vec<LogicalSend>,
+    applied_revision: u64,
 }
 
 /// Whether recording a logical intent inserted a new durable value or reused
@@ -93,7 +95,26 @@ impl GroupOutbox {
         Self {
             group_id,
             sends: Vec::new(),
+            applied_revision: 0,
         }
+    }
+
+    /// The next sequence for `sender` at `revision`: zero when the outbox
+    /// retains no send for that pair, otherwise one more than the highest
+    /// retained sequence (decision 0129).
+    pub fn next_sequence(&self, revision: u64, sender: &Member) -> Result<u64, Error> {
+        match self.highest_sequence(revision, sender) {
+            None => Ok(0),
+            Some(highest) => highest.checked_add(1).ok_or(Error::SequenceExhausted),
+        }
+    }
+
+    fn highest_sequence(&self, revision: u64, sender: &Member) -> Option<u64> {
+        self.sends
+            .iter()
+            .filter(|send| send.id.revision == revision && &send.id.sender == sender)
+            .map(|send| send.id.sequence)
+            .max()
     }
 
     pub fn sends(&self) -> &[LogicalSend] {
@@ -116,6 +137,10 @@ impl GroupOutbox {
 
     /// Adds a distinct live logical send. An exact replay uses the prior
     /// immutable record, while changed data for its ID cannot replace it.
+    ///
+    /// A new send is refused when its revision is older than the newest roster
+    /// the outbox applied, and when its sequence is not above every retained
+    /// sequence for the same revision and sender (decision 0129).
     pub fn record(&mut self, send: LogicalSend) -> Result<OutboxDisposition, Error> {
         if send.id.group_id != self.group_id {
             return Err(Error::Conflict);
@@ -126,6 +151,15 @@ impl GroupOutbox {
             }
             return Err(Error::Conflict);
         }
+        if send.id.revision < self.applied_revision {
+            return Err(Error::StaleRevision);
+        }
+        if self
+            .highest_sequence(send.id.revision, &send.id.sender)
+            .is_some_and(|highest| send.id.sequence <= highest)
+        {
+            return Err(Error::SequenceOrder);
+        }
         if self.sends.iter().filter(|send| !send.is_terminal()).count() >= MAX_LIVE_LOGICAL_SENDS {
             return Err(Error::OutboxFull);
         }
@@ -135,6 +169,7 @@ impl GroupOutbox {
 
     /// Applies a locally accepted newer roster to all its logical records.
     pub fn cancel_for_newer_roster(&mut self, revision: u64) {
+        self.applied_revision = self.applied_revision.max(revision);
         for send in &mut self.sends {
             send.cancel_for_newer_roster(revision);
         }
@@ -679,7 +714,7 @@ fn validate_recipients(roster: &Roster, recipients: &[Member]) -> Result<(), Err
             return Err(Error::NotMember);
         }
         if let Some(previous) = previous
-            && previous.canonical_sort_key() >= recipient.canonical_sort_key()
+            && previous.canonical_cmp(recipient) != Ordering::Less
         {
             return Err(Error::NonCanonical);
         }
@@ -696,7 +731,7 @@ fn validate_recovery_recipients(recipients: &[Member]) -> Result<(), Error> {
     let mut identities = BTreeSet::new();
     for recipient in recipients {
         if let Some(previous) = previous
-            && previous.canonical_sort_key() >= recipient.canonical_sort_key()
+            && previous.canonical_cmp(recipient) != Ordering::Less
         {
             return Err(Error::NonCanonical);
         }
@@ -755,7 +790,12 @@ mod tests {
     }
 
     fn send_at(sequence: u64) -> LogicalSend {
+        send_at_revision(2, sequence)
+    }
+
+    fn send_at_revision(revision: u64, sequence: u64) -> LogicalSend {
         let mut send = send();
+        send.id.revision = revision;
         send.id.sequence = sequence;
         send
     }
@@ -997,7 +1037,7 @@ mod tests {
     #[test]
     fn outbox_applies_live_backpressure_without_discarding_terminal_evidence() {
         let mut outbox = GroupOutbox::new(group());
-        for sequence in 0..MAX_LIVE_LOGICAL_SENDS as u64 {
+        for sequence in 0..8 {
             assert_eq!(
                 outbox.record(send_at(sequence)),
                 Ok(OutboxDisposition::Inserted)
@@ -1005,15 +1045,20 @@ mod tests {
         }
         assert_eq!(outbox.record(send_at(8)), Err(Error::OutboxFull));
 
+        // A newer accepted roster cancels the old work, which frees its live
+        // slots but keeps its records. New work belongs to the new revision.
         outbox.cancel_for_newer_roster(3);
-        for sequence in 8..=15 {
+        for sequence in 0..8 {
             assert_eq!(
-                outbox.record(send_at(sequence)),
+                outbox.record(send_at_revision(3, sequence)),
                 Ok(OutboxDisposition::Inserted)
             );
         }
         assert_eq!(outbox.sends().len(), 16);
-        assert_eq!(outbox.record(send_at(16)), Err(Error::OutboxFull));
+        assert_eq!(
+            outbox.record(send_at_revision(3, 8)),
+            Err(Error::OutboxFull)
+        );
     }
 
     #[test]

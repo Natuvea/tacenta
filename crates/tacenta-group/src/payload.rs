@@ -112,6 +112,19 @@ mod tests {
     }
 
     #[test]
+    fn the_payload_bound_and_type_tags_are_pinned_by_literal() {
+        assert_eq!(MAX_GROUP_PAYLOAD_LEN, 8_192);
+        assert_eq!(APPLICATION_TAG, 1);
+        assert_eq!(ROSTER_TAG, 2);
+        assert_eq!(INVITATION_BOOTSTRAP_TAG, 3);
+        assert_eq!(INVITATION_ACCEPTANCE_TAG, 4);
+        assert_eq!(INVITATION_REVOCATION_TAG, 5);
+        // The tag byte follows the 24-byte domain string on the wire.
+        let encoded = GroupPayload::Roster(roster()).encode().unwrap();
+        assert_eq!(encoded[GROUP_PAYLOAD_DOMAIN.len()], 2);
+    }
+
+    #[test]
     fn application_and_control_payloads_have_distinct_canonical_tags() {
         let application = GroupPayload::Application(
             ApplicationContext::new(

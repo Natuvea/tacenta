@@ -40,7 +40,10 @@ In scope:
 Out of scope, because they do not exist rather than because we do not care:
 
 - **Group messaging (sender keys)** and **Sesame / multi-device session
-  management**. Not implemented.
+  management**. Not implemented. The tree holds a bounded experimental group
+  profile (eight members, one device each, one authority; `docs/claims.md`);
+  no SDK head, the CLI or the server reaches it, and it is not a supported
+  feature.
 - **Message-layer interoperability with other implementations** is out of
   scope.
 

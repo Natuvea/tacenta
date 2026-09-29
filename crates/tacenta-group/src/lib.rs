@@ -6,6 +6,7 @@
 //! future core commitment helper consumes the roster preimage produced here.
 
 use core::fmt;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 mod invitation;
@@ -19,7 +20,9 @@ pub use invitation::{
     InvitationRevocation, InvitationStatus,
 };
 pub use payload::GroupPayload;
-pub use receive::{GroupReceiver, ReceiveDisposition, ReceiveRefusal, RevalidatedReceive};
+pub use receive::{
+    GroupReceiver, ReceiveDisposition, ReceiveRefusal, ReceiverStatus, RevalidatedReceive,
+};
 pub use roster_view::{RosterDisposition, RosterRefusal, RosterView};
 pub use send::{
     GroupOutbox, LogicalMessageId, LogicalSend, OutboxDisposition, RecipientDisposition,
@@ -78,6 +81,9 @@ pub enum Error {
     Closed,
     RetryExhausted,
     OutboxFull,
+    StaleRevision,
+    SequenceOrder,
+    SequenceExhausted,
 }
 
 impl fmt::Display for Error {
@@ -106,6 +112,9 @@ impl fmt::Display for Error {
             Self::Closed => "bounded group is closed",
             Self::RetryExhausted => "bounded group retry budget is exhausted",
             Self::OutboxFull => "bounded group outbox is full",
+            Self::StaleRevision => "bounded group send is older than the applied roster revision",
+            Self::SequenceOrder => "bounded group send sequence is not above the retained maximum",
+            Self::SequenceExhausted => "bounded group send sequence space is exhausted",
         })
     }
 }
@@ -158,12 +167,12 @@ impl Member {
         &self.device
     }
 
-    fn sort_key(&self) -> Vec<u8> {
-        [self.identity.as_slice(), self.device.as_slice()].concat()
-    }
-
-    pub(crate) fn canonical_sort_key(&self) -> Vec<u8> {
-        self.sort_key()
+    /// The canonical roster order (decision 0127): the identity bytes, then
+    /// the device bytes. It is never the order of their concatenation.
+    pub(crate) fn canonical_cmp(&self, other: &Self) -> Ordering {
+        self.identity
+            .cmp(&other.identity)
+            .then_with(|| self.device.cmp(&other.device))
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -295,7 +304,7 @@ impl Roster {
         for member in &self.members {
             member.validate()?;
             if let Some(previous) = previous
-                && previous.sort_key() >= member.sort_key()
+                && previous.canonical_cmp(member) != Ordering::Less
             {
                 return Err(Error::NonCanonical);
             }
@@ -609,9 +618,11 @@ mod tests {
 
     #[test]
     fn development_member_cap_accepts_eight_and_refuses_ninth() {
-        let members: Vec<_> = (0..=MAX_MEMBERS)
-            .map(|index| Member::new(vec![index as u8], vec![1]))
+        // Literal counts: raising MAX_MEMBERS must fail this test (CR-08).
+        let members: Vec<_> = (0..9u8)
+            .map(|index| Member::new(vec![index], vec![1]))
             .collect();
+        assert_eq!(members.len(), 9);
         assert!(
             Roster::new(
                 group(),
@@ -620,7 +631,7 @@ mod tests {
                 members[0].clone(),
                 POLICY_VERSION_V1,
                 false,
-                members[..MAX_MEMBERS].to_vec(),
+                members[..8].to_vec(),
             )
             .is_ok()
         );
@@ -640,17 +651,20 @@ mod tests {
 
     #[test]
     fn development_profile_reports_checkpoint_sizes_at_two_three_and_eight_members() {
-        for member_count in [2, 3, MAX_MEMBERS] {
-            let mut members = Vec::with_capacity(member_count);
-            members.push(alice());
-            for index in 1..member_count {
-                members.push(Member::new(vec![b'm', index as u8], vec![1]));
-            }
+        // Real identities are 32-byte public keys with a one-byte device, so
+        // a roster costs 137 + 41 * members bytes and a receiver state 124
+        // bytes more (CR-14). The measurement script reads these lines.
+        for (member_count, expected_roster, expected_state) in
+            [(2u8, 219, 343), (3, 260, 384), (8, 465, 589)]
+        {
+            let members: Vec<Member> = (1..=member_count)
+                .map(|tag| Member::new(vec![tag; 32], vec![1]))
+                .collect();
             let roster = Roster::new(
                 group(),
                 1,
                 [0; DIGEST_LEN],
-                alice(),
+                members[0].clone(),
                 POLICY_VERSION_V1,
                 false,
                 members.clone(),
@@ -659,8 +673,10 @@ mod tests {
             let roster_bytes = roster.encode().unwrap();
             let receiver = GroupReceiver::new(roster, [0; DIGEST_LEN], members[1].clone());
             let receiver_state = receiver.encode_state().unwrap();
+            assert_eq!(roster_bytes.len(), expected_roster);
+            assert_eq!(receiver_state.len(), expected_state);
             println!(
-                "group-profile members={member_count} roster_bytes={} receiver_state_bytes={}",
+                "group-profile members={member_count} identity_bytes=32 roster_bytes={} receiver_state_bytes={}",
                 roster_bytes.len(),
                 receiver_state.len(),
             );

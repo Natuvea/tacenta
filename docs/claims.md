@@ -499,16 +499,48 @@ not in our proofs' dependency cone.
   A packaged xcframework / `.aar`, async export, and an example app are
   downstream work.
 - **Bounded group experiment** (`tacenta-group` and the client group-operation
-  tests): canonical roster/context values, invitation and logical-send policy,
-  core-bound commitments, bounded dedup/defer queues, restart codecs, and the
-  group envelope class have focused Rust tests. The repeatable group demo also
-  drives the bounded three-client invitation, restart, admission, removal and
-  prepared-handoff cancellation, revocation, direct-message interleaving,
-  duplicate and future-queue bounds, and wrong-sender/device paths through the
-  real in-process directory, relay, provider, and operation store. This is
-  **tested, not proven**. It is not a shipped group-chat protocol or a
-  production membership system; sender-key, production authority, sequencing,
-  multi-device, sealed-sender, franking, and scale work remain open.
+  module): an experimental development profile, and these are its limits. **At
+  most eight members, one device per person, one membership authority** (the
+  group's creator, whose leave closes the group), application payloads of at
+  most 1,024 bytes, and pairwise fan-out with no shared sender keys. It is Rust
+  values and policy driven by tests: **no SDK head, the CLI or the server
+  reaches it**. What has tests: canonical roster and context values, with each
+  limit pinned at both edges by a literal number; invitation, admission,
+  revocation and removal policy; the outbox (stale sends refused, monotonic
+  sequences); bounded replay and future-message queues; the restart codecs,
+  which a structure-aware mutation test checks for panics, oversized
+  allocations and non-canonical input; and the Lean model's traces
+  (`contracts/vectors/group-v1.json`), which the Rust types replay. A
+  repeatable demo (`tooling/run-group-chat-demo.sh`) drives a bounded
+  three-client invitation, restart, admission, removal, revocation and
+  direct-message trace through the in-process directory, relay and crypto
+  provider. Its live traces keep operation state in an in-memory store whose
+  writes always succeed; the native file-backed store is exercised by one step
+  and by unit tests over synthetic data, and it is neither sealed nor
+  protected against rollback. This is **tested, not proven**.
+  **What is not true yet** at this revision. The client acknowledges each
+  fetched message to the relay before any group disposition is committed, so a
+  crash between receiving a group message and recording it loses the message;
+  and no client entry point calls the group coordinator, which tests drive with
+  the authenticated sender and the provider's state effect supplied by hand.
+  <!-- TODO(client-fixes): rewrite once receive is staged (fetch, decrypt with
+  outcome, commit, then acknowledge) and the coordinator is reachable from a
+  real receive. -->
+  A direct message and a group message to the same peer advance one pairwise
+  session, but only the group snapshot persists it for group traffic, so
+  restoring the group snapshot after an interleaved direct message rewinds the
+  session and the next group message is lost.
+  <!-- TODO(client-fixes): rewrite once direct and group sends share one durable
+  root. -->
+  The authority's control outbox holds eight handoffs for the life of the
+  group, so a group cannot grow to eight members through the coordinator, and
+  the operation snapshot's inbox, dedup and outbox lists grow with peer traffic
+  without a bound.
+  <!-- TODO(client-fixes): rewrite once terminal control handoffs are reclaimed
+  and the snapshot lists are bounded. -->
+  It is not a shipped group-chat protocol or a production membership system;
+  sender-key, production authority, sequencing, multi-device, sealed-sender,
+  franking and scale work remain open.
 - Style gates: rustfmt and clippy at `-D warnings`.
 
 ## Assumed — the trusted base

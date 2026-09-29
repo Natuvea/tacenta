@@ -1,5 +1,10 @@
 # 0113 — bounded group receiver retention
 
+> Scope: the bound applies to the state a `GroupReceiver` holds and encodes.
+> The combined operation snapshot also keeps every received context in its
+> `dedup` list (decision 0099), which this record does not bound.
+> <!-- TODO(client-fixes): update once the snapshot lists are bounded. -->
+
 ## Decision
 
 The receiver retains accepted dedup entries only for the current roster

@@ -1,5 +1,12 @@
 # 0096 — bounded group receive disposition
 
+> Implementation status at 75c9a20 (2026-09-29): the live client acknowledges
+> the fetched prefix before any group disposition is committed, and the
+> coordinator that would commit one is called only by tests. This record states
+> the ordering the design requires, not the ordering the client has today.
+> <!-- TODO(client-fixes): drop this note once receive is staged and the
+> acknowledgement waits for the committed disposition. -->
+
 ## Decision
 
 After successful pairwise processing, the bounded group receiver creates one

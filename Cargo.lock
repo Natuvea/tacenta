@@ -2826,6 +2826,9 @@ dependencies = [
 [[package]]
 name = "tacenta-group"
 version = "1.11.5"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "tacenta-kdf"

@@ -58,7 +58,7 @@ jobs:
           fi
       - name: Committed vectors match the spec
         run: |
-          for v in envelope session user stream; do
+          for v in envelope session user stream group; do
             (cd spec && lake exe vectors "$v") > "/tmp/$v-v1.json"
             diff -u "contracts/vectors/$v-v1.json" "/tmp/$v-v1.json"
           done

@@ -1,5 +1,13 @@
 # 0098 — bounded group durable boundary
 
+> Implementation status at 75c9a20 (2026-09-29): the acknowledgement rule below
+> is not yet true of the live client, which acknowledges the fetched prefix
+> first. Direct messages advance the same pairwise session as group sends but
+> write nothing to the combined snapshot, so restoring the snapshot after an
+> interleaved direct message rewinds that session.
+> <!-- TODO(client-fixes): drop this note once receive is staged and direct
+> and group sends share one durable root. -->
+
 ## Decision
 
 Before a bounded group operation crosses transport, cumulative acknowledgement,
