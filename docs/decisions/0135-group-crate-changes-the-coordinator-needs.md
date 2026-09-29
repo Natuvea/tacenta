@@ -1,11 +1,12 @@
 # 0135 — group crate changes the coordinator needs
 
-> Amends 0100, 0106, 0109, 0136, 0138, 0131, 0133 and 0134.
+> Amends 0100, 0106, 0109, 0131, 0133, 0134, 0136 and 0138.
 
 The client's coordinator (`GroupClient`, 0131) shipped with five workarounds
-for behaviour of `tacenta-group`, and with its own copy of the sequence rule. The group crate and the client were changed
-by separate lanes, so each workaround was recorded as "needs a group-crate
-change". This record makes the five changes together, so the workarounds go.
+for behaviour of `tacenta-group`, and with its own copy of the sequence rule.
+The group crate and the client were changed by separate lanes, so each
+workaround was recorded as "needs a group-crate change". This record makes the
+changes together, so the workarounds go.
 
 ## Decision
 
