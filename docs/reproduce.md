@@ -234,12 +234,29 @@ recipient). These are arguments from the code, not proofs of equivalence. The
 harness covers the group crate only; the client and transport crates have no
 harness in this repository.
 
+The Lean group model has a harness of its own. It applies each of 49 single
+changes (`GM01` to `GM32` and `GX01` to `GX17` in
+`tooling/group-model-mutation/mutants.py`) to `spec/Tacenta/Group.lean` in a
+private copy and measures two gates separately: whether `lake build` fails (a
+theorem, an example or an axiom pin), and whether the regenerated group vectors
+differ from the committed file when every theorem and example is deleted, which
+is the CI diff on its own. With `--replay` it also runs the Rust replay of
+`group-v1.json` against the regenerated vectors of each mutant that changes
+them, in a worktree of HEAD. It needs the unmodified model to pass, and fails
+on a mutant that survives without a stated reason; `GM28` and `GX16` carry one
+each in `mutants.py`. CI does not run it.
+
+```bash
+python3 tooling/group-model-mutation/mutate.py --workers 4 --replay
+```
+
 Many comments in the group tests name a mutant by an id (`M###`, `R###`, `D##`)
 and a `file:line`. Those ids belong to single-change mutation runs against
 97689a0, 341e2b0 and later revisions whose mutant lists are **not kept in this
 repository**; only the ids of `tooling/group-mutation/mutants.py` (the letters
 `L`, `N`, `P`, `R`, `S`, `V` and `X`, and `D` for its doubles) resolve here, and
-its `R` ids are not those of the comments. The line numbers in the comments are
+its `R` ids are not those of the comments. The `GM` and `GX` ids of
+`tooling/group-model-mutation/mutants.py` name changes to the Lean model. The line numbers in the comments are
 those of the commit the comment names and have drifted. A comment states the one
 change its test fails on in words, and that is what to read.
 
