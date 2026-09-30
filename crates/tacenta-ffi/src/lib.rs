@@ -106,11 +106,32 @@ impl From<tacenta_client::RestoreOutcome> for RestoreOutcome {
     }
 }
 
+/// The relay envelope class of an inbound message. It is a routing label that
+/// the sender chooses and the relay carries; nothing authenticates it, so a
+/// relay can relabel a message (decision 0116).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MessageKind {
+    Direct,
+    Group,
+    Receipt,
+}
+
+impl From<tacenta_client::MessageKind> for MessageKind {
+    fn from(kind: tacenta_client::MessageKind) -> Self {
+        match kind {
+            tacenta_client::MessageKind::Direct => Self::Direct,
+            tacenta_client::MessageKind::Group => Self::Group,
+            tacenta_client::MessageKind::Receipt => Self::Receipt,
+        }
+    }
+}
+
 /// A decrypted inbound message and the device that sent it.
 #[derive(Clone, uniffi::Record)]
 pub struct Message {
     pub from: Address,
     pub plaintext: Vec<u8>,
+    pub kind: MessageKind,
 }
 
 /// Anything that can go wrong, as one case per kind an app can branch on:
@@ -906,6 +927,7 @@ impl Client {
                                     .map(|r| Message {
                                         from: address_of(&r.from),
                                         plaintext: r.plaintext,
+                                        kind: r.kind.into(),
                                     })
                                     .collect::<Vec<Message>>());
                             }

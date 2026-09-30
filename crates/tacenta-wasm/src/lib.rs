@@ -485,6 +485,11 @@ impl Client {
                     .map(|m| Message {
                         from: format!("{}/{}", m.from.user, m.from.device),
                         plaintext: m.plaintext,
+                        kind: match m.kind {
+                            tacenta_client::MessageKind::Direct => "direct".into(),
+                            tacenta_client::MessageKind::Group => "group".into(),
+                            tacenta_client::MessageKind::Receipt => "receipt".into(),
+                        },
                     })
                     .collect());
             }
@@ -499,6 +504,7 @@ impl Client {
 pub struct Message {
     pub from: String,
     pub plaintext: Vec<u8>,
+    pub kind: String,
 }
 
 #[wasm_bindgen]

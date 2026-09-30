@@ -495,7 +495,12 @@ not in our proofs' dependency cone.
   (wasm): the client compiles to WebAssembly (`crates/tacenta-wasm`) over
   the WebSocket carriage the gateway serves, and `sdk/typescript` is the
   TypeScript head on it, with an end-to-end test in Node run by the
-  release pipeline (decision 0090); not yet published to a registry.
+  release pipeline (decision 0090); not yet published to a registry. That test
+  reads `Message.kind` for the direct class only (decision 0116); the generated
+  declarations type it as a string, and the `group` and `receipt` classes are not
+  exercised from this head. In the Swift and Kotlin `Message` records `kind` is a
+  required field, so code that constructs `Message` values must pass it
+  (decision 0116).
   A packaged xcframework / `.aar`, async export, and an example app are
   downstream work.
 - **Bounded group experiment** (`tacenta-group`, and `GroupClient` with the
