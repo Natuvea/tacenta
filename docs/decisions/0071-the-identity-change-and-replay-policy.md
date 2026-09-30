@@ -1,5 +1,9 @@
 # 0071 — the identity-change and replay policy
 
+> Amended 2026-09-30: the last-resort replay record described under "The bound
+> this policy states rather than hides" is not what the pinned tacenta-core
+> does. See "Amended 2026-09-30" at the end; the text between is left as written.
+
 ## Why this exists
 
 The enforcement exists in code, in the tacenta-core repository: its
@@ -133,3 +137,61 @@ fan-out is covered by decision 0018.
   story and the division of responsibility needs restating.
 - **Age expiry reaching the sparse ratchet.** The asymmetry with the classical
   ratchet is currently unexplained rather than justified.
+
+## Amended 2026-09-30
+
+This record was written on 2026-09-09. Two days later tacenta-core `e1537e6`
+(the core of v1.12.0, 2026-09-11) replaced the last-resort replay window with a
+record that fails closed, and the pin has moved on since. The sections above are
+left as they were written; where they disagree with this section, this section
+is what the pinned tacenta-core does. This record asked to be edited, not
+appended to, when the bound changed. The project's later practice is a dated
+amendment, as in 0092 and 0116, and this note follows that practice so that the
+earlier reasoning stays readable.
+
+**What changed.**
+
+- **Nothing is evicted.** The record no longer holds "1024 entries, oldest
+  evicted first", and a replay of the oldest handshake is no longer accepted
+  again. Each last-resort key has a budget of 1,024 distinct accepted
+  handshakes over its lifetime (`MAX_LAST_RESORT_SEEN`, counted per key, so the
+  current key and, after a rotation, the retired one each have their own). A
+  repeat of an accepted handshake is refused with `ReplayedLastResort` whether
+  or not any budget is left. A handshake that is new and names a key whose
+  budget is spent is refused with `LastResortRecordFull`, before anything is
+  decrypted or changed. Entries leave the record only when a rotation wipes the
+  key they belong to.
+- **What identifies a handshake.** The fingerprint is derived from the shared
+  secret the handshake derives, and not from the bytes of the initiator's
+  ephemeral key, so two spellings of one ephemeral key are one entry
+  (GHSA-v95x-f6p3-4qxg; the pinned revision contains that fix). A record saved
+  by an older format cannot be compared with these fingerprints, so a store
+  that holds one loads with its live last-resort keys closed until they are
+  rotated (`CHANGELOG.md`, Unreleased).
+- **The sentence about sessions is withdrawn.** "The number of sessions one
+  captured message can open is bounded by the record rather than by the
+  protocol" described the eviction design. A captured last-resort message opens
+  no second session while the record refuses it.
+
+**What it costs, which the original did not have.** Failing closed trades a
+replay path for an availability one. Anyone who holds the published bundle can
+complete last-resort handshakes under fresh identities cheaply, so anyone can
+spend a key's budget; after that, legitimate first contacts that arrive by the
+last-resort path are refused until the key is rotated, and a determined
+attacker spends the fresh budget as well (tacenta-core, LIM-19). The relief
+that holds is to keep one-time prekeys stocked, which is what makes the path
+rare (`replenish`, and the directory's dispensing in 0074), and to limit how
+fast bundles are fetched. This repository keeps one-time prekeys stocked; it
+does not limit how fast bundles are fetched, because the directory's throttle
+covers new handle registrations and not lookups. It also never calls
+`rotate_kem`, so nothing in the SDK resets a spent budget.
+`docs/threat-model.md` states the same.
+
+**Read the rest of this record accordingly.** In "The three-column summary" the
+row "a bounded last-resort replay record" means a record that fails closed. In
+"What would reopen this", the last-resort record's bound is now a budget and
+not a window: a deployment whose last-resort path is not rare meets refusals,
+not accepted replays, and needs replenishment made more aggressive or a
+rotation policy, which this repository does not have. The record still does not
+claim that replay is impossible: it depends on the persisted record being
+written in order and not rolled back (0078).

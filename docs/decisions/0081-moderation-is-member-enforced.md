@@ -1,5 +1,15 @@
 # 0081 — moderation is member-enforced, the server stays blind
 
+> Amended 2026-09-30: this record is direction only, and none of it is built.
+> The group profile in the tree (decisions 0090 to 0148, `docs/claims.md`) is
+> pairwise fan-out under one authority, with a roster that carries no
+> signatures and whose authority is authenticated by the pairwise channel. In
+> it, removal is a roster successor that members apply and a policy the
+> coordinator enforces, not a re-key, and a member that does not receive a
+> control is not told: `docs/claims.md` lists "No catch-up". The sentences below
+> that removal is "a re-key, enforced by math" and that members "see the gap in
+> the transcript" do not describe it.
+
 ## The problem
 
 Group chat brings moderation with it. The obvious design is server-managed: a
