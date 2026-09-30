@@ -7,35 +7,113 @@ the order of a release). Dates are the day the tag was pushed. Release tags are
 cut in the release pipeline, not in this repository. Earlier tags (v1.0.0 to v1.1.2) predate this file; the
 commits carry their story.
 
+**Versions and this tree.** The manifests in this tree (`Cargo.toml`,
+`sdk/typescript/package.json` and its lockfile,
+`bindings/android/lib/build.gradle.kts`) say 1.11.5, and have since the first
+commit. The sections below for v1.11.6, v1.12.0 and v1.12.1 record releases
+whose version bump is not in this tree, so
+`tooling/check-versions.sh --tag v1.12.1` fails here: the tree is 1.11.5. Later
+releases exist (the conformance transcripts under `tacenta.com/dl/conformance/`
+include v1.12.2 and v1.12.3) and have no section in this file. This repository
+states no versioning policy. Read the 1.x numbers as release labels and not as a
+compatibility promise: v1.7.0 and v1.8.0 changed the public API of the heads in
+minor releases.
+
 ## Unreleased
 
-- A bounded experimental group profile (the `tacenta-group` crate and, in
-  `tacenta-client`, the experimental `GroupClient` with its group-operation
-  modules: eight members, one device each, one authority) is in the tree for
-  tests and the group demo. `GroupClient` acknowledges group traffic only after
-  its disposition is committed; the plain `Client::receive` is unchanged. No SDK
-  head, the CLI or the server reaches it, and `GroupClient` is outside the SDK
-  surface manifest. `docs/claims.md` states its limits and what it does not yet
-  do. Its experimental API also changed: `GroupClient::open` refuses a client
-  whose state is not the snapshot's (`GroupError::StateMismatch`); the
-  `OperationStore` port gains `durable_generation` and `commit_after`, and a
-  coordinator's commit is refused when the store holds a snapshot it has not
-  seen, and `recover` refuses a store that holds an older snapshot than the
-  coordinator committed (`GroupError::Rollback`); `receive` offers a committed
-  group event again, with its event ID, until the caller has acknowledged it: the
-  next `receive`, or `acknowledge_delivery`, acknowledges what the previous call
-  handed over (`Inbound::redelivered`, `Inbound::lost_events`, which the call that
-  finds a loss reports and the next call clears, `GroupClient::delivery_cursor`); `install_roster` tells the member it removes
-  wherever it is listed and reports `Install::unprepared`; a roster control that
-  arrives ahead of its predecessor is kept (`GroupOutcome::RosterDeferred`,
-  `GroupClient::held_roster_controls`; a coordinator with no roster view keeps
-  the four lowest revisions it is sent, and a sender the roster does not list
-  holds one deferred context per identity); `GroupReceiver::events_issued` is
-  new. `Connection::request` in `tacenta-transport` no longer answers a request
-  with the response of one whose future was dropped, and refuses further requests
+The changes on this tree's `main` after the v1.12.1 release of 2026-09-11.
+Which of them a later release carries is not recorded here.
+
+- tacenta-core moves from `fb89b15` to `5a8f90c`, in three steps: `c7499a9`
+  (pinned 2026-09-14), `b8c924d` (2026-09-20) and `5a8f90c` (2026-09-29, a
+  tacenta-core commit of 2026-09-28). `b8c924d` is the session lifecycle
+  carve-out and the Session L4 stack.
+  - Prekey stores are saved in format `0x05`. Formats `0x01` to `0x04` are
+    still read, and a store saved in `0x05` cannot be read by 1.12.1 or earlier,
+    which refuse its version byte. A store in format `0x02`, `0x03` or `0x04`
+    whose last-resort replay record is not empty loads with its live last-resort
+    keys closed: a last-resort handshake that names one is refused until the key
+    is rotated, and nothing in this SDK rotates it. A format `0x01` store has no
+    record and loads with none remembered. The session format is unchanged.
+    This qualifies the v1.12.0 line "Stores saved by earlier releases still
+    load": they load, and one whose record was not empty loads with its live
+    last-resort keys closed.
+  - The last-resort replay record identifies a handshake by the shared secret it
+    derives, so two spellings of one ephemeral key are one entry.
+  - Where the published advisories' fixes are in these revisions, checked
+    against their history: the fix for GHSA-cgvw-9r5f-xrxp (`36b5db2`) is in all
+    four of `fb89b15`, `c7499a9`, `b8c924d` and `5a8f90c`. The fix for
+    GHSA-v95x-f6p3-4qxg (`ca3eba85`) is in `b8c924d` and `5a8f90c` and not in
+    `c7499a9`. GHSA-9hv6-fr6w-9758 was fixed in three changes (`ca3eba85`,
+    `b856b40`, `fa7cd1bd`): `b8c924d` has the first and `5a8f90c` has all three.
+    The fix for GHSA-r8w8-4rg9-mxhm (`e06f8f41`, merged 2026-09-29) is in none of
+    them, and this tree has not moved to a revision that has it.
+- `CryptoProvider`, the seam a crypto backend implements, has three new
+  required methods, `establish_session_for`, `encrypt_with_outcome` and
+  `decrypt_with_outcome`, with the public types `CryptoOperation` and
+  `CryptoStateEffect` for their results; a provider implemented outside this
+  repository must add them. `Client::send` opens a session with
+  `establish_session_for`, passing the identity the directory returned for the
+  peer, so a bundle whose identity key differs from it is refused and no session
+  is created.
+- In Rust, `Received` has a new public field `kind`, a `MessageKind` (`Direct`,
+  `Group` or `Receipt`): the relay envelope class, chosen by the sender and not
+  authenticated (decision 0116). Code that builds a `Received` must set it. The
+  Swift, Kotlin and TypeScript `Message` values do not carry it.
+- A bounded experimental group profile is in the tree for tests and the group
+  demo: the `tacenta-group` crate and, in `tacenta-client`, the experimental
+  `GroupClient` with its group-operation modules. It is not a supported
+  feature. What a reader of the tree should know:
+  - Limits: eight members, one device per person, one authority (the group's
+    creator, whose leave closes the group), application payloads of at most
+    1,024 bytes, one group per client and per store.
+  - Reach: no SDK head, the CLI or the server exposes a group API, and
+    `GroupClient` is outside the SDK surface manifest. The group crate is linked
+    into every head, because `tacenta-client` depends on it. A group message
+    sent by a peer's `GroupClient` reaches a head's plain `receive`, `drain` and
+    `inbound`: they decrypt it, acknowledge it before any disposition exists and
+    return its bytes, which the Swift, Kotlin and TypeScript heads and the CLI
+    show as an ordinary message (`docs/claims.md`, decisions 0116 and 0131).
+    Those calls are otherwise unchanged.
+  - `GroupClient` acknowledges group traffic only after its disposition is
+    committed.
+  - Cost: every commit rewrites the whole operation snapshot. Counted on one
+    host, a steady-state send of 1,000 bytes to seven recipients offers about
+    38.9 MB to the file system in 22 commits (`docs/claims.md`,
+    `docs/reproduce.md`). These are development figures, not budgets.
+  - Review: the Lean model, the vectors generated from it and the decision
+    records have had no human review, and the word "reviewed" in the merge
+    commit of the profile meant agent-assisted review passes (`docs/claims.md`,
+    "Review status"). `docs/claims.md` states the limits and what the profile
+    does not yet do.
+  - The experimental API: `GroupClient::open` refuses a client whose state is
+    not the snapshot's (`GroupError::StateMismatch`); the `OperationStore` port
+    has `durable_generation` and `commit_after`, and a coordinator's commit is
+    refused when the store holds a snapshot it has not seen, and `recover`
+    refuses a store that holds an older snapshot than the coordinator committed
+    (`GroupError::Rollback`); `receive` offers a committed group event again,
+    with its event ID, until the caller has acknowledged it: the next `receive`,
+    or `acknowledge_delivery`, acknowledges what the previous call handed over
+    (`Inbound::redelivered`, `Inbound::lost_events`, which the call that finds a
+    loss reports and the next call clears, `GroupClient::delivery_cursor`);
+    `install_roster` tells the member it removes wherever it is listed and
+    reports `Install::unprepared`; a roster control that arrives ahead of its
+    predecessor is kept (`GroupOutcome::RosterDeferred`,
+    `GroupClient::held_roster_controls`; a coordinator with no roster view keeps
+    the four lowest revisions it is sent, and a sender the roster does not list
+    holds one deferred context per identity); `GroupReceiver::events_issued`
+    exists.
+- `Connection::request` in `tacenta-transport` no longer answers a request with
+  the response of one whose future was dropped, and refuses further requests
   once one was dropped half way through its frame (`BrokenPipe`).
-  Client export order is now a function of the state (`export_state` writes the
+- Client export order is now a function of the state (`export_state` writes the
   peer sessions in address order).
+- `write_atomically` no longer fails a write on Windows whose atomic rename had
+  completed. It does not synchronise the directory there, so the power-loss
+  guarantee after it returns holds only where a directory can be synchronised
+  (decision 0077). CI now runs the workspace tests on Windows.
+- `rustls` 0.23.45 and `rustls-webpki` 0.103.15, for RUSTSEC-2026-0285.
+- The CLI prints the site's canonical URLs, with the trailing slash.
 
 ## v1.12.1 (2026-09-11)
 
