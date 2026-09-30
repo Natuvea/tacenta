@@ -88,9 +88,31 @@ server; the server's honesty matters only for *metadata*, *availability*, and
   the harder case, and decision record 0071 states the rule and its limit — a
   one-time prekey is consumed exactly once, which stops the replay, but only for
   as long as one-time prekeys last. Past exhaustion the bundle falls back to a
-  reusable last-resort key, and a replayed initial message opens a fresh
-  duplicate session each time. No content leaks either way; the cost is
-  unbounded session creation from one captured message.
+  reusable last-resort key, and the pinned tacenta-core guards that key with a
+  replay record that **fails closed**. It identifies a handshake by the shared
+  secret the handshake derives, so two spellings of one ephemeral key are one
+  entry. A handshake it has already accepted is refused (`ReplayedLastResort`).
+  Each last-resort key also has a budget of 1,024 distinct accepted handshakes
+  over its lifetime; when that is spent, further last-resort handshakes naming
+  the key are refused (`LastResortRecordFull`) and nothing is evicted. No
+  content leaks, and a replay of an accepted handshake is refused rather than
+  opening a second session.
+  **The cost of failing closed is availability.** Anyone who holds the published
+  bundle can complete last-resort handshakes under fresh identities cheaply, so
+  anyone can spend a key's budget, after which a legitimate first contact that
+  arrives by the last-resort path is refused until the key is rotated. Rotation
+  gives a fresh budget, and an attacker who keeps fetching the bundle can spend
+  that as well; tacenta-core names keeping one-time prekeys stocked and limiting
+  how fast bundles can be fetched as the defences that hold (LIM-19 in its
+  `tacenta-spec/security-properties/limitations.md`). In
+  this repository the directory dispenses one-time prekeys (decision 0074) and
+  the client tops them up when they run low, which makes the last-resort path
+  rarer; the
+  directory's throttle covers new handle registrations and not bundle lookups;
+  and nothing in the repository calls tacenta-core's last-resort key rotation
+  (`rotate_kem`), so the SDK does not reset a spent budget. The refusal also
+  depends on the persisted record being written in order and not rolled back
+  (decision 0078).
 
 ### 3. Malicious tenant, or cross-tenant access
 
