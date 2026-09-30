@@ -11,8 +11,23 @@ licence. Add a line to each commit message:
 
     Signed-off-by: Your Name <you@example.com>
 
-`git commit -s` adds it for you. Pull requests whose commits are not signed off
-cannot be merged.
+`git commit -s` adds it for you.
+
+CI checks this. The `sign-off` job fails a pull request when any commit it adds
+lacks a `Signed-off-by:` line, in the last paragraph of the message, that names
+the commit's author exactly (`Name <email>` as `git log` shows the author). A
+pull request that fails it is not merged. A merge commit is a commit and needs
+the line too, so bring a branch up to date by rebasing it rather than merging
+the base in. To fix commits already made:
+
+    git rebase --signoff origin/main
+
+A squash merge writes a new commit, and GitHub writes its message when the pull
+request is merged, after that check has run. That message must end with the
+author's `Signed-off-by:` line as well: keep the lines GitHub copies from the
+commits, or add one when the message is replaced or edited. The `checks` job
+runs the same check on every push to `main` and fails if a commit the push
+introduced is missing it.
 
 ## Licence of contributions
 

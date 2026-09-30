@@ -47,7 +47,12 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
+      # The full history, so a push can be checked from the commit before it
+      # (the sign-off step below).
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - run: bash tooling/check-workflows.sh
       - run: bash tooling/check-versions.sh
       - run: bash tooling/check-conformance-lines.sh
@@ -71,12 +76,42 @@ jobs:
       # Every gate script in tooling/ is run by a step in this workflow.
       - run: bash tooling/check-gates-wired.sh
       - run: bash tooling/tests/run-check-gates-wired-cases.sh
+      - run: bash tooling/tests/run-check-signoff-cases.sh
+      # A pull request's own commits are checked by the sign-off job. A push
+      # to main is checked here, from the commit before the push, because a
+      # squash merge's message is written by GitHub after the pull request
+      # check ran, and it has to carry the author's sign-off too.
+      - name: Commits introduced by a push to main are signed off
+        if: github.event_name == 'push'
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: bash tooling/check-signoff.sh --require-commits "$BASE_SHA"
       # check-advisories skips itself when cargo-audit is absent, and the
       # GitHub-hosted image does not ship it; install so the scan runs.
       - run: cargo install cargo-audit --locked
       - run: bash tooling/check-advisories.sh
       # check-licences resolves the compiled graph.
       - run: bash tooling/check-licences.sh
+
+  # Every commit a pull request adds is signed off by its author under the
+  # Developer Certificate of Origin (CONTRIBUTING.md). Only pull requests: a
+  # push to main is checked in the `checks` job, and the history from before
+  # this check has no sign-off on most commits. The full history is fetched so
+  # the base branch is there to compare against. The base branch name is passed
+  # through the environment, not interpolated into the script.
+  sign-off:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Every added commit is signed off by its author
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash tooling/check-signoff.sh --require-commits "origin/${BASE_REF}"
 
   spec:
     runs-on: ubuntu-latest
