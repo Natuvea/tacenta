@@ -135,8 +135,8 @@ def _lp32(x):
 
 def _lp16(x):
     # Section 1: lp16(x) = u16(len(x)) || x, "defined only for len(x) < 65536".
-    # The refusal for a longer value is item (5) of section 7 "Encoding"
-    # ([BE5] in _encode_bootstrap), which runs before any bytes are written.
+    # Its one user is the bootstrap target, which section 7 "Encoding" has
+    # already limited to 256 and 64 bytes, so the prefix cannot overflow.
     return _put_u16(len(x)) + x
 
 
@@ -584,29 +584,34 @@ def _decode_bootstrap(data):
 
 
 def _encode_bootstrap(b):
-    """Section 7 "Encoding": refuses, in this order,
-
-    (1) an invitation group ID that differs from the roster's, (2) a source
-    revision that differs from the roster's, (3) a policy version that differs
-    from the roster's, each `conflict`; (4) any refusal of V-roster on the source
-    roster; (5) a target identity or device longer than 65,535 bytes, `malformed`.
-    It then writes the layout.  It does NOT run step 10 of the decoder and does
-    NOT size-check the target against 256 and 64 (OP-4).
+    """Section 7 "Encoding": the decoder's checks on the value, in the decoder's
+    order, with the decoder's reasons: (1) V-roster on the source roster; (2) the
+    checks of step 10 on the invitation's own fields; (3) the checks of step 11.
+    It then writes the layout.
     """
     roster = b["source_roster"]
     _fixed(b["invitation_id"], INVITATION_ID_LEN)  # [BE-IID]
     _fixed(b["group_id"], GROUP_ID_LEN)  # [BE-GID]
     _fixed(b["source_roster_digest"], DIGEST_LEN)  # [BE-DIG]
     _roster_types(roster)
-    if b["group_id"] != roster["group_id"]:  # [BE1]
+    # (1)
+    _validate_roster(roster)  # [BE1]
+    # (2)
+    if b["source_revision"] == RESERVED_REVISION:  # [BE2a]
+        raise Refusal("reserved_revision")
+    if b["policy_version"] != POLICY_VERSION:  # [BE2b]
+        raise Refusal("unsupported_policy")
+    if len(b["target"][0]) > MAX_IDENTITY:  # [BE2c]
+        raise Refusal("identity_too_large")
+    if len(b["target"][1]) > MAX_DEVICE:  # [BE2d]
+        raise Refusal("device_too_large")
+    # (3)
+    if b["group_id"] != roster["group_id"]:  # [BE3a]
         raise Refusal("conflict")
-    if b["source_revision"] != roster["revision"]:  # [BE2]
+    if b["source_revision"] != roster["revision"]:  # [BE3b]
         raise Refusal("conflict")
-    if b["policy_version"] != roster["policy_version"]:  # [BE3]
+    if b["policy_version"] != roster["policy_version"]:  # [BE3c]  (cannot fail)
         raise Refusal("conflict")
-    _validate_roster(roster)  # [BE4]
-    if len(b["target"][0]) > 65535 or len(b["target"][1]) > 65535:  # [BE5]
-        raise Refusal("malformed")
     return (
         DOM_BOOTSTRAP
         + b["invitation_id"]
@@ -771,15 +776,34 @@ def _decode_intent(data):
 
 
 def _encode_intent(v):
-    """Section 11 "Encoding".
-
-    "This page specifies no refusals for an intent encoder ... For fields that
-    satisfy steps 1 to 12 an encoder MUST write exactly those bytes; for other
-    fields its behaviour is outside this page."  So the layout is written and
-    nothing is refused.
+    """Section 11 "Encoding": the decoder's checks on the value, in the decoder's
+    order, with the decoder's reasons, then the layout.
     """
     _fixed(v["group_id"], GROUP_ID_LEN)  # [IE-GID]
     _fixed(v["roster_digest"], DIGEST_LEN)  # [IE-DIG]
+    recipients = v["recipients"]
+    # 1: the sender's size (step 4)
+    _size_check(v["sender"][0], v["sender"][1])  # [IE1]
+    # 2: the payload (step 7)
+    if len(v["payload"]) > MAX_PAYLOAD:  # [IE2]
+        raise Refusal("payload_too_large")
+    # 3: the number of recipients (step 8)
+    if len(recipients) == 0:  # [IE3a]
+        raise Refusal("empty_recipients")
+    if len(recipients) > MAX_MEMBERS:  # [IE3b]
+        raise Refusal("too_many_members")
+    # 4: each recipient's size, in order (step 9)
+    for m in recipients:  # [IE4]
+        _size_check(m[0], m[1])
+    # 5: order and distinct identities, in order (step 11)
+    for i, m in enumerate(recipients):  # [IE5]
+        if i > 0 and not _member_lt(recipients[i - 1], m):  # [IE5a]
+            raise Refusal("non_canonical")
+        if any(m[0] == e[0] for e in recipients[:i]):  # [IE5b]
+            raise Refusal("non_canonical")
+    # 6: the revision (step 12)
+    if v["revision"] == RESERVED_REVISION:  # [IE6]
+        raise Refusal("reserved_revision")
     return (
         DOM_INTENT
         + _lp32(v["group_id"])
@@ -788,8 +812,8 @@ def _encode_intent(v):
         + _put_u64(v["sequence"])
         + _lp32(v["roster_digest"])
         + _lp32(v["payload"])
-        + _put_u32(len(v["recipients"]))
-        + b"".join(_member_long(m) for m in v["recipients"])
+        + _put_u32(len(recipients))
+        + b"".join(_member_long(m) for m in recipients)
     )
 
 

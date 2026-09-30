@@ -19,8 +19,11 @@ file header and a few rules for the file itself, and these are checked too:
 section 2 under the keys section 14 lists; ``domains`` maps the seven format names
 to their domain strings; a vector name is unique and reads ``format/case``, and an
 ``encode_refuse`` name (and only that kind) reads ``format/encode-...``; ``pad_to``
-occurs only on ``refuse`` and is never below the length of ``bytes``.  A header or
-file-rule failure prints as ``FAIL file/...`` and counts as one failure.
+occurs only on ``refuse`` and is never below the length of ``bytes``; every
+``format/encode-x`` refusal has a ``refuse`` vector ``format/x`` with the same
+reason, except the one named in ``ENCODER_ONLY_ORDER`` (section 14, "Encoder
+refusals are paired with decoder refusals").  A header or file-rule failure
+prints as ``FAIL file/...`` and counts as one failure.
 
 One line is printed per failing vector, then
 ``group-wire: N vectors, M failed, K commitments``.  The exit status is non-zero
@@ -177,8 +180,13 @@ def check_header(doc):
                 yield ("file/domains/" + key, "file has %r, reference constant is %r" % (domains[key], ref.DOMAINS[key]))
 
 
+# Section 14: the one encoder refusal whose order differs from the decoder's (section 6).
+ENCODER_ONLY_ORDER = {"context/encode-precedence-encode-checks-payload-before-sender-size"}
+
+
 def check_file_rules(vectors):
-    """Section 14 'A vector' and 'pad_to': rules about the file itself."""
+    """Section 14 'A vector', 'pad_to' and the encoder pairing: rules about the file itself."""
+    by_name = {v.get("name"): v for v in vectors}
     seen = set()
     for v in vectors:
         name = v.get("name", "?")
@@ -201,6 +209,12 @@ def check_file_rules(vectors):
             yield ("file/" + name, "members %s do not fit result %r" % (sorted(keys), kind))
         if "reason" in v and v["reason"] not in REASONS:
             yield ("file/" + name, "reason %r is not a label of section 3" % (v["reason"],))
+        if kind == "encode_refuse" and name not in ENCODER_ONLY_ORDER:
+            twin = by_name.get(fmt + "/" + name[len(fmt + "/encode-"):])
+            if twin is None or twin.get("result") != "refuse":
+                yield ("file/" + name, "no 'refuse' vector of the same name without 'encode-'")
+            elif twin.get("reason") != v.get("reason"):
+                yield ("file/" + name, "encoder gives %r, its decoder twin %r" % (v.get("reason"), twin.get("reason")))
         if "bytes" in v:
             b = v["bytes"]
             if not isinstance(b, str) or len(b) % 2 or b != b.lower() or any(c not in "0123456789abcdef" for c in b):
