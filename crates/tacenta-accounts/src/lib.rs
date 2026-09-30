@@ -39,6 +39,7 @@ mod protocol;
 mod ratelimit;
 mod store;
 pub use inventory::{DeviceInventory, InventoryError};
+pub use persist::{RestoreError, SnapshotSection};
 pub use protocol::{
     AccountRequest, AccountResponse, SignupReason, decode_account_request, decode_account_response,
     encode_account_request, encode_account_response,
@@ -619,9 +620,11 @@ impl Accounts {
             .get(&key)
             .cloned()
             .unwrap_or_default();
+        // A user whose tenant is missing is refused, never a panic: a panic
+        // here runs under the store's lock and would poison it for everyone.
         let handle = self
             .handle(tenant, &username)
-            .expect("an inventory user must have an existing tenant");
+            .ok_or(InventoryError::UnknownUser)?;
         let next =
             inventory::link_inventory(&handle, &current, predecessor_generation, binding.clone())?;
         self.device_inventories.insert(key, next.clone());
@@ -708,9 +711,11 @@ impl Accounts {
             .get(&key)
             .cloned()
             .unwrap_or_default();
+        // A user whose tenant is missing is refused, never a panic: a panic
+        // here runs under the store's lock and would poison it for everyone.
         let handle = self
             .handle(tenant, &username)
-            .expect("an inventory user must have an existing tenant");
+            .ok_or(InventoryError::UnknownUser)?;
         let next = match &request {
             inventory::LifecycleRequest::Revoke {
                 predecessor_generation,

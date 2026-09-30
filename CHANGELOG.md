@@ -57,6 +57,17 @@ commits carry their story.
     may not carry a replacement predecessor
     (`InventoryError::UnexpectedReplacementPredecessor`); a replacement must
     carry the commitment of the exact binding it retires.
+  - The in-memory accounts snapshot starts with an eight-byte header and holds
+    seven sections, all required (the four servers wrote before, then device
+    inventories and two kinds of retry record). A snapshot cut at any point,
+    including exactly between two sections, is refused rather than restored
+    with the later sections empty (`Accounts::try_restore`,
+    `RestoreError::Truncated`), and so is one with a user, API key or session
+    that names a tenant or user it does not hold (`RestoreError::Orphan`).
+    Snapshots that earlier servers wrote still restore; a snapshot written by
+    this version is not readable by an earlier release. An inventory call for a
+    user whose tenant is missing returns `InventoryError::UnknownUser` instead
+    of panicking under the store's lock.
   - The directory handle of an account is now built from its normalized
     username; `handle` used to echo the spelling it was given.
   - CI compile-checks and lints the `postgres` feature. The database tests

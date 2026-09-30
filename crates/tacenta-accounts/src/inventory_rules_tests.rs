@@ -1,7 +1,8 @@
 //! The inventory rules, exercised against the in-memory store (the same
 //! `Accounts` behind `AccountStore::Memory`), so they need no database. The
 //! rules live in `inventory.rs` as pure functions that both backends call; these
-//! tests pin their refusals, the retry-key scoping, and the snapshot framing.
+//! tests pin their refusals and the retry-key scoping. The snapshot framing is
+//! tested in `persist.rs`.
 
 use crate::{Accounts, DeviceInventory, InventoryError, TenantId};
 use tacenta_core::crypto::groups::inventory::{
@@ -9,9 +10,9 @@ use tacenta_core::crypto::groups::inventory::{
 };
 
 /// An honest device identity key: the X25519 public key of a secret that
-/// repeats one byte, which is a point of the prime-order subgroup and so passes
-/// the core's identity-key rule. Distinct seeds give distinct keys. (The
-/// function is named for the issuer, but it only derives a public key.)
+/// repeats one byte, which passes the core's identity-key rule. Distinct seeds
+/// give distinct keys. (The function is named for the issuer, but it only
+/// derives a public key.)
 pub(crate) fn honest_key(seed: u8) -> [u8; 32] {
     issuer_public_key(&[seed; 32])
 }
@@ -276,28 +277,6 @@ fn evicted_revocations_can_be_relinked_after_eight_more_revocations() {
         relinked.is_ok(),
         "evicted revoked binding is relinkable: {relinked:?}"
     );
-}
-
-#[test]
-fn snapshot_restore_accepts_every_older_framing() {
-    let mut empty = Accounts::new();
-    let (t2, _) = empty
-        .sign_up_tenant("zed", "admin@zed.example", "correct horse")
-        .unwrap();
-    empty.sign_up_user(&t2.id, "zoe", "hunter2!!").unwrap();
-    let full = empty.snapshot();
-    // three trailing u32 counts: inventories, link mutations, lifecycle mutations
-    for cut in [4usize, 8, 12] {
-        let bytes = &full[..full.len() - cut];
-        let restored = Accounts::restore(bytes);
-        assert!(restored.is_some(), "framing with {cut} trailing bytes cut");
-        assert_eq!(
-            restored.unwrap().device_inventory(&t2.id, "zoe"),
-            Some(DeviceInventory::default())
-        );
-    }
-    // Something in between the framings is refused.
-    assert!(Accounts::restore(&full[..full.len() - 2]).is_none());
 }
 
 #[tokio::test]
