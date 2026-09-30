@@ -47,10 +47,12 @@ the pinned Aeneas release, whose tag and archive digest tacenta-core's
 kept honest across four documents:
 
 - [docs/claims.md](docs/claims.md) — proven versus tested versus assumed,
-  claim by claim, enforced by CI.
+  claim by claim. Its opening says which parts the public CI enforces on every
+  push and which are run by hand.
 - [docs/threat-model.md](docs/threat-model.md) — what the system defends,
-  against whom, and its stated non-goals (metadata, signup throttling, the
-  authorization logic not yet proven; sign-in is rate-limited).
+  against whom, and its stated non-goals (metadata, signup throttling, authorization
+  logic that is proven of the specification and tested, not refined, on the Rust;
+  sign-in is rate-limited on the in-memory store path only).
 - [docs/verification-tcb.md](docs/verification-tcb.md) — the trusted
   computing base of the proofs: what a green proof assumes (Lean kernel,
   Charon/Aeneas, the spec being the intended one) and what it does not cover.
@@ -93,6 +95,8 @@ crates/      Rust workspace
                     reads to find the four services (decision 0090)
   tacenta-client/ High-level client SDK: the tenant handle, connect / send /
                   receive
+  tacenta-group/  Bounded experimental group profile (eight members, one device
+                  each, one authority); no head exposes it, see docs/claims.md
   tacenta-ffi/    Swift + Kotlin bindings for the client, via UniFFI
   tacenta-server/ The server binary: directory + relay over one store
   tacenta-gateway/ HTTP control plane: tenant signup, API keys, the service

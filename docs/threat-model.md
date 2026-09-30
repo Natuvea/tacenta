@@ -219,12 +219,16 @@ are planned work, not shipped.
 - **The cryptography is tacenta-core's**, used as a pinned dependency and assumed
   correct — deliberately not re-proven (see claims.md). Our risk is *using it
   correctly*, which is tested, not proven.
-- **The authorization logic is tested, not proven.** The directory trust rules,
-  the relay's per-device authorization, and the account/provisioning
-  authorization are the security-critical decisions and are covered by tests and
-  the decoder fuzzing, but not yet by machine-checked proofs. This is the open
-  verification frontier (planned work), and the honest ceiling on the assurance
-  story.
+- **The authorization logic is proven of the specification and, apart from one
+  core, tested rather than proven on the Rust.** The directory's
+  trust-on-first-use decision is machine-checked on the shipped Rust
+  (`register_core` and `rotate_core`; `docs/claims.md`). The authorized rotation
+  and recovery wrappers, the relay's per-device authorization, and the
+  account/provisioning authorization are the other security-critical decisions:
+  they are proven of the specification, and their Rust is written to match and
+  is covered by tests, differential tests against the specification and the
+  decoder fuzzing, but is not refined to it. This is the open verification
+  frontier (planned work), and the ceiling on the assurance story.
 - **Sign-in is rate-limited** (sliding window, keyed by identifier) and tenant
   signup is rate-limited per source IP at the gateway; neither covers *user*
   signup inside a tenant, which is bounded only by the tenant's own API key. The
