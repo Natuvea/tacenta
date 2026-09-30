@@ -186,7 +186,7 @@ cd spec && lake build         # check the specification (no sorry)
 ```
 
 Toolchains: Rust (via rustup), Lean 4 (via elan; version pinned in
-`spec/lean-toolchain`), protoc.
+`spec/lean-toolchain`).
 
 ## Trademarks and non-affiliation
 

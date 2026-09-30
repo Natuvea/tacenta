@@ -13,14 +13,21 @@ on:
 permissions:
   contents: read
 
+env:
+  # The elan release the Lean job installs, and the sha256 of its
+  # x86_64-unknown-linux-gnu archive as GitHub lists it for the release asset
+  # (https://github.com/leanprover/elan/releases/tag/v4.2.4).
+  # tooling/install-elan.sh compares the two before it runs anything from the
+  # archive. Bumping the release means recomputing the digest; a mismatch fails
+  # the job.
+  ELAN_VERSION: v4.2.4
+  ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
@@ -39,9 +46,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: cargo test --locked --workspace
 
   checks:
@@ -77,6 +81,7 @@ jobs:
       - run: bash tooling/check-gates-wired.sh
       - run: bash tooling/tests/run-check-gates-wired-cases.sh
       - run: bash tooling/tests/run-check-signoff-cases.sh
+      - run: bash tooling/tests/run-install-elan-cases.sh
       # A pull request's own commits are checked by the sign-off job. A push
       # to main is checked here, from the commit before the push, because a
       # squash merge's message is written by GitHub after the pull request
@@ -87,8 +92,10 @@ jobs:
           BASE_SHA: ${{ github.event.before }}
         run: bash tooling/check-signoff.sh --require-commits "$BASE_SHA"
       # check-advisories skips itself when cargo-audit is absent, and the
-      # GitHub-hosted image does not ship it; install so the scan runs.
-      - run: cargo install cargo-audit --locked
+      # GitHub-hosted image does not ship it; install so the scan runs. The
+      # version is pinned: the tool that decides "no known-vulnerable
+      # dependency" should not change between runs unreviewed.
+      - run: cargo install cargo-audit --version =0.22.2 --locked
       - run: bash tooling/check-advisories.sh
       # check-licences resolves the compiled graph.
       - run: bash tooling/check-licences.sh
@@ -118,9 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install elan (Lean toolchain)
-        run: |
-          curl -sSfL https://elan.lean-lang.org/elan-init.sh | sh -s -- -y
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+        run: bash tooling/install-elan.sh
       # Lean reports every incomplete declaration it elaborates as
       # "declaration uses `sorry`"; the build log is the authoritative list,
       # so the step fails on any such line rather than trusting a grep of the

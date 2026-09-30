@@ -102,6 +102,28 @@ tenant's API key:
 TACENTA_API_KEY=tct_... node conformance/run.mjs
 ```
 
+## What the module build fetches
+
+`build:wasm`, `build:wasm:harness` and `prepack` run `wasm-pack`. It is not a
+dependency of this package, so the version that builds is the one on `PATH`.
+To compile and post-process the module, wasm-pack uses two more tools and
+downloads each when it does not find a suitable one already installed:
+
+- the `wasm-bindgen` command-line tool, at the version of the `wasm-bindgen`
+  crate in `Cargo.lock` (0.2.126 at the time of writing);
+- `wasm-opt` from Binaryen, which `crates/tacenta-wasm/Cargo.toml`
+  (`[package.metadata.wasm-pack.profile.release]`) configures to optimise the
+  module with `-Os` and two feature flags.
+
+This repository does not pin a checksum for any of the three, and pins no
+version of wasm-pack or of `wasm-opt`. Nothing here checks what those downloads
+served at build time, so the bytes of `wasm/tacenta_bg.wasm` and
+`wasm/tacenta.js` depend on them as well as on the source. A build that must be
+checkable installs all three beforehand, at versions and from sources you have
+chosen and verified (for example `cargo install --locked wasm-bindgen-cli
+--version =0.2.126`), so that wasm-pack finds them and fetches nothing.
+`npm pack --ignore-scripts` skips the rebuild and packs whatever `wasm/` holds.
+
 ## Not yet
 
 The package is not yet published to a registry (decision 0090). Sealed state (the rollback-resistant path, decision 0078) and the
