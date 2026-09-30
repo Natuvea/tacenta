@@ -994,6 +994,32 @@ mod tests {
             Err(Error::NonCanonical)
         );
 
+        // The list is walked twice: every recipient's size is judged before the
+        // order of the list, so an unordered pair does not hide the size of a
+        // recipient after it (section 11, Encoding, steps 4 and 5).
+        let mut unsorted_then_wide = send();
+        unsorted_then_wide.recipients.swap(0, 1);
+        let mut last = unsorted_then_wide.recipients[0].clone();
+        last.recipient = wide();
+        unsorted_then_wide.recipients.push(last);
+        assert_eq!(
+            unsorted_then_wide.encode_intent(),
+            Err(Error::IdentityTooLarge)
+        );
+
+        // No recipients after the sender's size and the payload (steps 1 to 3).
+        let mut none_and_wide_sender = send();
+        none_and_wide_sender.recipients.clear();
+        none_and_wide_sender.id.sender = wide();
+        assert_eq!(
+            none_and_wide_sender.encode_intent(),
+            Err(Error::IdentityTooLarge)
+        );
+        let mut none_and_fat = send();
+        none_and_fat.recipients.clear();
+        none_and_fat.payload = vec![0; MAX_PAYLOAD_LEN + 1];
+        assert_eq!(none_and_fat.encode_intent(), Err(Error::PayloadTooLarge));
+
         // Nothing is refused for a list of one, or for a value the decoder takes.
         let mut one = send();
         one.recipients.truncate(1);

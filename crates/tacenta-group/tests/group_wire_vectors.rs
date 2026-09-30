@@ -15,8 +15,11 @@
 //!   it: the decoder returns the stated fields or the stated refusal, and the
 //!   encoder returns exactly the stated bytes or the stated refusal.
 //!
-//! A second reader written from the specification page alone replays the same
-//! file (`tooling/check-group-wire-vectors.sh`).
+//! A second program, `tooling/group_wire_reference.py`, replays the same file
+//! (`tooling/check-group-wire-vectors.sh`). It was first written by a separate
+//! agent from the page and the vector file and then edited, so it is a
+//! differential oracle and not an independent implementation of the page
+//! (section 14 of the page).
 
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -37,7 +40,7 @@ const WRITE_ENV: &str = "TACENTA_WRITE_GROUP_WIRE_VECTORS";
 /// The roster commitments the vectors chain through, as SHA-256 over the label
 /// and the bytes of section 13 of the page. They are checked against
 /// tacenta-core's functions in `tacenta-core`, and against the page's
-/// definition by the second reader.
+/// definition by the second program.
 const D_GENESIS: &str = "e1d3bb2c88e0e146e1587d18d8ea9c8b45bee978390dcd8d3bc3f264b4927ae6";
 const D_REV1: &str = "7ff8509a5262d32cfc5bf6c87a3da5e6cf554f954056686957565c843ae740c5";
 const D_HELLO: &str = "cd501c6ac2d48536132c316cde4571c68a252f51c7d0d992c0ff8a52cb16ad14";
@@ -572,6 +575,37 @@ impl Corpus {
     ) {
         self.refuse(name, format, bytes, reason);
         self.encode_refuse(name, format, fields, reason);
+    }
+    /// A value with two faults that the encoder and the decoder meet in a
+    /// different order (section 3, "Order of an encoder's refusals"): the encoder
+    /// refuses `first` and the decoder, reading the same value as bytes, refuses
+    /// `then`. Two vectors, named for the two faults, with different reasons;
+    /// `every_encoder_refusal_has_a_decoder_twin` and the checker in `tooling`
+    /// hold the pair together.
+    #[allow(clippy::too_many_arguments)]
+    fn differ(
+        &mut self,
+        first: &str,
+        then: &str,
+        format: &'static str,
+        bytes: Vec<u8>,
+        fields: Value,
+        encoder_reason: &'static str,
+        decoder_reason: &'static str,
+    ) {
+        assert_ne!(encoder_reason, decoder_reason, "not a difference of order");
+        self.refuse(
+            &format!("precedence-decode-reads-{then}-before-{first}"),
+            format,
+            bytes,
+            decoder_reason,
+        );
+        self.encode_refuse(
+            &format!("precedence-encode-checks-{first}-before-{then}"),
+            format,
+            fields,
+            encoder_reason,
+        );
     }
     fn push(&mut self, name: &str, format: &'static str, res: Res) {
         self.0.push(Vector {
@@ -1332,17 +1366,14 @@ fn context_corpus(c: &mut Corpus) {
         payload: vec![0; 1025],
         ..h.clone()
     };
-    c.refuse(
-        "precedence-decode-reads-sender-before-payload-size",
+    c.differ(
+        "payload-size",
+        "sender-size",
         f,
         sender_and_payload.bytes(),
-        "identity_too_large",
-    );
-    c.encode_refuse(
-        "precedence-encode-checks-payload-before-sender-size",
-        f,
         sender_and_payload.json(),
         "payload_too_large",
+        "identity_too_large",
     );
 
     // Whole-input bound.
@@ -2498,10 +2529,13 @@ fn bootstrap_more(c: &mut Corpus) {
         closed_source.json(),
     );
 
-    // The encoder makes the decoder's checks in the decoder's order (section 7,
-    // Encoding), so a value with several faults is refused with the same reason
-    // by both, and the precedence vectors come in pairs. `refuse_both` writes
-    // the pair; the decoder-only ones (trailing bytes) have no fields to state.
+    // The encoder makes the decoder's checks in three groups in the decoder's
+    // order (section 7, Encoding), so a value whose faults lie in different
+    // groups is refused with the same reason by both, and the precedence vectors
+    // come in pairs. `refuse_both` writes the pair; the decoder-only ones
+    // (trailing bytes) have no fields to state. The faults inside the source
+    // roster are ordered by V-roster in the encoder and not by `decode_roster`;
+    // `bootstrap_order` has those.
     let unsorted_roster = || RosterSpec {
         members: vec![bob(), alice()],
         ..rev1()
@@ -2661,6 +2695,650 @@ fn intent_more(c: &mut Corpus) {
     );
 }
 
+/// The bytes of a value with its last length-framed field cut off and replaced
+/// by a bare `u32` length prefix: `cut` is the size of the framed field
+/// (4 plus its length) and `prefix` the length that is written instead.
+fn with_last_length_prefix(mut bytes: Vec<u8>, cut: usize, prefix: u32) -> Vec<u8> {
+    bytes.truncate(bytes.len() - cut);
+    bytes.extend_from_slice(&prefix.to_be_bytes());
+    bytes
+}
+
+/// Vectors that pin the order of checks and the readings of the text that a
+/// second implementation could take differently: which fault is refused when a
+/// value has several (section 3, "Order of an encoder's refusals"), what a
+/// decoder reads before it judges anything, a length prefix of 2^31 or more, and
+/// values that look invalid and are not. Added after a second implementer wrote
+/// its own codecs from the page and found 20 other readings of it that passed
+/// every earlier vector, and after a mutation run found four order-of-check
+/// changes that no vector failed on.
+fn order_corpus(c: &mut Corpus) {
+    payload_encoders(c);
+    roster_order(c);
+    context_order(c);
+    bootstrap_order(c);
+    invitation_reply_order(c);
+    intent_order(c);
+}
+
+/// The encoder of a group payload makes the checks of the variant its tag names
+/// (section 10), with that variant's reason; each of these has the decoder's
+/// refusal of the same fault in `payload_corpus` under the same name.
+fn payload_encoders(c: &mut Corpus) {
+    let f = "payload";
+    let tagged = |tag: u8, value: Value| json!({"tag": tag, "value": value});
+    let accept = AckSpec::new(ACCEPT_DOMAIN);
+    let revoke = AckSpec::new(REVOKE_DOMAIN);
+    let ctx_reserved = CtxSpec {
+        rev: u64::MAX,
+        ..hello()
+    };
+    c.encode_refuse(
+        "tag-1-inner-reserved-revision",
+        f,
+        tagged(1, ctx_reserved.json()),
+        "reserved_revision",
+    );
+    let ctx_fat = CtxSpec {
+        payload: vec![0; 1025],
+        ..hello()
+    };
+    c.encode_refuse(
+        "tag-1-inner-payload-1025",
+        f,
+        tagged(1, ctx_fat.json()),
+        "payload_too_large",
+    );
+    let unsorted = RosterSpec {
+        members: vec![bob(), alice()],
+        ..rev1()
+    };
+    c.encode_refuse(
+        "tag-2-inner-unsorted-members",
+        f,
+        tagged(2, unsorted.json()),
+        "non_canonical",
+    );
+    let conflict = BootSpec {
+        src_rev: 1,
+        ..boot()
+    };
+    c.encode_refuse(
+        "tag-3-inner-conflict",
+        f,
+        tagged(3, conflict.json()),
+        "conflict",
+    );
+    for (tag, spec) in [(4u8, &accept), (5u8, &revoke)] {
+        let reserved = AckSpec {
+            rev: u64::MAX,
+            ..spec.clone()
+        };
+        c.encode_refuse(
+            &format!("tag-{tag}-inner-reserved-revision"),
+            f,
+            tagged(tag, reserved.json()),
+            "reserved_revision",
+        );
+    }
+}
+
+fn roster_order(c: &mut Corpus) {
+    let f = "roster";
+    let r1 = rev1();
+    let wide_authority = || m(&[9; 257], &[1]);
+
+    // A member's size before its place in the order, in the decoder (which
+    // size-checks as it reads) and in the encoder (which checks one member's
+    // size, then its order, then the next member).
+    let wide_and_unsorted = RosterSpec {
+        members: vec![bob(), m(&[0x61; 257], &[1])],
+        ..r1.clone()
+    };
+    c.refuse_both(
+        "precedence-member-size-before-member-order",
+        f,
+        wide_and_unsorted.bytes(),
+        wide_and_unsorted.json(),
+        "identity_too_large",
+    );
+
+    // Faults of V-roster (section 5, step 12) against faults the decoder meets
+    // while it reads: the encoder has only V-roster's order.
+    let genesis_with_nine = RosterSpec {
+        members: small_members(9),
+        ..genesis()
+    };
+    c.differ(
+        "genesis",
+        "member-count",
+        f,
+        genesis_with_nine.bytes(),
+        genesis_with_nine.json(),
+        "invalid_genesis",
+        "too_many_members",
+    );
+    let nine_and_wide_authority = RosterSpec {
+        authority: wide_authority(),
+        ..roster_of(small_members(9))
+    };
+    c.differ(
+        "member-count",
+        "authority-size",
+        f,
+        nine_and_wide_authority.bytes(),
+        nine_and_wide_authority.json(),
+        "too_many_members",
+        "identity_too_large",
+    );
+    let reserved_and_wide_authority = RosterSpec {
+        rev: u64::MAX,
+        authority: wide_authority(),
+        ..r1.clone()
+    };
+    c.differ(
+        "reserved-revision",
+        "authority-size",
+        f,
+        reserved_and_wide_authority.bytes(),
+        reserved_and_wide_authority.json(),
+        "reserved_revision",
+        "identity_too_large",
+    );
+    let policy_and_long_device = RosterSpec {
+        policy: 2,
+        members: vec![alice(), m(b"n", &[9; 65])],
+        ..r1.clone()
+    };
+    c.differ(
+        "unsupported-policy",
+        "member-size",
+        f,
+        policy_and_long_device.bytes(),
+        policy_and_long_device.json(),
+        "unsupported_policy",
+        "device_too_large",
+    );
+    let genesis_and_long_device = RosterSpec {
+        members: vec![m(b"bob", &[9; 65])],
+        ..genesis()
+    };
+    c.differ(
+        "genesis",
+        "member-size",
+        f,
+        genesis_and_long_device.bytes(),
+        genesis_and_long_device.json(),
+        "invalid_genesis",
+        "device_too_large",
+    );
+    // One member at a time: the order of an earlier pair before the size of a
+    // later member.
+    let unsorted_then_wide = RosterSpec {
+        members: vec![carol(), bob(), m(&[0xff; 257], &[1])],
+        ..r1.clone()
+    };
+    c.differ(
+        "earlier-member-order",
+        "later-member-size",
+        f,
+        unsorted_then_wide.bytes(),
+        unsorted_then_wide.json(),
+        "non_canonical",
+        "identity_too_large",
+    );
+
+    // What the decoder does before V-roster (section 5, steps 8 to 12).
+    let bad_closed_and_count = RosterSpec {
+        closed: 2,
+        count: Some(9),
+        members: vec![],
+        ..r1.clone()
+    };
+    c.refuse(
+        "precedence-closed-byte-before-member-count",
+        f,
+        bad_closed_and_count.bytes(),
+        "malformed",
+    );
+    let reserved = RosterSpec {
+        rev: u64::MAX,
+        ..r1.clone()
+    };
+    let mut reserved_trailing = reserved.bytes();
+    reserved_trailing.push(0);
+    c.refuse(
+        "precedence-trailing-byte-before-reserved-revision",
+        f,
+        reserved_trailing,
+        "malformed",
+    );
+    c.prefixes(
+        "every-proper-prefix-of-a-reserved-revision-roster",
+        f,
+        reserved.bytes(),
+        "malformed",
+    );
+
+    // Both fields of a member are read before its size is judged.
+    let short_device = Buf::new()
+        .raw(b"Tacenta Group Roster v1")
+        .lp32(G)
+        .u64(1)
+        .lp32(&unhex(D_GENESIS))
+        .lp32(&[9; 257])
+        .u32(5)
+        .raw(&[1, 2])
+        .done();
+    c.refuse(
+        "precedence-short-device-read-before-authority-identity-size",
+        f,
+        short_device,
+        "malformed",
+    );
+
+    // A length prefix is an unsigned 32-bit integer.
+    c.refuse(
+        "last-device-length-2147483648",
+        f,
+        with_last_length_prefix(r1.bytes(), 5, 0x8000_0000),
+        "malformed",
+    );
+    c.refuse(
+        "last-device-length-4294967295",
+        f,
+        with_last_length_prefix(r1.bytes(), 5, u32::MAX),
+        "malformed",
+    );
+
+    // Values that look invalid and are not (section 5, Notes).
+    let zero_predecessor = RosterSpec {
+        pred: vec![0; 32],
+        ..r1.clone()
+    };
+    c.valid(
+        "zero-predecessor-digest-at-revision-1",
+        f,
+        zero_predecessor.bytes(),
+        zero_predecessor.json(),
+    );
+    let empty_authority = RosterSpec {
+        authority: m(b"", &[1]),
+        members: vec![m(b"", &[1]), bob()],
+        ..r1
+    };
+    c.valid(
+        "empty-authority-identity-at-revision-1",
+        f,
+        empty_authority.bytes(),
+        empty_authority.json(),
+    );
+}
+
+fn context_order(c: &mut Corpus) {
+    let f = "context";
+    let h = hello();
+
+    // V-context tests the revision before the members' sizes; the decoder
+    // reads the sizes first.
+    let reserved_and_wide_sender = CtxSpec {
+        rev: u64::MAX,
+        sender: m(&[9; 257], &[1]),
+        ..h.clone()
+    };
+    c.differ(
+        "reserved-revision",
+        "sender-size",
+        f,
+        reserved_and_wide_sender.bytes(),
+        reserved_and_wide_sender.json(),
+        "reserved_revision",
+        "identity_too_large",
+    );
+    let reserved = CtxSpec {
+        rev: u64::MAX,
+        ..h.clone()
+    };
+    c.prefixes(
+        "every-proper-prefix-of-a-reserved-revision-context",
+        f,
+        reserved.bytes(),
+        "malformed",
+    );
+    let short_device = Buf::new()
+        .raw(b"Tacenta Group Application v1")
+        .lp32(G)
+        .u64(1)
+        .lp32(&unhex(D_REV1))
+        .lp32(&[9; 257])
+        .u32(5)
+        .raw(&[1, 2])
+        .done();
+    c.refuse(
+        "precedence-short-device-read-before-sender-identity-size",
+        f,
+        short_device,
+        "malformed",
+    );
+    // hello() ends with lp32("hello"): 9 bytes.
+    c.refuse(
+        "payload-length-2147483648",
+        f,
+        with_last_length_prefix(h.bytes(), 9, 0x8000_0000),
+        "malformed",
+    );
+    c.refuse(
+        "payload-length-4294967295",
+        f,
+        with_last_length_prefix(h.bytes(), 9, u32::MAX),
+        "malformed",
+    );
+}
+
+fn bootstrap_order(c: &mut Corpus) {
+    let f = "bootstrap";
+    let with_roster = |roster: RosterSpec| BootSpec {
+        src_rev: roster.rev,
+        roster,
+        ..boot()
+    };
+
+    // Single faults of the embedded roster: the decoder and the encoder agree.
+    let nine = with_roster(roster_of(small_members(9)));
+    c.refuse_both(
+        "embedded-roster-nine-members",
+        f,
+        nine.bytes(),
+        nine.json(),
+        "too_many_members",
+    );
+    let genesis_with_two = with_roster(RosterSpec {
+        members: vec![alice(), bob()],
+        ..genesis()
+    });
+    c.refuse_both(
+        "embedded-roster-genesis-with-two-members",
+        f,
+        genesis_with_two.bytes(),
+        genesis_with_two.json(),
+        "invalid_genesis",
+    );
+    // The roster's revision is the only reserved one: the invitation's own
+    // source revision is 1 and differs from it (a conflict, judged later).
+    let reserved_roster = BootSpec {
+        src_rev: 1,
+        roster: RosterSpec {
+            rev: u64::MAX,
+            ..rev1()
+        },
+        ..boot()
+    };
+    c.refuse_both(
+        "embedded-roster-reserved-revision",
+        f,
+        reserved_roster.bytes(),
+        reserved_roster.json(),
+        "reserved_revision",
+    );
+    let wide_authority_roster = with_roster(RosterSpec {
+        authority: m(&[9; 257], &[1]),
+        ..rev1()
+    });
+    c.refuse_both(
+        "embedded-roster-authority-identity-257",
+        f,
+        wide_authority_roster.bytes(),
+        wide_authority_roster.json(),
+        "identity_too_large",
+    );
+
+    // Two faults of the embedded roster: the encoder has V-roster's order
+    // (section 5, step 12), not the order in which `decode_roster` meets them.
+    let reserved_and_nine = BootSpec {
+        src_rev: 1,
+        roster: RosterSpec {
+            rev: u64::MAX,
+            ..roster_of(small_members(9))
+        },
+        ..boot()
+    };
+    c.differ(
+        "roster-revision",
+        "roster-member-count",
+        f,
+        reserved_and_nine.bytes(),
+        reserved_and_nine.json(),
+        "reserved_revision",
+        "too_many_members",
+    );
+    let reserved_and_wide_authority = BootSpec {
+        src_rev: 1,
+        roster: RosterSpec {
+            rev: u64::MAX,
+            authority: m(&[9; 257], &[1]),
+            ..rev1()
+        },
+        ..boot()
+    };
+    c.differ(
+        "roster-revision",
+        "roster-authority-size",
+        f,
+        reserved_and_wide_authority.bytes(),
+        reserved_and_wide_authority.json(),
+        "reserved_revision",
+        "identity_too_large",
+    );
+    let policy_and_long_device = BootSpec {
+        src_rev: 1,
+        roster: RosterSpec {
+            policy: 2,
+            members: vec![alice(), m(b"n", &[9; 65])],
+            ..rev1()
+        },
+        ..boot()
+    };
+    c.differ(
+        "roster-policy",
+        "roster-member-size",
+        f,
+        policy_and_long_device.bytes(),
+        policy_and_long_device.json(),
+        "unsupported_policy",
+        "device_too_large",
+    );
+
+    // The reserved source revision is judged after every read.
+    let reserved_source = BootSpec {
+        src_rev: u64::MAX,
+        ..boot()
+    };
+    c.prefixes(
+        "every-proper-prefix-of-a-reserved-source-revision-bootstrap",
+        f,
+        reserved_source.bytes(),
+        "malformed",
+    );
+
+    // The digest is not checked against the roster (section 13).
+    let zero_digest = BootSpec {
+        src_digest: vec![0; 32],
+        ..boot()
+    };
+    c.valid(
+        "all-zero-source-roster-digest",
+        f,
+        zero_digest.bytes(),
+        zero_digest.json(),
+    );
+}
+
+fn invitation_reply_order(c: &mut Corpus) {
+    for (domain, f) in [(ACCEPT_DOMAIN, "acceptance"), (REVOKE_DOMAIN, "revocation")] {
+        let reserved = AckSpec {
+            rev: u64::MAX,
+            ..AckSpec::new(domain)
+        };
+        c.prefixes(
+            "every-proper-prefix-of-a-reserved-revision",
+            f,
+            reserved.bytes(),
+            "malformed",
+        );
+    }
+}
+
+fn intent_order(c: &mut Corpus) {
+    let f = "intent";
+    let i = intent();
+    let wide_sender = || m(&[9; 257], &[1]);
+
+    // Reads before judgments: a member's size is judged as it is read, before
+    // the trailing bytes (section 11, steps 4, 9 and 10).
+    let mut sender_and_trailing = IntentSpec {
+        sender: wide_sender(),
+        ..i.clone()
+    }
+    .bytes();
+    sender_and_trailing.push(0);
+    c.refuse(
+        "precedence-sender-size-at-read-before-trailing-byte",
+        f,
+        sender_and_trailing,
+        "identity_too_large",
+    );
+    let mut recipient_and_trailing = IntentSpec {
+        recipients: vec![m(b"b", &[9; 65])],
+        ..i.clone()
+    }
+    .bytes();
+    recipient_and_trailing.push(0);
+    c.refuse(
+        "precedence-recipient-size-at-read-before-trailing-byte",
+        f,
+        recipient_and_trailing,
+        "device_too_large",
+    );
+    let short_device = Buf::new()
+        .raw(b"Tacenta Group Logical Send v1")
+        .lp32(G)
+        .u64(1)
+        .lp32(&[9; 257])
+        .u32(5)
+        .raw(&[1, 2])
+        .done();
+    c.refuse(
+        "precedence-short-device-read-before-sender-identity-size",
+        f,
+        short_device,
+        "malformed",
+    );
+    let reserved = IntentSpec {
+        rev: u64::MAX,
+        ..i.clone()
+    };
+    c.prefixes(
+        "every-proper-prefix-of-a-reserved-revision-intent",
+        f,
+        reserved.bytes(),
+        "malformed",
+    );
+    // The last recipient's device ends the value; bob's device is `00000001 01`.
+    c.refuse(
+        "last-recipient-device-length-2147483648",
+        f,
+        with_last_length_prefix(i.bytes(), 5, 0x8000_0000),
+        "malformed",
+    );
+    c.refuse(
+        "last-recipient-device-length-4294967295",
+        f,
+        with_last_length_prefix(i.bytes(), 5, u32::MAX),
+        "malformed",
+    );
+
+    // The order of an encoder's checks (section 11, Encoding), which is the
+    // decoder's order: sender size, payload, number of recipients, each
+    // recipient's size, the list's order, the revision. Each pair below has one
+    // fault of each of two steps, so the encoder and the decoder give the same
+    // reason. The Rust replay builds the value with `LogicalSend::new`, which
+    // judges an empty list and the list's membership and order first and holds
+    // the list privately, so no vector here has a fault of the list against
+    // another fault (section 14).
+    let sender_and_payload = IntentSpec {
+        sender: wide_sender(),
+        payload: vec![0; 1025],
+        ..i.clone()
+    };
+    c.refuse_both(
+        "precedence-sender-size-before-payload-size",
+        f,
+        sender_and_payload.bytes(),
+        sender_and_payload.json(),
+        "identity_too_large",
+    );
+    let payload_and_nine = IntentSpec {
+        payload: vec![0; 1025],
+        recipients: small_members(9),
+        ..i.clone()
+    };
+    c.refuse_both(
+        "precedence-payload-size-before-too-many-recipients",
+        f,
+        payload_and_nine.bytes(),
+        payload_and_nine.json(),
+        "payload_too_large",
+    );
+    let mut nine_with_wide_last = small_members(8);
+    nine_with_wide_last.push(m(&[0xff; 257], &[1]));
+    let nine_and_wide = IntentSpec {
+        recipients: nine_with_wide_last,
+        ..i.clone()
+    };
+    c.refuse_both(
+        "precedence-too-many-recipients-before-recipient-size",
+        f,
+        nine_and_wide.bytes(),
+        nine_and_wide.json(),
+        "too_many_members",
+    );
+    let payload_and_reserved = IntentSpec {
+        rev: u64::MAX,
+        payload: vec![0; 1025],
+        ..i.clone()
+    };
+    c.refuse_both(
+        "precedence-payload-size-before-reserved-revision",
+        f,
+        payload_and_reserved.bytes(),
+        payload_and_reserved.json(),
+        "payload_too_large",
+    );
+    let recipient_and_reserved = IntentSpec {
+        rev: u64::MAX,
+        recipients: vec![m(b"b", &[9; 65])],
+        ..i.clone()
+    };
+    c.refuse_both(
+        "precedence-recipient-size-before-reserved-revision",
+        f,
+        recipient_and_reserved.bytes(),
+        recipient_and_reserved.json(),
+        "device_too_large",
+    );
+
+    // The largest valid intent (section 2): a 256/64-byte sender, eight
+    // 256/64-byte recipients and a 1,024-byte payload.
+    let biggest = IntentSpec {
+        sender: m(&[0xee; 256], &[0xee; 64]),
+        payload: vec![0x5a; 1024],
+        recipients: big_members(8),
+        ..i
+    };
+    assert_eq!(biggest.bytes().len(), 4_085);
+    c.valid("maximum-size-4085", f, biggest.bytes(), biggest.json());
+}
+
 fn corpus() -> Vec<Vector> {
     let mut c = Corpus::default();
     roster_corpus(&mut c);
@@ -2674,6 +3352,7 @@ fn corpus() -> Vec<Vector> {
     payload_corpus(&mut c);
     intent_corpus(&mut c);
     intent_more(&mut c);
+    order_corpus(&mut c);
     c.0
 }
 
@@ -2973,16 +3652,27 @@ fn encode(format: &str, fields: &Value) -> Result<Vec<u8>, String> {
                 .iter()
                 .map(member_from)
                 .collect();
-            let roster = intent_roster(fields, &sender, &recipients);
+            // `LogicalSend::new` judges an empty list of recipients, the list's
+            // membership and order, the payload and the revision, and the list
+            // is private. It is given the fields it must have (revision 0, no
+            // payload) and the vector's revision and payload are then written to
+            // the public fields, so that the encoder, not `new`, judges them and
+            // in its own order.
+            let mut roster = intent_roster(fields, &sender, &recipients);
+            roster.revision = 0;
             LogicalSend::new(
                 &roster,
                 digest_from(fields, "roster_digest"),
                 sender,
                 field_u64(fields, "sequence"),
                 recipients,
-                field_hex(fields, "payload"),
+                Vec::new(),
             )
-            .and_then(|send| send.encode_intent())
+            .and_then(|mut send| {
+                send.id.revision = field_u64(fields, "revision");
+                send.payload = field_hex(fields, "payload");
+                send.encode_intent()
+            })
         }
         other => panic!("unknown format {other}"),
     }
@@ -3099,11 +3789,6 @@ fn production_codecs_replay_every_committed_vector() {
     );
 }
 
-/// The one encoder refusal whose order the page says differs from the decoder's
-/// (section 6: the payload is judged before the members' sizes).
-const ENCODER_ONLY_ORDER: [&str; 1] =
-    ["context/encode-precedence-encode-checks-payload-before-sender-size"];
-
 /// An encoder must not write what its own decoder refuses (section 3 of the
 /// page, and the fix of open point 4). Every encoder refusal in the file is
 /// therefore paired with the decoder's refusal of the same fault, under the same
@@ -3111,6 +3796,13 @@ const ENCODER_ONLY_ORDER: [&str; 1] =
 /// less than its decoder shows up as a decoder refusal with no encoder twin the
 /// next time someone adds it. The pairing is not an exhaustive proof: it holds
 /// the faults the file states.
+///
+/// The exception is a value with two faults that the encoder and the decoder
+/// meet in a different order (section 3, "Order of an encoder's refusals"). Its
+/// encoder vector is named `format/encode-precedence-encode-checks-A-before-B`
+/// and refuses with the reason of the fault A; its decoder vector is named
+/// `format/precedence-decode-reads-B-before-A` and refuses the bytes of the same
+/// value with the reason of the fault B, which is a different reason.
 #[test]
 fn every_encoder_refusal_has_a_decoder_twin() {
     let doc = committed();
@@ -3122,19 +3814,37 @@ fn every_encoder_refusal_has_a_decoder_twin() {
     let mut problems = Vec::new();
     for vector in vectors.iter().filter(|v| v["result"] == "encode_refuse") {
         let name = vector["name"].as_str().expect("name");
-        if ENCODER_ONLY_ORDER.contains(&name) {
-            continue;
-        }
-        let twin_name = name.replacen("/encode-", "/", 1);
+        let format = vector["format"].as_str().expect("format");
+        let encoder_prefix = format!("{format}/encode-precedence-encode-checks-");
+        let (twin_name, must_differ) = match name.strip_prefix(&encoder_prefix) {
+            Some(faults) => match faults.split_once("-before-") {
+                Some((first, then)) => (
+                    format!("{format}/precedence-decode-reads-{then}-before-{first}"),
+                    true,
+                ),
+                None => {
+                    problems.push(format!("{name}: no `-before-` in the name"));
+                    continue;
+                }
+            },
+            None => (name.replacen("/encode-", "/", 1), false),
+        };
         match by_name.get(twin_name.as_str()) {
             None => problems.push(format!("{name}: no decoder vector {twin_name}")),
             Some(twin) if twin["result"] != "refuse" => {
                 problems.push(format!("{name}: {twin_name} is not a refusal"));
             }
-            Some(twin) if twin["reason"] != vector["reason"] => problems.push(format!(
-                "{name}: the encoder gives {}, the decoder {}",
-                vector["reason"], twin["reason"]
-            )),
+            Some(twin) if must_differ && twin["reason"] == vector["reason"] => {
+                problems.push(format!(
+                    "{name}: the decoder gives the same reason, so it is no difference of order"
+                ))
+            }
+            Some(twin) if !must_differ && twin["reason"] != vector["reason"] => {
+                problems.push(format!(
+                    "{name}: the encoder gives {}, the decoder {}",
+                    vector["reason"], twin["reason"]
+                ));
+            }
             Some(_) => {}
         }
     }

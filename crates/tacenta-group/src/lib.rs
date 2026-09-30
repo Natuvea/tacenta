@@ -224,6 +224,11 @@ impl Roster {
     }
 
     /// Encodes the preimage whose digest is carried by later roster revisions.
+    ///
+    /// A value with several faults is refused for the first in V-roster's order
+    /// (`spec/group-wire-formats.md` section 5, step 12), which is not always the
+    /// order in which [`Self::decode`] meets them: the decoder judges the
+    /// authority's size, the member count and each member's size as it reads.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         self.validate()?;
         let mut out = Vec::new();

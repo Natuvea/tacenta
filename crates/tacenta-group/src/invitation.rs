@@ -162,11 +162,14 @@ impl InvitationBootstrap {
     }
 
     /// Writes only what [`Self::decode`] accepts, and refuses what it refuses
-    /// with the reason it gives, in the order it meets the faults (decision
-    /// 0149, `spec/group-wire-formats.md` section 7): the source roster, which
-    /// the decoder decodes before it looks at anything after it, then the
-    /// invitation's own fields, then how the two fit together. A public field
-    /// can hold a value the constructors would have refused.
+    /// with the reason it gives (decision 0149, `spec/group-wire-formats.md`
+    /// section 7). A value with several faults is refused for the first of three
+    /// groups: the source roster, which the decoder decodes before it looks at
+    /// anything after it, then the invitation's own fields, then how the two fit
+    /// together. Inside the first group the order is that of [`Roster::encode`]
+    /// (V-roster), not the order in which [`Roster::decode`] meets the same
+    /// faults while it reads. A public field can hold a value the constructors
+    /// would have refused.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let roster = self.source_roster.encode()?;
         self.invitation.validate()?;

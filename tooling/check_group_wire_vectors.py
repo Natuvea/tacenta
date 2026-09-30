@@ -21,9 +21,12 @@ to their domain strings; a vector name is unique and reads ``format/case``, and 
 ``encode_refuse`` name (and only that kind) reads ``format/encode-...``; ``pad_to``
 occurs only on ``refuse`` and is never below the length of ``bytes``; every
 ``format/encode-x`` refusal has a ``refuse`` vector ``format/x`` with the same
-reason, except the one named in ``ENCODER_ONLY_ORDER`` (section 14, "Encoder
-refusals are paired with decoder refusals").  A header or file-rule failure
-prints as ``FAIL file/...`` and counts as one failure.
+reason, except a value whose faults an encoder and a decoder meet in a different
+order (section 14, "Encoder refusals are paired with decoder refusals"): an
+``encode_refuse`` named ``format/encode-precedence-encode-checks-A-before-B`` has
+a ``refuse`` vector ``format/precedence-decode-reads-B-before-A`` with a
+different reason.  A header or file-rule failure prints as ``FAIL file/...`` and
+counts as one failure.
 
 One line is printed per failing vector, then
 ``group-wire: N vectors, M failed, K commitments``.  The exit status is non-zero
@@ -180,8 +183,25 @@ def check_header(doc):
                 yield ("file/domains/" + key, "file has %r, reference constant is %r" % (domains[key], ref.DOMAINS[key]))
 
 
-# Section 14: the one encoder refusal whose order differs from the decoder's (section 6).
-ENCODER_ONLY_ORDER = {"context/encode-precedence-encode-checks-payload-before-sender-size"}
+ENCODER_ORDER = "encode-precedence-encode-checks-"
+DECODER_ORDER = "precedence-decode-reads-"
+
+
+def decoder_twin(fmt, name):
+    """The name of the ``refuse`` vector that pairs with ``name`` (an ``encode_refuse``).
+
+    Returns ``(twin_name, differs)``: ``differs`` is true for a difference of
+    order (section 3, "Order of an encoder's refusals"), where the two reasons
+    must differ, and false for the ordinary pairing, where they must be equal.
+    Returns ``(None, None)`` when a name of the first kind cannot be split.
+    """
+    case = name[len(fmt + "/"):]
+    if case.startswith(ENCODER_ORDER):
+        first, sep, then = case[len(ENCODER_ORDER):].partition("-before-")
+        if not sep:
+            return None, None
+        return fmt + "/" + DECODER_ORDER + then + "-before-" + first, True
+    return fmt + "/" + case[len("encode-"):], False
 
 
 def check_file_rules(vectors):
@@ -209,11 +229,16 @@ def check_file_rules(vectors):
             yield ("file/" + name, "members %s do not fit result %r" % (sorted(keys), kind))
         if "reason" in v and v["reason"] not in REASONS:
             yield ("file/" + name, "reason %r is not a label of section 3" % (v["reason"],))
-        if kind == "encode_refuse" and name not in ENCODER_ONLY_ORDER:
-            twin = by_name.get(fmt + "/" + name[len(fmt + "/encode-"):])
-            if twin is None or twin.get("result") != "refuse":
-                yield ("file/" + name, "no 'refuse' vector of the same name without 'encode-'")
-            elif twin.get("reason") != v.get("reason"):
+        if kind == "encode_refuse":
+            twin_name, differs = decoder_twin(fmt, name)
+            twin = by_name.get(twin_name)
+            if twin_name is None:
+                yield ("file/" + name, "a difference of order is named format/encode-precedence-encode-checks-A-before-B")
+            elif twin is None or twin.get("result") != "refuse":
+                yield ("file/" + name, "no 'refuse' vector named %s" % (twin_name,))
+            elif differs and twin.get("reason") == v.get("reason"):
+                yield ("file/" + name, "its decoder vector gives the same reason %r, so it is no difference of order" % (v.get("reason"),))
+            elif not differs and twin.get("reason") != v.get("reason"):
                 yield ("file/" + name, "encoder gives %r, its decoder twin %r" % (v.get("reason"), twin.get("reason")))
         if "bytes" in v:
             b = v["bytes"]
