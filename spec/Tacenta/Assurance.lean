@@ -15,8 +15,8 @@ axiom set each listed theorem depends on, so if a `sorry` slipped into one of
 them (which would add `sorryAx`), or a proof pulled in an unexpected axiom, this
 file, and with it the CI `spec` build, would fail.
 
-What that covers, and what it does not. It covers the listed theorems only: 47
-`#print axioms` lines, where `spec/Tacenta` declares 90 `theorem`s, and nothing
+What that covers, and what it does not. It covers the listed theorems only: 61
+`#print axioms` lines, where `spec/Tacenta` declares 104 `theorem`s, and nothing
 checks that a new theorem is added to the list. It sees axioms and not
 statements: a theorem weakened to `True`, or to a conjunction with `True`, with
 the same axiom set passes. A new theorem that is not listed and is built on an
@@ -25,8 +25,8 @@ in an unlisted theorem is not caught here either; CI catches it by searching the
 build log for `declaration uses`.
 
 The state-machine theorems below depend on at most `propext` (propositional
-extensionality, a standard Lean axiom). The **wire** theorems, and two of the
-bounded group-policy theorems, additionally depend on `Quot.sound`, which
+extensionality, a standard Lean axiom). The **wire** theorems, and six of the
+eighteen bounded group-policy theorems, additionally depend on `Quot.sound`, which
 arrives through the standard `List` and `Nat` libraries rather than from
 anything this repository writes. Both are among Lean's three standard axioms
 (`propext`, `Classical.choice` and `Quot.sound`); neither is a soundness risk.
@@ -184,9 +184,10 @@ theorem.
 /-- info: 'Tacenta.Wire.Kind.toByte_ofByte?' depends on axioms: [propext] -/
 #guard_msgs in #print axioms Tacenta.Wire.Kind.toByte_ofByte?
 
--- Bounded group policy (decision 0137): the four theorems of `Group.lean`. The
--- model, the trace vectors it generates and these theorems have had no human
--- review; this pins only the axioms they rest on.
+-- Bounded group policy (decision 0137): the eighteen theorems of `Group.lean`,
+-- four of them from the first cut and fourteen stating its guards for every
+-- state. The model, the trace vectors it generates and these theorems have had
+-- no human review; this pins only the axioms they rest on.
 
 /-- info: 'Tacenta.Group.genesis_has_only_its_authority' does not depend on any axioms -/
 #guard_msgs in #print axioms Tacenta.Group.genesis_has_only_its_authority
@@ -199,3 +200,45 @@ theorem.
 
 /-- info: 'Tacenta.Group.different_commitment_is_a_conflict' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in #print axioms Tacenta.Group.different_commitment_is_a_conflict
+
+/-- info: 'Tacenta.Group.only_the_authority_invites' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.only_the_authority_invites
+
+/-- info: 'Tacenta.Group.only_the_authority_admits' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.only_the_authority_admits
+
+/-- info: 'Tacenta.Group.only_the_authority_revokes' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.only_the_authority_revokes
+
+/-- info: 'Tacenta.Group.only_the_authority_removes' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.only_the_authority_removes
+
+/-- info: 'Tacenta.Group.only_the_authority_closes' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.only_the_authority_closes
+
+/-- info: 'Tacenta.Group.removal_needs_a_current_member' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.removal_needs_a_current_member
+
+/-- info: 'Tacenta.Group.revocation_needs_a_live_invitation' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.revocation_needs_a_live_invitation
+
+/-- info: 'Tacenta.Group.closure_closes_the_group' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.closure_closes_the_group
+
+/-- info: 'Tacenta.Group.a_closed_group_refuses_every_operation' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.a_closed_group_refuses_every_operation
+
+/-- info: 'Tacenta.Group.successor_revisions_stay_usable' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in #print axioms Tacenta.Group.successor_revisions_stay_usable
+
+/-- info: 'Tacenta.Group.repeat_acceptance_changes_nothing' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in #print axioms Tacenta.Group.repeat_acceptance_changes_nothing
+
+/-- info: 'Tacenta.Group.admission_records_its_successor' depends on axioms: [propext] -/
+#guard_msgs in #print axioms Tacenta.Group.admission_records_its_successor
+
+/-- info: 'Tacenta.Group.foreign_control_is_a_conflict' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in #print axioms Tacenta.Group.foreign_control_is_a_conflict
+
+/-- info: 'Tacenta.Group.next_control_extends_the_head' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in #print axioms Tacenta.Group.next_control_extends_the_head
