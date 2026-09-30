@@ -36,11 +36,12 @@ commits carry their story.
   once one was dropped half way through its frame (`BrokenPipe`).
   Client export order is now a function of the state (`export_state` writes the
   peer sessions in address order).
-- tacenta-core moves to `dea57eaf` (from `5a8f90c1`). It gains the acceptance
+- tacenta-core moves to `dea57eaf`, the current core main. It has the acceptance
   checks for a hosted inventory statement (core #200) and holds identity keys to
   one rule at the session boundaries, in stored session state and in signature
   verification (core #205; `identities-and-devices.md`, "Identity keys"). A key
-  an honest device publishes is never refused.
+  an honest device publishes is never refused. Against `e06f8f4`, the pin `main`
+  now carries, only the core's attestation manifests differ.
 - Experimental, not wired to any client, server route or SDK surface: hosted
   device-inventory storage and signing (decision 0140).
   - `tacenta-accounts` stores a per-account device inventory (in memory, and in

@@ -84,10 +84,12 @@ generation, and a statement stays valid after the account has moved on (see
 ## The five questions
 
 1. **Does this keep the trusted core small?** Yes. It adds nothing to
-   tacenta-core. The core pin moves from `5a8f90c1` to `dea57eaf`. The
-   inventory-statement module first appears in core's #158; #200 adds its
-   acceptance API and the identity-key check this record applies at the store,
-   and #205 applies the same rule at the session boundaries. The product calls
+   tacenta-core. The core pin is `dea57eaf` (it was `5a8f90c1` when this
+   record was first written, and `main` now carries `e06f8f4`, which differs
+   from it only in the core's attestation manifests). The inventory-statement
+   module first appears in core's #158; #200 adds its acceptance API and the
+   identity-key check this record applies at the store, and #205 applies the
+   same rule at the session boundaries. The product calls
    that module's encoder, verifier and signer. The key-holding component is in
    the product, which is where this record wants it.
 2. **Is the behaviour owned by a written specification?** In part. The
