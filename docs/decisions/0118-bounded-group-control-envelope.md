@@ -1,5 +1,8 @@
 # 0118 — bounded group control envelope
 
+> Amended by 0125, 0126 and 0149: the envelope has five variants, not two, and
+> 0149 gives their tag values and the bytes.
+
 ## Decision
 
 Encrypted `group` relay payloads carry a canonical inner envelope with exactly

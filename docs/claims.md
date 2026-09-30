@@ -665,9 +665,53 @@ not in our proofs' dependency cone.
     from the local snapshot, so its evidence is no longer kept. An unreachable
     route for one recipient is reported as `Frozen` and stops the fan-out for the
     recipients after it in that call.
-  - The byte layouts of the group payloads, invitation records, receiver, view,
-    book, control-outbox and held-controls state and the `TCG*` transcript
-    records have no specification page or byte vector. `group-v1.json` is a
+  - The byte layouts of the peer-exchanged group formats (the group payload and
+    its five tags, the roster preimage, the application context, the invitation
+    bootstrap, acceptance and revocation) and of the logical-send intent are
+    specified in `spec/group-wire-formats.md` (decision 0149), with 377 byte
+    vectors in `contracts/vectors/group-wire-v1.json`. The page was written from
+    the code, not the reverse. A Rust test builds the vectors from the page and
+    replays them against the codecs, and a second program
+    (`tooling/group_wire_reference.py`) replays them too. That program is a
+    differential oracle and not an independent implementation: a separate agent
+    first wrote it from the page and the vector file, after printing the name and
+    expected reason of every vector then in the file; it was edited in a second
+    pass, and its bootstrap and intent encoders were revised by the implementer of
+    the encoder change, not by a fresh reader. **Tested, not proven**: a run of
+    171 single-change mutants of the Rust codecs
+    (`tooling/group-mutation/wire_mutants.py`) was killed in 168 cases, 156 of them
+    by the vector replay (48 by nothing else in the crate). Of the three that
+    survive, two repeat a check of the member order and one is a bound no valid
+    value reaches; all three are argued equivalent. Twenty-six of the 171 change the
+    checks that the encoders of the bootstrap, the intent, the invitation book and
+    the receiver state make (an encoder writes only what its decoder accepts,
+    decision 0149, open point 4): sixteen are killed by the vector replay and ten
+    by `tests/encoder_refusals.rs` or a unit test, since a vector cannot state a
+    local state or a fault of an intent's list of recipients, which the crate
+    keeps private. Fourteen change the order in which two faults of one value are
+    judged (`Q01` to `Q14`; page section 3, "Order of an encoder's refusals"); all
+    fourteen are killed by the vector replay, and four of them (`Q01`, `Q02`,
+    `Q03`, `Q06`) survived every vector and every test of the crate until the
+    vectors that state that order were added. One more mutant, which changes only
+    the order of members with equal identities, is killed by an existing test and
+    is equivalent on the wire. The mutants were written by the author of the
+    vectors, 29 of them after the corpus was extended to cover what the second
+    program's own fault run missed, 24 after the encoder change and 16 after the
+    order of the encoders' refusals was stated (ten of these, `Q01` to `Q10`, were
+    first written by a reviewer of the page), so they show what the corpus pins,
+    not that nothing else is wrong. The record and state encoders of
+    `tacenta-client` were not audited for the same defect. The page records eight
+    open points where the code had no stated reason or disagreed with a decision
+    record: four were decided on 2026-09-30 (the two-field authority and sender,
+    the framing and field order of the invitation formats, and the encoder fix)
+    and four remain open (the input bounds of four decoders, a sender among its
+    recipients, the unit of `expires_at`, versioning). It says what the vectors do
+    not pin (a fault in an intent's list of recipients against another fault of
+    the intent, the reason for an input above 8,192 bytes at the four decoders
+    that have no bound, and the encoders' unreachable bounds). The layouts of the
+    receiver, view, book, control-outbox and
+    held-controls state, the `TCG*` transcript records and the snapshot framing
+    have no specification page or byte vector. `group-v1.json` is a
     policy trace, not a byte vector. The Lean model differs from the code in at
     least the nineteen ways `docs/decisions/0137` lists (the list may be
     incomplete), the receiver, outbox and coordinator
