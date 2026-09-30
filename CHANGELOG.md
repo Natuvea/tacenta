@@ -40,9 +40,20 @@ commits carry their story.
   five tags, the roster preimage, the application context, the invitation
   bootstrap, acceptance and revocation, and the logical-send intent) are
   specified in `spec/group-wire-formats.md`, with byte vectors in
-  `contracts/vectors/group-wire-v1.json` (decision 0149). No behaviour changed;
-  the page lists eight open points where the code has no stated reason or
-  disagrees with a decision record.
+  `contracts/vectors/group-wire-v1.json` (decision 0149). The page lists eight
+  open points where the code had no stated reason or disagreed with a decision
+  record; four were decided on 2026-09-30 and four remain open. No byte of a
+  value that a decoder accepts changed. The experimental encoders now refuse what
+  their decoders refuse, with the reason the decoder gives, so a value the crate
+  writes is a value it reads back: `InvitationBootstrap::encode` refuses a target
+  identity above 256 bytes or device above 64 and names a reserved source revision
+  or a wrong policy version as such (it wrote the first and reported the second as
+  `Conflict`); `LogicalSend::encode_intent` checks a member's size, the number of
+  recipients and its own payload and revision; `InvitationBook::encode_state` and
+  `GroupReceiver::encode_state` check a record's fields and the local member.
+  Decisions 0092 and 0105 are amended: the roster's authority and the intent's
+  sender are one member entry (two length-prefixed fields), as the code always
+  wrote them.
 
 ## v1.12.1 (2026-09-11)
 

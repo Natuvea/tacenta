@@ -130,6 +130,17 @@ pub struct InvitationBootstrap {
 
 impl InvitationBootstrap {
     pub fn new(invitation: Invitation, source_roster: Roster) -> Result<Self, Error> {
+        Self::check_binding(&invitation, &source_roster)?;
+        source_roster.encode()?;
+        Ok(Self {
+            invitation,
+            source_roster,
+        })
+    }
+
+    /// How the invitation fits its source roster: it is still pending, and
+    /// its group, source revision and policy version are the roster's.
+    fn check_binding(invitation: &Invitation, source_roster: &Roster) -> Result<(), Error> {
         if invitation.status != InvitationStatus::Pending
             || invitation.group_id != source_roster.group_id
             || invitation.source_revision != source_roster.revision
@@ -137,11 +148,7 @@ impl InvitationBootstrap {
         {
             return Err(Error::Conflict);
         }
-        source_roster.encode()?;
-        Ok(Self {
-            invitation,
-            source_roster,
-        })
+        Ok(())
     }
 
     /// The product adapter supplies the core commitment of `source_roster`.
@@ -154,18 +161,26 @@ impl InvitationBootstrap {
         Ok(())
     }
 
+    /// Writes only what [`Self::decode`] accepts, and refuses what it refuses
+    /// with the reason it gives, in the order it meets the faults (decision
+    /// 0149, `spec/group-wire-formats.md` section 7): the source roster, which
+    /// the decoder decodes before it looks at anything after it, then the
+    /// invitation's own fields, then how the two fit together. A public field
+    /// can hold a value the constructors would have refused.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let canonical = Self::new(self.invitation.clone(), self.source_roster.clone())?;
-        let roster = canonical.source_roster.encode()?;
+        let roster = self.source_roster.encode()?;
+        self.invitation.validate()?;
+        Self::check_binding(&self.invitation, &self.source_roster)?;
+        let invitation = &self.invitation;
         let mut out = INVITATION_BOOTSTRAP_DOMAIN.to_vec();
-        out.extend_from_slice(canonical.invitation.id.as_bytes());
-        out.extend_from_slice(canonical.invitation.group_id.as_bytes());
-        put_lp(&mut out, canonical.invitation.target.identity())?;
-        put_lp(&mut out, canonical.invitation.target.device())?;
-        out.extend_from_slice(&canonical.invitation.source_revision.to_be_bytes());
-        out.extend_from_slice(&canonical.invitation.source_roster_digest);
-        out.extend_from_slice(&canonical.invitation.policy_version.to_be_bytes());
-        out.extend_from_slice(&canonical.invitation.expires_at.to_be_bytes());
+        out.extend_from_slice(invitation.id.as_bytes());
+        out.extend_from_slice(invitation.group_id.as_bytes());
+        put_lp(&mut out, invitation.target.identity())?;
+        put_lp(&mut out, invitation.target.device())?;
+        out.extend_from_slice(&invitation.source_revision.to_be_bytes());
+        out.extend_from_slice(&invitation.source_roster_digest);
+        out.extend_from_slice(&invitation.policy_version.to_be_bytes());
+        out.extend_from_slice(&invitation.expires_at.to_be_bytes());
         put_u32_lp(&mut out, &roster)?;
         Ok(out)
     }
@@ -337,14 +352,7 @@ impl Invitation {
         policy_version: u32,
         expires_at: u64,
     ) -> Result<Self, Error> {
-        if source_revision == RESERVED_REVISION {
-            return Err(Error::ReservedRevision);
-        }
-        if policy_version != POLICY_VERSION_V1 {
-            return Err(Error::UnsupportedPolicy);
-        }
-        target.validate()?;
-        Ok(Self {
+        let invitation = Self {
             id,
             group_id,
             target,
@@ -353,7 +361,22 @@ impl Invitation {
             policy_version,
             expires_at,
             status: InvitationStatus::Pending,
-        })
+        };
+        invitation.validate()?;
+        Ok(invitation)
+    }
+
+    /// What `new` requires of the fields. The bootstrap and the book run it
+    /// again when they encode, because the fields are public and a value can
+    /// reach them without `new`.
+    fn validate(&self) -> Result<(), Error> {
+        if self.source_revision == RESERVED_REVISION {
+            return Err(Error::ReservedRevision);
+        }
+        if self.policy_version != POLICY_VERSION_V1 {
+            return Err(Error::UnsupportedPolicy);
+        }
+        self.target.validate()
     }
 
     fn same_immutable_fields(&self, candidate: &Self) -> bool {
@@ -431,6 +454,13 @@ impl InvitationBook {
         out.extend_from_slice(self.group_id.as_bytes());
         out.push(count);
         for invitation in invitations {
+            // The decoder's order for a record: the admitted revision it reads
+            // with the status, then the fields `Invitation::new` requires.
+            let (status, admitted_revision) = status_code(invitation.status);
+            if admitted_revision == Some(RESERVED_REVISION) {
+                return Err(Error::ReservedRevision);
+            }
+            invitation.validate()?;
             out.extend_from_slice(invitation.id.as_bytes());
             put_lp(&mut out, invitation.target.identity())?;
             put_lp(&mut out, invitation.target.device())?;
@@ -438,12 +468,8 @@ impl InvitationBook {
             out.extend_from_slice(&invitation.source_roster_digest);
             out.extend_from_slice(&invitation.policy_version.to_be_bytes());
             out.extend_from_slice(&invitation.expires_at.to_be_bytes());
-            let (status, admitted_revision) = status_code(invitation.status);
             out.push(status);
             if let Some(revision) = admitted_revision {
-                if revision == RESERVED_REVISION {
-                    return Err(Error::ReservedRevision);
-                }
                 out.extend_from_slice(&revision.to_be_bytes());
             }
         }

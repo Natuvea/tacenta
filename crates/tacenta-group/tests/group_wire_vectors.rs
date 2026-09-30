@@ -558,6 +558,21 @@ impl Corpus {
             Res::EncodeRefuse { fields, reason },
         );
     }
+    /// A fault that the decoder refuses in the bytes and the encoder refuses in
+    /// the fields, with the same reason: two vectors of one name. Section 3 of
+    /// the page requires the encoder not to write what its decoder refuses, and
+    /// `every_encoder_refusal_has_a_decoder_twin` holds the file to it.
+    fn refuse_both(
+        &mut self,
+        name: &str,
+        format: &'static str,
+        bytes: Vec<u8>,
+        fields: Value,
+        reason: &'static str,
+    ) {
+        self.refuse(name, format, bytes, reason);
+        self.encode_refuse(name, format, fields, reason);
+    }
     fn push(&mut self, name: &str, format: &'static str, res: Res) {
         self.0.push(Vector {
             name: format!("{format}/{name}"),
@@ -1457,30 +1472,33 @@ fn bootstrap_corpus(c: &mut Corpus) {
         src_rev: u64::MAX,
         ..boot()
     };
-    c.refuse(
+    c.refuse_both(
         "reserved-source-revision",
         f,
         reserved.bytes(),
+        reserved.json(),
         "reserved_revision",
     );
     let policy = BootSpec {
         policy: 2,
         ..boot()
     };
-    c.refuse(
+    c.refuse_both(
         "invitation-policy-version-2",
         f,
         policy.bytes(),
+        policy.json(),
         "unsupported_policy",
     );
     let policy_zero = BootSpec {
         policy: 0,
         ..boot()
     };
-    c.refuse(
+    c.refuse_both(
         "invitation-policy-version-0",
         f,
         policy_zero.bytes(),
+        policy_zero.json(),
         "unsupported_policy",
     );
     // Precedence (section 7, steps 9 to 11).
@@ -1497,10 +1515,11 @@ fn bootstrap_corpus(c: &mut Corpus) {
         group: vec![b'x'; 16],
         ..boot()
     };
-    c.refuse(
+    c.refuse_both(
         "precedence-reserved-revision-before-conflict",
         f,
         reserved_and_group.bytes(),
+        reserved_and_group.json(),
         "reserved_revision",
     );
     let target_and_group = BootSpec {
@@ -1508,10 +1527,11 @@ fn bootstrap_corpus(c: &mut Corpus) {
         group: vec![b'x'; 16],
         ..boot()
     };
-    c.refuse(
+    c.refuse_both(
         "precedence-target-size-before-conflict",
         f,
         target_and_group.bytes(),
+        target_and_group.json(),
         "identity_too_large",
     );
 
@@ -1520,17 +1540,24 @@ fn bootstrap_corpus(c: &mut Corpus) {
         target: m(&vec![3; 257], &[1]),
         ..boot()
     };
-    c.refuse(
+    c.refuse_both(
         "target-identity-257",
         f,
         big_id.bytes(),
+        big_id.json(),
         "identity_too_large",
     );
     let big_dev = BootSpec {
         target: m(b"bob", &[4; 65]),
         ..boot()
     };
-    c.refuse("target-device-65", f, big_dev.bytes(), "device_too_large");
+    c.refuse_both(
+        "target-device-65",
+        f,
+        big_dev.bytes(),
+        big_dev.json(),
+        "device_too_large",
+    );
     let mut target_length = b.bytes();
     // The target identity length prefix sits after the domain and the two IDs.
     target_length[69..71].copy_from_slice(&500u16.to_be_bytes());
@@ -1571,14 +1598,15 @@ fn bootstrap_corpus(c: &mut Corpus) {
         policy: 2,
         ..genesis()
     };
-    c.refuse(
+    let policy_roster = BootSpec {
+        roster: bad_policy_roster,
+        ..boot()
+    };
+    c.refuse_both(
         "embedded-roster-policy-version-2",
         f,
-        BootSpec {
-            roster: bad_policy_roster,
-            ..boot()
-        }
-        .bytes(),
+        policy_roster.bytes(),
+        policy_roster.json(),
         "unsupported_policy",
     );
     let mut roster_plus_one = genesis().bytes();
@@ -2023,24 +2051,26 @@ fn intent_corpus(c: &mut Corpus) {
             "malformed",
         );
     }
-    c.refuse(
+    let spec_payload_1025 = IntentSpec {
+        payload: vec![0; 1025],
+        ..i.clone()
+    };
+    c.refuse_both(
         "payload-1025",
         f,
-        IntentSpec {
-            payload: vec![0; 1025],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_payload_1025.bytes(),
+        spec_payload_1025.json(),
         "payload_too_large",
     );
-    c.refuse(
+    let spec_no_recipients = IntentSpec {
+        recipients: vec![],
+        ..i.clone()
+    };
+    c.refuse_both(
         "no-recipients",
         f,
-        IntentSpec {
-            recipients: vec![],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_no_recipients.bytes(),
+        spec_no_recipients.json(),
         "empty_recipients",
     );
     c.refuse(
@@ -2054,14 +2084,15 @@ fn intent_corpus(c: &mut Corpus) {
         .bytes(),
         "too_many_members",
     );
-    c.refuse(
+    let spec_nine_recipients = IntentSpec {
+        recipients: small_members(9),
+        ..i.clone()
+    };
+    c.refuse_both(
         "nine-recipients",
         f,
-        IntentSpec {
-            recipients: small_members(9),
-            ..i.clone()
-        }
-        .bytes(),
+        spec_nine_recipients.bytes(),
+        spec_nine_recipients.json(),
         "too_many_members",
     );
     c.refuse(
@@ -2075,120 +2106,131 @@ fn intent_corpus(c: &mut Corpus) {
         .bytes(),
         "malformed",
     );
-    c.refuse(
+    let spec_reserved_revision = IntentSpec {
+        rev: u64::MAX,
+        ..i.clone()
+    };
+    c.refuse_both(
         "reserved-revision",
         f,
-        IntentSpec {
-            rev: u64::MAX,
-            ..i.clone()
-        }
-        .bytes(),
+        spec_reserved_revision.bytes(),
+        spec_reserved_revision.json(),
         "reserved_revision",
     );
-    c.refuse(
+    let spec_unsorted_first_pair = IntentSpec {
+        recipients: vec![carol(), bob()],
+        ..i.clone()
+    };
+    c.refuse_both(
         "unsorted-first-pair",
         f,
-        IntentSpec {
-            recipients: vec![carol(), bob()],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_unsorted_first_pair.bytes(),
+        spec_unsorted_first_pair.json(),
         "non_canonical",
     );
     let mut last_swapped = small_members(8);
     last_swapped.swap(6, 7);
-    c.refuse(
+    let spec_unsorted_last_pair_of_eight = IntentSpec {
+        recipients: last_swapped,
+        ..i.clone()
+    };
+    c.refuse_both(
         "unsorted-last-pair-of-eight",
         f,
-        IntentSpec {
-            recipients: last_swapped,
-            ..i.clone()
-        }
-        .bytes(),
+        spec_unsorted_last_pair_of_eight.bytes(),
+        spec_unsorted_last_pair_of_eight.json(),
         "non_canonical",
     );
-    c.refuse(
+    let spec_duplicate_recipient = IntentSpec {
+        recipients: vec![bob(), bob()],
+        ..i.clone()
+    };
+    c.refuse_both(
         "duplicate-recipient",
         f,
-        IntentSpec {
-            recipients: vec![bob(), bob()],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_duplicate_recipient.bytes(),
+        spec_duplicate_recipient.json(),
         "non_canonical",
     );
-    c.refuse(
+    let spec_same_identity_second_device = IntentSpec {
+        recipients: vec![bob(), m(b"bob", &[2])],
+        ..i.clone()
+    };
+    c.refuse_both(
         "same-identity-second-device",
         f,
-        IntentSpec {
-            recipients: vec![bob(), m(b"bob", &[2])],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_same_identity_second_device.bytes(),
+        spec_same_identity_second_device.json(),
         "non_canonical",
     );
     let mut last_second_device = small_members(7);
     last_second_device.push(m(&[b'm', 7], &[2]));
-    c.refuse(
+    let spec_last_pair_second_device = IntentSpec {
+        recipients: last_second_device,
+        ..i.clone()
+    };
+    c.refuse_both(
         "same-identity-second-device-at-the-last-pair-of-eight",
         f,
-        IntentSpec {
-            recipients: last_second_device,
-            ..i.clone()
-        }
-        .bytes(),
+        spec_last_pair_second_device.bytes(),
+        spec_last_pair_second_device.json(),
         "non_canonical",
     );
-    c.refuse(
+    let spec_concatenation_order_is_refused = IntentSpec {
+        recipients: vec![m(b"ab", b""), m(b"a", &[0xff])],
+        ..i.clone()
+    };
+    c.refuse_both(
         "concatenation-order-is-refused",
         f,
-        IntentSpec {
-            recipients: vec![m(b"ab", b""), m(b"a", &[0xff])],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_concatenation_order_is_refused.bytes(),
+        spec_concatenation_order_is_refused.json(),
         "non_canonical",
     );
-    c.refuse(
+    let spec_sender_identity_257 = IntentSpec {
+        sender: m(&vec![9; 257], &[1]),
+        ..i.clone()
+    };
+    c.refuse_both(
         "sender-identity-257",
         f,
-        IntentSpec {
-            sender: m(&vec![9; 257], &[1]),
-            ..i.clone()
-        }
-        .bytes(),
+        spec_sender_identity_257.bytes(),
+        spec_sender_identity_257.json(),
         "identity_too_large",
     );
-    c.refuse(
+    let spec_sender_device_65 = IntentSpec {
+        sender: m(b"s", &[9; 65]),
+        ..i.clone()
+    };
+    c.refuse_both(
         "sender-device-65",
         f,
-        IntentSpec {
-            sender: m(b"s", &[9; 65]),
-            ..i.clone()
-        }
-        .bytes(),
+        spec_sender_device_65.bytes(),
+        spec_sender_device_65.json(),
         "device_too_large",
     );
     let mut wide_last = small_members(7);
     wide_last.push(m(&vec![0xff; 257], &[1]));
-    c.refuse(
+    let spec_last_recipient_identity_257 = IntentSpec {
+        recipients: wide_last,
+        ..i.clone()
+    };
+    c.refuse_both(
         "recipient-identity-257-at-the-last-of-eight",
         f,
-        IntentSpec {
-            recipients: wide_last,
-            ..i.clone()
-        }
-        .bytes(),
+        spec_last_recipient_identity_257.bytes(),
+        spec_last_recipient_identity_257.json(),
         "identity_too_large",
     );
-    c.refuse(
+    let spec_recipient_device_65_first = IntentSpec {
+        recipients: vec![m(b"b", &[9; 65])],
+        ..i.clone()
+    };
+    c.refuse_both(
         "recipient-device-65-first",
         f,
-        IntentSpec {
-            recipients: vec![m(b"b", &[9; 65])],
-            ..i.clone()
-        }
-        .bytes(),
+        spec_recipient_device_65_first.bytes(),
+        spec_recipient_device_65_first.json(),
         "device_too_large",
     );
     // Precedence (section 11, steps 10 to 12).
@@ -2417,9 +2459,10 @@ fn context_more(c: &mut Corpus) {
         recipient: m(b"r", &[9; 65]),
         ..h.clone()
     };
-    c.encode_refuse(
+    c.refuse_both(
         "precedence-sender-size-before-recipient-size",
         f,
+        both.bytes(),
         both.json(),
         "identity_too_large",
     );
@@ -2427,9 +2470,10 @@ fn context_more(c: &mut Corpus) {
         recipient: m(b"r", &[9; 65]),
         ..h.clone()
     };
-    c.encode_refuse(
+    c.refuse_both(
         "recipient-device-65-after-a-valid-sender",
         f,
+        recipient_only.bytes(),
         recipient_only.json(),
         "device_too_large",
     );
@@ -2454,48 +2498,30 @@ fn bootstrap_more(c: &mut Corpus) {
         closed_source.json(),
     );
 
-    // The encoder's own checks (section 7, Encoding).
-    let policy_conflict = BootSpec {
-        policy: 2,
-        ..boot()
+    // The encoder makes the decoder's checks in the decoder's order (section 7,
+    // Encoding), so a value with several faults is refused with the same reason
+    // by both, and the precedence vectors come in pairs. `refuse_both` writes
+    // the pair; the decoder-only ones (trailing bytes) have no fields to state.
+    let unsorted_roster = || RosterSpec {
+        members: vec![bob(), alice()],
+        ..rev1()
     };
-    c.encode_refuse(
-        "policy-version-differs-from-roster",
-        f,
-        policy_conflict.json(),
-        "conflict",
-    );
-    let reserved = BootSpec {
-        src_rev: u64::MAX,
-        ..boot()
-    };
-    c.encode_refuse(
-        "reserved-source-revision-is-a-conflict-with-the-roster",
-        f,
-        reserved.json(),
-        "conflict",
-    );
     let conflict_and_bad_roster = BootSpec {
         group: vec![b'x'; 16],
-        roster: RosterSpec {
-            members: vec![bob(), alice()],
-            ..rev1()
-        },
+        roster: unsorted_roster(),
         src_rev: 1,
         ..boot()
     };
-    c.encode_refuse(
-        "precedence-conflict-before-roster-refusal",
+    c.refuse_both(
+        "precedence-embedded-roster-before-conflict",
         f,
+        conflict_and_bad_roster.bytes(),
         conflict_and_bad_roster.json(),
-        "conflict",
+        "non_canonical",
     );
     let bad_roster = BootSpec {
         src_rev: 1,
-        roster: RosterSpec {
-            members: vec![bob(), alice()],
-            ..rev1()
-        },
+        roster: unsorted_roster(),
         ..boot()
     };
     c.encode_refuse(
@@ -2505,16 +2531,8 @@ fn bootstrap_more(c: &mut Corpus) {
         "non_canonical",
     );
 
-    // Precedence on decode (section 7, steps 8 to 10).
-    let mut roster_and_trailing = BootSpec {
-        src_rev: 1,
-        roster: RosterSpec {
-            members: vec![bob(), alice()],
-            ..rev1()
-        },
-        ..boot()
-    }
-    .bytes();
+    // Precedence (section 7, steps 8 to 11).
+    let mut roster_and_trailing = bad_roster.bytes();
     roster_and_trailing.push(0);
     c.refuse(
         "precedence-embedded-roster-before-trailing-byte",
@@ -2522,51 +2540,52 @@ fn bootstrap_more(c: &mut Corpus) {
         roster_and_trailing,
         "non_canonical",
     );
-    c.refuse(
+    let roster_and_target = BootSpec {
+        target: m(&[1; 257], &[1]),
+        src_rev: 1,
+        roster: unsorted_roster(),
+        ..boot()
+    };
+    c.refuse_both(
         "precedence-embedded-roster-before-target-size",
         f,
-        BootSpec {
-            target: m(&[1; 257], &[1]),
-            src_rev: 1,
-            roster: RosterSpec {
-                members: vec![bob(), alice()],
-                ..rev1()
-            },
-            ..boot()
-        }
-        .bytes(),
+        roster_and_target.bytes(),
+        roster_and_target.json(),
         "non_canonical",
     );
-    c.refuse(
+    let reserved_and_policy = BootSpec {
+        src_rev: u64::MAX,
+        policy: 2,
+        ..boot()
+    };
+    c.refuse_both(
         "precedence-reserved-source-revision-before-policy",
         f,
-        BootSpec {
-            src_rev: u64::MAX,
-            policy: 2,
-            ..boot()
-        }
-        .bytes(),
+        reserved_and_policy.bytes(),
+        reserved_and_policy.json(),
         "reserved_revision",
     );
-    c.refuse(
+    let policy_and_target = BootSpec {
+        policy: 2,
+        target: m(&[1; 257], &[1]),
+        ..boot()
+    };
+    c.refuse_both(
         "precedence-policy-before-target-size",
         f,
-        BootSpec {
-            policy: 2,
-            target: m(&[1; 257], &[1]),
-            ..boot()
-        }
-        .bytes(),
+        policy_and_target.bytes(),
+        policy_and_target.json(),
         "unsupported_policy",
     );
-    c.refuse(
+    let identity_and_device = BootSpec {
+        target: m(&[1; 257], &[1; 65]),
+        ..boot()
+    };
+    c.refuse_both(
         "precedence-target-identity-size-before-device-size",
         f,
-        BootSpec {
-            target: m(&[1; 257], &[1; 65]),
-            ..boot()
-        }
-        .bytes(),
+        identity_and_device.bytes(),
+        identity_and_device.json(),
         "identity_too_large",
     );
 }
@@ -3078,6 +3097,48 @@ fn production_codecs_replay_every_committed_vector() {
         vectors.len(),
         failures.join("\n")
     );
+}
+
+/// The one encoder refusal whose order the page says differs from the decoder's
+/// (section 6: the payload is judged before the members' sizes).
+const ENCODER_ONLY_ORDER: [&str; 1] =
+    ["context/encode-precedence-encode-checks-payload-before-sender-size"];
+
+/// An encoder must not write what its own decoder refuses (section 3 of the
+/// page, and the fix of open point 4). Every encoder refusal in the file is
+/// therefore paired with the decoder's refusal of the same fault, under the same
+/// name without `encode-`, with the same reason, so that an encoder that checks
+/// less than its decoder shows up as a decoder refusal with no encoder twin the
+/// next time someone adds it. The pairing is not an exhaustive proof: it holds
+/// the faults the file states.
+#[test]
+fn every_encoder_refusal_has_a_decoder_twin() {
+    let doc = committed();
+    let vectors = doc["vectors"].as_array().expect("vectors");
+    let by_name: std::collections::BTreeMap<&str, &Value> = vectors
+        .iter()
+        .map(|v| (v["name"].as_str().expect("name"), v))
+        .collect();
+    let mut problems = Vec::new();
+    for vector in vectors.iter().filter(|v| v["result"] == "encode_refuse") {
+        let name = vector["name"].as_str().expect("name");
+        if ENCODER_ONLY_ORDER.contains(&name) {
+            continue;
+        }
+        let twin_name = name.replacen("/encode-", "/", 1);
+        match by_name.get(twin_name.as_str()) {
+            None => problems.push(format!("{name}: no decoder vector {twin_name}")),
+            Some(twin) if twin["result"] != "refuse" => {
+                problems.push(format!("{name}: {twin_name} is not a refusal"));
+            }
+            Some(twin) if twin["reason"] != vector["reason"] => problems.push(format!(
+                "{name}: the encoder gives {}, the decoder {}",
+                vector["reason"], twin["reason"]
+            )),
+            Some(_) => {}
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 #[test]
