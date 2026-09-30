@@ -1,5 +1,11 @@
 # 0082 — group chat v1: the recommended shape
 
+> Amended 2026-09-30: the v1 shape below is direction only, and none of it is
+> built. The group profile in the tree (decisions 0090 to 0148,
+> `docs/claims.md`) is the pairwise fan-out that choice 1 leaves for tiny groups
+> and the demo: eight members, one authority, no sender keys, no signed epochs,
+> no sequencer, no sealed sender and no franking.
+
 ## What this is
 
 Group chat plus the sealed-sender direction and member-enforced
