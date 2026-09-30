@@ -3,12 +3,14 @@
 Status: **experimental profile, unreleased.** This page states the bytes of the
 formats that the bounded group-chat experiment exchanges between peers (and one
 that it recovers from its own store), so that an implementation can be written
-from this text. It describes what the code at revision `2062899` does, and it
-lists in [Open points](#12-open-points) every place where that behaviour has no
-stated reason or disagrees with a decision record. It is not a compatibility
-promise: nothing in the group profile has been released, and a human decision on
-an open point can change a layout (which would then change its domain string
-from `v1`). Decision
+from this text. It describes what the code at revision `2062899` does, except
+that the encoders of the invitation bootstrap and of the logical-send intent now
+refuse what their decoders refuse (open point 4, below). Every place where that
+behaviour had no stated reason or disagreed with a decision record is in
+[Open points](#12-open-points): four were decided on 2026-09-30 and four remain
+open. It is not a compatibility promise: nothing in the group profile has been
+released, and a human decision on an open point can change a layout (which would
+then change its domain string from `v1`). Decision
 [0149](../docs/decisions/0149-group-wire-format-specification-first-slice.md)
 records why this slice was chosen and what it leaves out.
 
@@ -137,13 +139,18 @@ every valid `v`. A decoder MUST NOT accept a second spelling of any value.
 **Encoders.** An encoder is given values of the types this page names: fixed
 fields (group ID, invitation ID, digests) of their fixed length, integers within
 their width, a payload tag from 1 to 5. What an encoder does with anything else
-is outside this page, since a typed interface cannot hold such a value. For a
-value of those types, the encoder of a format MUST refuse what the "Encoding"
-paragraph of its section lists, with the reasons given there. For the roster,
-context, acceptance and revocation these are the checks the decoder makes on the
-parsed value. The bootstrap differs (section 7, OP-4), and the payload's encoder
-makes the checks of the variant its tag names (section 10). A refused value
-produces no bytes.
+is outside this page, since a typed interface cannot hold such a value. An
+encoder MUST NOT write bytes that its own decoder refuses. For a value of those
+types it refuses what the "Encoding" paragraph of its section lists, with the
+reasons given there, and those are the reasons the decoder gives for the same
+fault. For the roster, context, acceptance and revocation these are the checks
+the decoder makes on the parsed value; for the bootstrap and the intent they are
+the decoder's checks in the decoder's order (sections 7 and 11); the payload's
+encoder makes the checks of the variant its tag names (section 10). For a value
+with several faults the order is the one the section states, which is not always
+the order in which a decoder reads them (a decoder size-checks a member as it
+reads it; sections 5 and 6 give the orders of the roster and the context). A
+refused value produces no bytes.
 
 ## 4. What the bytes do not decide
 
@@ -269,7 +276,8 @@ no reserved value.
 
 The authority's invitation to one target, with the exact source roster it names.
 It has **no input bound of its own** (OP-5) and uses **short-form** framing for
-the target and no framing at all for the IDs and the digest (OP-2, OP-3).
+the target and no framing at all for the IDs and the digest (OP-2, OP-3: kept as
+they are in version 1).
 
 | Field | Encoding | Notes |
 | --- | --- | --- |
@@ -307,19 +315,28 @@ the target and no framing at all for the IDs and the digest (OP-2, OP-3).
     revision: `conflict`; the policy version differs from the roster's:
     `conflict` (*cannot fail*: both are 1 after the earlier steps).
 
-**Encoding** refuses, in this order: (1) an invitation group ID that differs from
-the roster's group ID, (2) a source revision that differs from the roster's
-revision, (3) a policy version that differs from the roster's, each `conflict`;
-(4) any refusal of V-roster on the source roster; (5) a target identity or
-device longer than 65,535 bytes, `malformed`, because the length does not fit a
-`u16`. It then writes the layout. It does **not** run step 10: a source revision
-of `2^64 - 1` or a policy version other than 1 is refused only through the
-comparison with the roster (`conflict`, when it differs from the roster's), or,
-when the roster carries the same value, by the roster's own refusal at (4)
-(`reserved_revision`, `unsupported_policy`); it is not refused on its own. It does not
-size-check the target against 256 and 64 (OP-4). (An implementation whose
-invitation record carries a status also refuses one that is not pending, as
-`conflict`; the bytes carry none.)
+**Encoding** makes the decoder's checks on the value, in the decoder's order, and
+refuses with the decoder's reasons:
+
+1. any refusal of V-roster on the source roster (section 5, step 12; the decoder
+   meets it at step 8);
+2. the checks of step 10 on the invitation's own fields: a source revision equal
+   to `2^64 - 1`, `reserved_revision`; a policy version other than 1,
+   `unsupported_policy`; a target identity longer than 256, `identity_too_large`;
+   a target device longer than 64, `device_too_large`;
+3. the checks of step 11: an invitation group ID that differs from the roster's,
+   a source revision that differs from the roster's, a policy version that
+   differs from the roster's (*cannot fail*: both are 1 after 1 and 2), each
+   `conflict`.
+
+It then writes the layout. The two `lp16` prefixes cannot overflow, since a target
+has at most 256 and 64 bytes after step 2. (An implementation whose invitation
+record carries a status also refuses one that is not pending, as `conflict`,
+with the checks of step 3; the bytes carry none.) So a reserved source revision
+or a policy version other than 1 is named for what it is (`reserved_revision`,
+`unsupported_policy`) even when the roster carries a different value, and is never
+reported as a `conflict`; and the roster's own faults come first, as they do on
+decoding.
 
 **Notes.** The digest field is not checked against the roster here; section 13
 says who does. The target need not differ from the roster's authority or
@@ -442,48 +459,77 @@ sender, plus for each recipient `8 + len(identity) + len(device)`.
     identity of an earlier recipient: `non_canonical`.
 12. Revision equal to `2^64 - 1`: `reserved_revision`.
 
-**Encoding.** This page specifies no refusals for an intent encoder: an intent
-is produced from a logical send, which is built from an open roster, a sender
-and recipients that are members of it, at least one recipient and a payload of
-at most 1,024 bytes. That construction (a later slice) guarantees what steps 7,
-8, 11 and 12 check, and the bytes written are the layout above. For fields that
-satisfy steps 1 to 12 an encoder MUST write exactly those bytes; for other
-fields its behaviour is outside this page.
+**Encoding.** An intent is produced from a logical send, which is built from an
+open roster, a sender and recipients that are members of it, at least one
+recipient and a payload of at most 1,024 bytes. An encoder does not rely on that
+construction (a caller of the Rust crate can change the fields after it, and the
+construction does not size-check a member or count the recipients). It makes the
+decoder's checks on the value, in the decoder's order, and refuses with the
+decoder's reasons:
+
+1. a sender identity longer than 256, `identity_too_large`; then a sender device
+   longer than 64, `device_too_large` (step 4);
+2. a payload longer than 1,024, `payload_too_large` (step 7);
+3. no recipients, `empty_recipients`; more than 8, `too_many_members` (step 8);
+4. for each recipient in order, the size check of 1 (step 9);
+5. for each recipient in order, if it is not the first and the previous
+   recipient is not strictly less in member order, or its identity equals the
+   identity of an earlier recipient, `non_canonical` (step 11);
+6. a revision equal to `2^64 - 1`, `reserved_revision` (step 12).
+
+Otherwise it writes exactly the layout above.
 
 ## 12. Open points
 
 Each item is something the code does that no decision record explains, or that
 disagrees with one. This page follows the code (the only implementation) and
-does not choose. A human decision on an item may change the code, a decision
-record or this page.
+does not choose; a human decision on an item may change the code, a decision
+record or this page. Four items were decided on 2026-09-30 and are recorded first,
+with what the decision changed; the other four are still open.
 
-**OP-1. Authority and sender framing in the decision records.** Decision 0092
-writes the roster's authority as `lp(authority_binding)` and decision 0105
-writes the intent's sender as `lp(sender_binding)`, each a single length-prefixed
-field. The code writes each as a long-form member, that is two length-prefixed
-fields, identity then device, with no outer length. This page follows the code.
-If a single field was meant, the roster and intent layouts change.
+### Decided
 
-**OP-2. Three framing conventions.** The roster, context and intent frame
-fixed-size fields (group ID, digest) with `lp32` and members in long form. The
-bootstrap carries the target in short form (`lp16`) and the group ID, invitation
-ID and digests as raw bytes; acceptance and revocation carry raw bytes only. No
-record says why. Two implementations that assume one convention across the
-formats will disagree.
+**OP-1. Authority and sender framing in the decision records: the code's form is
+version 1.** Decision 0092 wrote the roster's authority as `lp(authority_binding)`
+and decision 0105 wrote the intent's sender as `lp(sender_binding)`, each a single
+length-prefixed field. The code writes each as a long-form member: two
+length-prefixed fields, identity then device, with no outer length, and this page
+states that form. It is the specified one. Decisions 0092 and 0105 carry an
+amendment note and the corrected layout text. No byte changed.
 
-**OP-3. Field order of the invitation ID and the group ID.** The bootstrap
-writes invitation ID then group ID; acceptance and revocation write group ID
-then invitation ID. No record says why.
+**OP-2. Three framing conventions: kept in version 1.** The roster, context and
+intent frame fixed-size fields (group ID, digest) with `lp32` and members in long
+form. The bootstrap carries the target in short form (`lp16`) and the group ID,
+invitation ID and digests as raw bytes; acceptance and revocation carry raw bytes
+only. Changing them would change bytes for no gain, so they stay. The cost is that
+an implementation MUST NOT assume one convention across the formats: two
+implementations that do will disagree. Take each layout from its own section.
+Recorded in decision 0149.
 
-**OP-4. The bootstrap encoder checks less than its decoder.** Its decoder
-refuses a target identity above 256 bytes or device above 64 bytes
-(`identity_too_large`, `device_too_large`), but `InvitationBootstrap::encode`
-does not, so a value built from the public fields of `Invitation` with a
-300-byte identity encodes to 546 bytes that the same crate then refuses. It also
-skips step 10 of section 7: a reserved source revision or a policy version other
-than 1 is refused as `conflict` (or by the roster's own refusal), where the
-decoder says `reserved_revision` or `unsupported_policy`. The other encoders
-make the same checks as their decoders.
+**OP-3. Field order of the invitation ID and the group ID: kept in version 1.** The
+bootstrap writes invitation ID then group ID; acceptance and revocation write group
+ID then invitation ID. Changing it would change bytes for no gain. The cost is the
+same as for OP-2: an implementation MUST NOT assume one order across the three
+formats. Recorded in decision 0149.
+
+**OP-4. The bootstrap encoder checked less than its decoder: fixed.** The decoder
+refused a target identity above 256 bytes or device above 64 bytes
+(`identity_too_large`, `device_too_large`), but `InvitationBootstrap::encode` did not,
+so a value built from the public fields of `Invitation` with a 300-byte identity
+encoded to 546 bytes that the same crate then refused; it also skipped step 10 of
+section 7, so a reserved source revision or a policy version other than 1 was
+refused as `conflict` (or by the roster's own refusal) where the decoder says
+`reserved_revision` or `unsupported_policy`. The encoder now makes the decoder's
+checks in the decoder's order (section 7, Encoding). The logical-send encoder
+(`LogicalSend::encode_intent`) had the same defect for a member's size, the number
+of recipients and a field changed after construction, and is fixed the same way
+(section 11, Encoding); this page had said an intent encoder needs no refusals.
+Section 3 states the rule for every encoder, and the vector file holds it: each
+`encode_refuse` vector has a decoder twin of the same name and reason (section 14).
+The same rule was applied to two local state encoders that this page does not
+cover (decision 0149).
+
+### Still open
 
 **OP-5. Several decoders have no input bound.** The roster (4,096), context
 (2,048), payload (8,192) and receiver state have bounds checked before parsing
@@ -588,6 +634,17 @@ Every `fields` value in the file satisfies the encoder-input rule of section 3,
 and every `valid` vector of any format, the intent included, is one whose fields
 satisfy the decoding rules.
 
+**Encoder refusals are paired with decoder refusals.** An `encode_refuse` vector
+named `format/encode-x` has a `refuse` vector named `format/x` with the same
+`reason`, so that an encoder cannot check less than its decoder (section 3)
+without a vector failing. The one exception is
+`context/encode-precedence-encode-checks-payload-before-sender-size`, the order of
+section 6 that differs from the decoder's. The intent's encoder vectors state one
+fault each: the Rust replay builds the value with `LogicalSend::new`, which judges
+some faults (the revision, an empty recipient list, the payload, a recipient's
+membership and order) before the encoder does, so no vector pins the order of two
+intent faults; the crate's unit tests do.
+
 `fields` per format (a member is `{"identity": hex, "device": hex}`; keys are
 compared as a set, not in order):
 
@@ -614,17 +671,17 @@ roster: the codec does not check it (section 13).
 
 **What the vectors pin, and what they do not.** They pin the layouts, the domain
 strings, the tag values, the refusals named above at the edges of the bounds
-(both sides, by literal number, with the exceptions below), the
+(both sides, by literal number, except the unreachable bounds below), the
 first-versus-later-entry classes for member and recipient lists, the member
 order, and the handling of empty and maximal fields. A vector named
 `precedence-...` pins the order of two checks; those orders are stated in the
 steps above and are not otherwise meaningful. They do not pin: an input with
 several faults beyond those precedence vectors; the `expires_at` and sequence
 meanings; anything in sections 12 and 13 other than the digest computation; the
-`lp16` length limit of a bootstrap target (65,535 against 65,536 bytes, which
-would need a target of that size in the file); the unreachable bounds of the
+order of two faults of an intent encoder (above); the unreachable bounds of the
 encoders (the roster encoding of 4,096 bytes, the context encoding of 2,048, the
-payload encoding of 8,192); and any local record.
+payload encoding of 8,192, and the `lp16` length of a bootstrap target, which no
+target above 256 bytes reaches); and any local record.
 
 ## 15. Worked examples
 
