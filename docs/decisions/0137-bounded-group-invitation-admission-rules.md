@@ -1,6 +1,8 @@
 # 0137 — bounded group invitation admission rules and revision numbering
 
 > Clarifies 0093. Aligns `spec/Tacenta/Group.lean` with the code where it says so, and lists where it does not (the list is not complete).
+>
+> Amended 2026-09-30: seven more items (20 to 26) and three corrected readings; see "Amended 2026-09-30" at the end. The text between is left as written.
 
 ## Decision
 
@@ -204,3 +206,110 @@ repeat must not turn its own repeat into an error.
 A profile in which an invitation is itself a group-visible event (a delegated
 authority, or a group that shows pending invitations to every member) needs a
 revision for it. A multi-device profile changes the second-device rule.
+
+## Amended 2026-09-30
+
+The text above is left as written. This section adds items to its list and
+corrects three readings of it.
+
+**How the items were found.** A review of the merged profile did not compare the
+model with the code. It changed `spec/Tacenta/Group.lean` one line at a time, 32
+changes in all, and looked at what noticed. The 32 mutants are kept in
+`tooling/group-mutation/model_mutants.py`, and
+`python3 tooling/group-mutation/mutate_model.py` repeats the run, which the 16
+mutants cited above did not allow (their list is not kept). On `2062899`, nine
+mutants fail `lake build` (the theorems, their axiom pins and the eight
+`example` traces), eight more change the regenerated `group-v1.json` (the CI
+vector diff), and **fifteen survive both**. The Rust replay reads the committed
+vectors, so it cannot see the fifteen either. One of them is equivalent. Deleting
+the four theorems and their pins changes the result for one mutant (`LM26`, a
+swap of duplicate and conflict in `controlDisposition`), and deleting the
+`example` traces as well leaves the same 16 survivors, because the vector diff
+catches everything the examples did. `docs/reproduce.md` gives the three
+configurations.
+
+Nine of the fifteen survivors are covered above: `LM01` is item 19; `LM13` and
+`LM15` are items 4 and 3, where the model was moved to the code and no vector
+has the step; `LM17`, `LM22`, `LM24`, `LM25` and `LM27` fall under item 18
+(`close?`, the control history and `controlDisposition` have no vector step);
+`LM28` is equivalent while invitation ids are unique. **The other six are not
+covered above.** They are not disagreements between the model and the code. In
+each, both hold the rule and nothing on the model side pins it, so the model
+could stop holding it and neither `lake build`, nor the CI diff, nor the
+replay would report a difference.
+
+20. **Only the authority removes a member** (`LM16`, `remove?` without the actor
+    check). The code refuses a successor roster that the authority did not send
+    (`RosterView::accept_successor`, `WrongAuthority`; the group crate's harness
+    mutant `V01` is killed by `successor_refusals_preserve_the_last_accepted_view`).
+    The replay driver passes each step's actor to the view, so a vector could test
+    it. The one `remove` step by a non-authority in the vectors (the `removal`
+    trace) targets the authority, which the separate `target == s.authority`
+    rule also refuses, and `LM14` shows that rule is pinned. A trace that reaches
+    `LM16`: a group of the authority and two members, one of the members asks to
+    remove the other. The model refuses; `LM16` accepts.
+21. **Only the authority admits** (`LM18`, `admit?` without the actor check). The
+    code refuses in `InvitationBook::admit` (`Unauthorized`, harness mutant
+    `I06`, killed by `gc_i04_i06_i10_only_the_authority_can_create_revoke_or_admit`)
+    and in the view. All 17 `admit` steps in the vectors are by the authority. A
+    trace: an accepted invitation, admitted by someone else. The model refuses;
+    `LM18` admits.
+22. **A second device of a present identity is refused at admission** (`LM07`,
+    `admit?` without `identityPresent`; the exact-member test stays). The code
+    refuses where the successor roster is built (`Roster::new`, `NonCanonical`,
+    harness mutant `L01`, killed by `roster_refuses_an_unsorted_or_second_device_identity`).
+    `invite?` has the same refusal and an `example` pins it (`LM09` dies at
+    `lake build`). At admission the check is reachable only through two
+    invitations, for two devices of one identity, issued before either is
+    admitted; no vector has that. A trace: invite `(2,1)` and `(2,2)` at revision
+    0, accept both, admit the first, admit the second. The model refuses the
+    second admission; `LM07` makes it.
+23. **A repeated acceptance of an admitted invitation returns the state
+    unchanged** (`LM31`, `accept?` refusing it, which is the behaviour before this
+    record). The decision "Acceptance is idempotent" above is held on the code
+    side by `acceptance_is_idempotent_before_and_after_admission`, and by nothing
+    on the model side: no vector accepts again after an admission. A trace:
+    invite, accept, admit, accept again at the invitation's source revision.
+24. **The last usable revision is 2^64 - 2** (`LM20`, the constant one lower). The
+    code's reserved revision is `u64::MAX` and is pinned by
+    `the_public_constants_have_the_documented_values`; item 15 records that the
+    two refuse different operations at that revision.
+25. **Operations stop at the last usable revision** (`LM21`, `active` without the
+    bound). The code's refusals at the reserved revision are pinned in the group
+    crate (`L11`, killed by `roster_refuses_a_reserved_revision_and_trailing_bytes`).
+    Items 24 and 25 cannot be reached by a vector as the format stands: every
+    trace starts at genesis, revision 0, and no step sets a revision. Only a
+    Lean `example` or theorem about a state at that revision can pin them. Traces:
+    an open group at revision 2^64 - 3 accepts an invitation (`LM20` refuses
+    it); a group at revision 2^64 - 2 refuses one (`LM21` accepts it). Such a
+    state is well formed and is not reached from genesis by operations.
+
+26. **A control for another group, by another authority, or reopening a closed
+    group** is a difference, and item 10 does not cover it. The model's
+    `controlDisposition` answers `conflict` for a control of another group or by
+    another authority, and `next` for an open successor of a closed head. The
+    roster view answers `Rejected(WrongGroup)`, `Rejected(AuthorityTransfer)` and
+    `Rejected(Reopened)` (`RosterView::accept_successor`; harness mutants `V13`,
+    `V05` and `V04`, killed by `gc_v13_a_successor_for_another_group_is_refused`,
+    `gc_v05_authority_cannot_change_in_place` and
+    `gc_v04_a_closed_group_cannot_be_reopened`). It matters for the theorem
+    `different_commitment_is_a_conflict`, which takes the group and authority
+    equalities as hypotheses so as to leave these cases out: "conflict" in the
+    model means two things.
+
+**Three readings corrected.**
+
+- The heading "Model and code are tied by a vector" is true of what the vectors
+  contain: five fixed traces of 63 steps (`spec/Vectors.lean`), whose replay
+  compares whether a step was accepted, the revision, the roster and each
+  invitation's target, source revision and status. For a rule with no step the
+  model and the code are not tied, and items 18 to 25 list the ones known.
+- "Of 16 mutants of the model, ... one survives everything" was a report of a run
+  whose list is not kept. The run of 32 above leaves fifteen, fourteen of them
+  not equivalent. Read the earlier figure as a sample, not as a measure. The
+  figures for the 29 mutants of the Rust types are unchanged and their list is
+  still not kept.
+- The sentence above that quotes `docs/claims.md` as saying the model "differs
+  from the code where this record says so" is not what `docs/claims.md` says. It
+  says the model differs "in at least the nineteen ways" this record lists, and
+  that the list may be incomplete.

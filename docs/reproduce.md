@@ -289,6 +289,23 @@ recipient). These are arguments from the code, not proofs of equivalence. The
 harness covers the group crate only; the client and transport crates have no
 harness in this repository.
 
+The Lean group model has a harness of its own, because the one above never
+touches it. `python3 tooling/group-mutation/mutate_model.py --workers 6` applies
+each of the 32 single-change mutants in `tooling/group-mutation/model_mutants.py`
+to a copy of `spec/`, runs `lake build` and regenerates the group vectors, and
+takes about half a minute. The mutants were chosen by a reviewer and are a
+sample, not an enumeration of the model's guards. On `2062899` it reports 9
+mutants killed by `lake build` (the theorems, their pins and the eight `example`
+traces), 8 more killed by the vector diff, and 15 survivors: `LM01`, `LM07`,
+`LM13`, `LM15`, `LM16`, `LM17`, `LM18`, `LM20`, `LM21`, `LM22`, `LM24`, `LM25`,
+`LM27`, `LM28` and `LM31`, of which `LM28` is equivalent. `--config no-theorems`
+deletes the four theorems and their pins first and reports 16 survivors (`LM26`,
+a swap of duplicate and conflict in `controlDisposition`, joins them);
+`--config vectors-only` also deletes the eight `example` traces and reports 16
+killed by the vector diff and the same 16 survivors. A survivor is invisible to
+the CI vector diff, and so to the Rust replay, which reads the committed vectors.
+The amended note of decision 0137 says what each survivor is.
+
 Many comments in the group tests name a mutant by an id (`M###`, `R###`, `D##`)
 and a `file:line`. Those ids belong to single-change mutation runs against
 97689a0, 341e2b0 and later revisions whose mutant lists are **not kept in this

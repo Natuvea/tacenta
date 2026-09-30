@@ -720,6 +720,43 @@ not in our proofs' dependency cone.
     vectors and their theorems (whose axiom sets are pinned in
     `spec/Tacenta/Assurance.lean`) have had no human review. Expiry takes an
     explicit logical time with no clock mapping.
+  - **What the Lean group theorems establish.** The four theorems in
+    `spec/Tacenta/Group.lean` are regression pins of the model's own
+    definitions, not properties of the profile. `genesis_has_only_its_authority`
+    is `rfl`. `invitation_does_not_advance_the_revision` is proved without
+    looking at the guard of `invite?`, so it holds however that guard is
+    written. `different_commitment_is_a_conflict` says nothing about revisions
+    reached by removal or closure, which do not enter the control history
+    (0137, item 14). `admission_follows_its_source` assumes that the invitation's
+    source revision is not above the group's revision, and no theorem shows that
+    reachable states satisfy it; without the assumption the conclusion is false,
+    and the model defines no reachability. The axiom pins see axioms and not
+    statements (`spec/Tacenta/Assurance.lean` says so). A run of 32
+    single-change mutants of `Group.lean`, chosen by a reviewer and kept in
+    `tooling/group-mutation/model_mutants.py` (run with `mutate_model.py`),
+    gave this result: `lake build`, which checks the theorems, their pins and
+    eight `example` traces, killed nine; the CI vector
+    diff killed eight more; **fifteen survive** the build, the examples, the
+    regenerated vectors and therefore the Rust replay, which reads the committed
+    vectors (one of the fifteen is equivalent). With the four theorems and their
+    pins deleted, one mutant of the 32 changes result: a swap of duplicate and
+    conflict in `controlDisposition`. Among these 32 mutants that is the only
+    one a theorem catches and the examples and vectors do not, so in this sample
+    the theorems constrain `controlDisposition` and nothing else. The
+    survivors, and what the code does for each, are in the amended note of
+    decision 0137.
+  - **Review status.** The merge commit of this profile calls it "rebased and
+    reviewed (#23)". "Reviewed" there meant three rounds of agent-assisted
+    review passes; it did not mean review by another person. Pull request #23
+    has no review and no comment recorded, it was opened and merged from one
+    account, and no human reviewed the Lean model, the vectors generated from
+    it or the decision records before the merge. The `CR-nn` identifiers and the
+    mentions of a cold read in code comments, decision records and commit
+    messages refer to findings of those passes. The reports are kept outside this
+    repository; the fix and the test named beside each citation, and the
+    description of #23, are what the repository holds of them. The profile stays
+    experimental: a later human review would change this paragraph and the
+    review statements above, and would not lift the limits in this section.
   It is not a shipped group-chat protocol or a production membership system;
   sender-key, production authority, sequencing, multi-device, sealed-sender,
   franking and scale work remain open.
