@@ -24,6 +24,13 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+      # The bounded group-chat demonstration, step by step: each step must run
+      # exactly the tests tooling/group-chat-demo-tests.txt lists for it, by
+      # binary and name, and all of them must pass. It fails a step that runs
+      # zero tests, ignores one, or runs a different set. It does not read test
+      # bodies; docs/reproduce.md says what it does and does not establish.
+      - name: Group demo, the listed tests ran and passed
+        run: sh tooling/run-group-chat-demo.sh
 
   # The lifecycle carve-out is a product dependency change.  Keep a native
   # Windows workspace test in the pull-request matrix so Phase 0 does not rely
@@ -61,6 +68,9 @@ jobs:
       # floors.
       - run: python3 tooling/check-vectors.py
       - run: bash tooling/tests/run-check-vectors-cases.sh
+      # Every gate script in tooling/ is run by a step in this workflow.
+      - run: bash tooling/check-gates-wired.sh
+      - run: bash tooling/tests/run-check-gates-wired-cases.sh
       # check-advisories skips itself when cargo-audit is absent, and the
       # GitHub-hosted image does not ship it; install so the scan runs.
       - run: cargo install cargo-audit --locked
