@@ -3,16 +3,29 @@
 Status: **experimental profile, unreleased.** This page states the bytes of the
 formats that the bounded group-chat experiment exchanges between peers (and one
 that it recovers from its own store), so that an implementation can be written
-from this text. It describes what the code at revision `2062899` does, except
-that the encoders of the invitation bootstrap and of the logical-send intent now
-refuse what their decoders refuse (open point 4, below). Every place where that
-behaviour had no stated reason or disagreed with a decision record is in
-[Open points](#12-open-points): four were decided on 2026-09-30 and four remain
-open. It is not a compatibility promise: nothing in the group profile has been
-released, and a human decision on an open point can change a layout (which would
-then change its domain string from `v1`). Decision
+from this text. It was written from the code at revision `2062899` and describes
+what that code does, except that the encoders of the invitation bootstrap and of
+the logical-send intent now refuse what their decoders refuse (open point 4,
+decided below). Every place where that behaviour had no stated reason or
+disagreed with a decision record is in [Open points](#12-open-points): four were
+decided on 2026-09-30 and four remain open. It is not a compatibility promise:
+nothing in the group profile has been released, and a human decision on an open
+point can change a layout (which would then change its domain string from `v1`).
+Decision
 [0149](../docs/decisions/0149-group-wire-format-specification-first-slice.md)
 records why this slice was chosen and what it leaves out.
+
+**Provenance.** Every layout, constant, bound and refusal on this page was
+derived from this project's own code (this repository at revision `2062899`, and
+the two commitment labels of tacenta-core, section 13), from its decision records
+and from the vectors that go with the page. No third-party protocol specification
+or implementation was used as a source for it, and none is quoted.
+
+**Which text wins.** Where the page, the vectors and the code disagree, one of
+them is wrong, and no record yet says which. A disagreement between the vectors
+and the code, or between the vectors and the second reader (section 14), fails a
+check that CI runs; a disagreement between the text of the page and the vectors is
+found only by reading.
 
 The formats specified here are:
 
@@ -35,7 +48,10 @@ The pairwise encryption, the relay envelope that carries a `group`-class message
 delivery are also outside this page. Lean is not involved: `Group.lean` models
 policy transitions and has no bytes (decision 0137, item 11).
 
-The words MUST, MUST NOT and MAY are used as in RFC 2119.
+The key words MUST and MUST NOT are to be interpreted as described in BCP 14
+([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119),
+[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)) when, and only when, they
+appear in all capitals, as shown here.
 
 ## 1. Notation
 
@@ -103,6 +119,7 @@ by an over-bound input (section 14).
 | invitation bootstrap | 3,497 bytes (largest roster, 256/64-byte target) |
 | invitation acceptance, revocation | 110 bytes (fixed) |
 | group payload | 3,526 bytes (a group payload holding the largest bootstrap) |
+| logical-send intent | 4,085 bytes (256/64-byte sender, eight 256/64-byte recipients, 1,024-byte payload); it has no bound of its own |
 
 ## 3. Refusals
 
@@ -125,11 +142,16 @@ names refusals by the `reason` labels below.
 | `conflict` | the parts of an invitation bootstrap disagree with each other |
 | `empty_recipients` | an intent with no recipients |
 
+`payload_too_large` is about the application payload of a context or an intent
+(1,024 bytes). A group payload longer than 8,192 bytes is `malformed`
+(section 10), not `payload_too_large`.
+
 **Order.** Each decoder below lists its steps in order. The refusal is the one
 of the **first failing step**, so an input with several faults has one
-well-defined refusal. Whether an input is accepted does not depend on the order.
-Steps marked *cannot fail* are unreachable given the earlier steps; they are
-listed because an implementation that reorders the steps needs to know that.
+well-defined refusal. Whether an input is accepted does not depend on the order:
+the order of the checks decides only which reason is reported. Steps marked
+*cannot fail* are unreachable given the earlier steps; they are listed because an
+implementation that reorders the steps needs to know that.
 
 **Canonical form.** For every value the encoder produces exactly one byte
 string, and a decoder accepts exactly the strings the encoder produces:
@@ -138,19 +160,36 @@ every valid `v`. A decoder MUST NOT accept a second spelling of any value.
 
 **Encoders.** An encoder is given values of the types this page names: fixed
 fields (group ID, invitation ID, digests) of their fixed length, integers within
-their width, a payload tag from 1 to 5. What an encoder does with anything else
-is outside this page, since a typed interface cannot hold such a value. An
-encoder MUST NOT write bytes that its own decoder refuses. For a value of those
-types it refuses what the "Encoding" paragraph of its section lists, with the
-reasons given there, and those are the reasons the decoder gives for the same
-fault. For the roster, context, acceptance and revocation these are the checks
-the decoder makes on the parsed value; for the bootstrap and the intent they are
-the decoder's checks in the decoder's order (sections 7 and 11); the payload's
-encoder makes the checks of the variant its tag names (section 10). For a value
-with several faults the order is the one the section states, which is not always
-the order in which a decoder reads them (a decoder size-checks a member as it
-reads it; sections 5 and 6 give the orders of the roster and the context). A
-refused value produces no bytes.
+their width, a payload tag from 1 to 5. An encoder handed anything else MUST NOT
+write bytes; the page names no reason for that case, because none of these is a
+fault of the wire (a typed interface cannot hold such a value). An encoder MUST
+NOT write bytes that its own decoder refuses. For a value of those types it
+refuses what the "Encoding" paragraph of its section lists, with the reasons
+given there, and for a value with one fault that is the reason the decoder gives
+for the bytes that carry it. A refused value produces no bytes.
+
+**Order of an encoder's refusals.** A value with several faults is refused for the
+first fault in the order of the "Encoding" paragraph of its section:
+
+| Encoder | Order of its refusals |
+| --- | --- |
+| roster (section 5) | V-roster, step 12: the reserved revision, the policy version, the genesis rule, the member count, the authority's size, then each member in turn (its size, its place in the order, a repeated identity) |
+| application context (section 6) | V-context, step 11: the reserved revision, the payload, the sender's size, the recipient's size |
+| bootstrap (section 7) | the source roster in V-roster's order; then the invitation's own fields (step 10); then how the invitation and the roster fit (step 11) |
+| acceptance, revocation (sections 8, 9) | the reserved revision (the only refusal) |
+| group payload (section 10) | the encoder of the variant the tag names; then the 8,192 bound |
+| intent (section 11) | the sender's size, the payload, the number of recipients, each recipient's size, the order of the list, the revision |
+
+For the acceptance, the revocation, the intent and the last two groups of the
+bootstrap this is the order in which the decoder of the section meets the same
+faults. For the roster, the application context and the first group of the
+bootstrap (its source roster) it is not, because a decoder judges some things as
+it reads, before it runs V-roster or V-context: the authority's size, the member
+count and each member's size (the roster), and the sender's and the recipient's
+size (the context). A value with two faults can therefore get one reason from the
+encoder and another from the decoder that reads the same value as bytes; sections
+5, 6 and 7 give the cases, and section 14 lists a pair of vectors for each. A group
+payload takes the order of the variant its tag names.
 
 ## 4. What the bytes do not decide
 
@@ -175,7 +214,7 @@ is the `predecessor_digest` of the next revision.
 | domain | `"Tacenta Group Roster v1"` (23 bytes) | |
 | group ID | `lp32(group_id)` | the length is always 16 |
 | revision | `u64` | not `2^64 - 1` |
-| predecessor digest | `lp32(digest)` | the length is always 32; 32 zero bytes at revision 0 |
+| predecessor digest | `lp32(digest)` | the length is always 32; 32 zero bytes at revision 0, any 32 bytes after (Notes) |
 | authority | member, long form | |
 | policy version | `u32` | 1 |
 | closed | 1 byte | 0 (open) or 1 (closed) |
@@ -219,13 +258,41 @@ each member, `8 + len(identity) + len(device)`.
 
 **Encoding** runs V-roster on the value (steps 4, 5 and 6 can fail there; step 7
 cannot either, since the largest valid roster is 3,048 bytes) and then writes the
-layout. It refuses with the same reasons.
+layout. It refuses with the same reasons, in V-roster's order: the reserved
+revision, the policy version, the genesis rule, the member count, the authority's
+size, then one member at a time (its size, then its place in the order, then a
+repeated identity), not all the sizes and then all the orders.
 
-**Notes.** A revision above 0 places no rule on the authority or the count: the
-authority need not be a member and there may be no members. Identities must be
-distinct, so with member order the device only ever breaks a tie that the
-identity rule then refuses; in a valid roster the order is the strictly
-ascending order of the identities alone (decision 0136).
+That is not the order in which the decoder meets the faults. The decoder judges
+the authority's size (its step 6), the member count (step 9) and each member's
+size (step 10) as it reads, before V-roster. Where V-roster's order puts the other
+fault first, a value with two faults gets a different reason from the encoder and
+from the decoder of the same bytes:
+
+- revision 0 and nine members: `invalid_genesis` from the encoder (V-roster's step
+  3 comes before its step 4), `too_many_members` from the decoder (its step 9);
+- nine members and an authority of 257 bytes: `too_many_members` from the encoder
+  (V-roster's step 4 comes before its step 5), `identity_too_large` from the
+  decoder (its step 6);
+- a reserved revision and an authority of 257 bytes: `reserved_revision` from the
+  encoder, `identity_too_large` from the decoder;
+- policy version 2 and a member device of 65 bytes: `unsupported_policy` from the
+  encoder, `device_too_large` from the decoder;
+- revision 0, a member that is not the authority, and a device of 65 bytes:
+  `invalid_genesis` from the encoder, `device_too_large` from the decoder;
+- members in the order c, b, and then a member of 257 bytes: `non_canonical` from
+  the encoder (the second member is out of order before the third is looked at),
+  `identity_too_large` from the decoder (it size-checks every member as it reads).
+
+For one member the encoder and the decoder agree: its size before its place in the
+order (`roster/precedence-member-size-before-member-order`).
+
+**Notes.** A revision above 0 places no rule on the authority, the count or the
+predecessor digest: the authority need not be a member, there may be no members,
+and the digest is any 32 bytes, all zero included (V-roster reads it only at
+revision 0). Identities must be distinct, so with member order the device only
+ever breaks a tie that the identity rule then refuses; in a valid roster the order
+is the strictly ascending order of the identities alone (decision 0136).
 
 ## 6. Application context
 
@@ -265,9 +332,14 @@ sender and the recipient.
     the recipient (*cannot fail* here: steps 6 and 7); an encoding longer than
     2,048 bytes: `context_too_large` (*cannot fail* here: step 1).
 
-**Encoding** runs V-context on the value and then writes the layout. Its
-payload check therefore comes before its member size checks, the reverse of the
-order in which a decoder meets them.
+**Encoding** runs V-context on the value and then writes the layout: the reserved
+revision, the payload, the sender's size, the recipient's size. The revision and
+the payload checks therefore come before the member size checks, the reverse of the
+order in which a decoder meets them (it size-checks the sender and the recipient as
+it reads, steps 6 and 7). A payload of 1,025 bytes with a sender identity of 257
+bytes is `payload_too_large` from the encoder and `identity_too_large` from the
+decoder; a reserved revision with a sender identity of 257 bytes is
+`reserved_revision` from the encoder and `identity_too_large` from the decoder.
 
 **Notes.** The sender and the recipient may be equal. The logical sequence has
 no reserved value.
@@ -315,11 +387,23 @@ they are in version 1).
     revision: `conflict`; the policy version differs from the roster's:
     `conflict` (*cannot fail*: both are 1 after the earlier steps).
 
-**Encoding** makes the decoder's checks on the value, in the decoder's order, and
-refuses with the decoder's reasons:
+**Encoding** makes three groups of checks on the value, in this order, and refuses
+with the reason of the first check that fails. The second and third groups are
+steps 10 and 11 of the decoder, in the decoder's order, with the decoder's
+reasons; the first is the decoder's step 8, but in V-roster's order:
 
-1. any refusal of V-roster on the source roster (section 5, step 12; the decoder
-   meets it at step 8);
+1. any refusal of V-roster on the source roster (section 5, step 12), in
+   V-roster's order. This is not the order in which `decode_roster` meets the
+   faults of the same roster: the decoder judges the roster's authority size, its
+   member count and its members' sizes as it reads them, before V-roster, and the
+   encoder judges them later, in V-roster's order. A source roster with nine
+   members and a reserved revision is refused `reserved_revision` by the encoder
+   and `too_many_members` by the decoder; one with a reserved revision and an
+   authority of 257 bytes is refused `reserved_revision` by the encoder and
+   `identity_too_large` by the decoder; one with policy version 2 and a member
+   device of 65 bytes is refused `unsupported_policy` by the encoder and
+   `device_too_large` by the decoder (section 5, Encoding, gives the other
+   cases);
 2. the checks of step 10 on the invitation's own fields: a source revision equal
    to `2^64 - 1`, `reserved_revision`; a policy version other than 1,
    `unsupported_policy`; a target identity longer than 256, `identity_too_large`;
@@ -330,13 +414,18 @@ refuses with the decoder's reasons:
    `conflict`.
 
 It then writes the layout. The two `lp16` prefixes cannot overflow, since a target
-has at most 256 and 64 bytes after step 2. (An implementation whose invitation
-record carries a status also refuses one that is not pending, as `conflict`,
-with the checks of step 3; the bytes carry none.) So a reserved source revision
-or a policy version other than 1 is named for what it is (`reserved_revision`,
+has at most 256 and 64 bytes after group 2. So a reserved source revision or a
+policy version other than 1 is named for what it is (`reserved_revision`,
 `unsupported_policy`) even when the roster carries a different value, and is never
-reported as a `conflict`; and the roster's own faults come first, as they do on
-decoding.
+reported as a `conflict`; and the source roster's faults come first, as they do on
+decoding, though ordered among themselves by V-roster.
+
+The bytes carry no status. The Rust crate's invitation record has one, and its
+encoder also refuses a bootstrap for an invitation that is not pending, as
+`conflict`, with the checks of group 3. That rule belongs to the invitation record,
+which this page does not specify: what "pending" means is defined there, no
+vector states it (a vector's `fields` carry no status), and a second implementation
+whose record has no status has nothing to check.
 
 **Notes.** The digest field is not checked against the roster here; section 13
 says who does. The target need not differ from the roster's authority or
@@ -464,8 +553,9 @@ open roster, a sender and recipients that are members of it, at least one
 recipient and a payload of at most 1,024 bytes. An encoder does not rely on that
 construction (a caller of the Rust crate can change the fields after it, and the
 construction does not size-check a member or count the recipients). It makes the
-decoder's checks on the value, in the decoder's order, and refuses with the
-decoder's reasons:
+decoder's checks on the value in the order in which the decoder meets them (steps
+4, 7, 8, 9, 11 and 12 of the decoder, which is the order of the list below), and
+refuses with the decoder's reasons:
 
 1. a sender identity longer than 256, `identity_too_large`; then a sender device
    longer than 64, `device_too_large` (step 4);
@@ -477,14 +567,25 @@ decoder's reasons:
    identity of an earlier recipient, `non_canonical` (step 11);
 6. a revision equal to `2^64 - 1`, `reserved_revision` (step 12).
 
+The six steps are the order of the encoder as a function of a finished value.
+Steps 4 and 5 are two passes over the list, not one: a recipient's size is judged
+for every recipient before the order of the list is looked at. The vectors state
+the order of a fault of one step against a fault of another for the steps that
+the Rust crate can hold a value with (section 14); they state none that involves
+step 5 or the empty list of step 3, because the crate builds a value with
+`LogicalSend::new`, which judges an empty list and the list's membership and order
+before the encoder is reached, and keeps the list private. A composition of `new`
+and the encoder can therefore report a different reason for a value with several
+faults than the encoder alone does.
+
 Otherwise it writes exactly the layout above.
 
 ## 12. Open points
 
 Each item is something the code does that no decision record explains, or that
-disagrees with one. This page follows the code (the only implementation) and
-does not choose; a human decision on an item may change the code, a decision
-record or this page. Four items were decided on 2026-09-30 and are recorded first,
+disagrees with one. This page was written from the code and follows it; it does
+not choose. A human decision on an item may change the code, a decision record or
+this page. Four items were decided on 2026-09-30 and are recorded first,
 with what the decision changed; the other four are still open.
 
 ### Decided
@@ -520,7 +621,8 @@ encoded to 546 bytes that the same crate then refused; it also skipped step 10 o
 section 7, so a reserved source revision or a policy version other than 1 was
 refused as `conflict` (or by the roster's own refusal) where the decoder says
 `reserved_revision` or `unsupported_policy`. The encoder now makes the decoder's
-checks in the decoder's order (section 7, Encoding). The logical-send encoder
+checks, in three groups in the decoder's order, the first of them (the source
+roster) in V-roster's order (section 7, Encoding). The logical-send encoder
 (`LogicalSend::encode_intent`) had the same defect for a member's size, the number
 of recipients and a field changed after construction, and is fixed the same way
 (section 11, Encoding); this page had said an intent encoder needs no refusals.
@@ -536,7 +638,11 @@ cover (decision 0149).
 (decision 0104). The bootstrap, acceptance, revocation and intent decoders have
 none: an oversized input is refused only after a field has been copied out of
 it, so memory is bounded by the length of the input and not by a constant. When
-they arrive inside a group payload the 8,192 bound applies first.
+they arrive inside a group payload the 8,192 bound applies first. The page does not
+say whether a conforming decoder may add a bound of its own to these four, nor with
+which reason it would refuse an input over that bound (today the step that meets the
+first fault decides). No vector holds a bare bootstrap or intent input above 8,192
+bytes, so none pins the reason for one; a decision on this point would.
 
 **OP-6. Nothing says whether a sender may be among its recipients.** The
 intent codec accepts a sender that also appears in the recipient list, and
@@ -556,9 +662,12 @@ capability rule" would be needed for new control types; none exists. The tags
 
 ## 13. Commitments and the bindings a receiver checks
 
-This section is informative: it states the inputs of the two commitments and the
-comparisons a receiving client makes after a successful decode. Neither is part
-of the codecs.
+This section is informative for the codecs: they compute no commitment and make no
+comparison below. It states the inputs of the two commitments and the comparisons
+a receiving client makes after a successful decode. The two formulas are normative
+for the `commitments` entries of the vector file and for any digest field a receiver
+checks (section 14); the code that computes them, `groups.rs` in tacenta-core, is
+expected to agree, and a test in tacenta-core checks the vectors' entries against it.
 
 **Commitments.** tacenta-core owns the primitive and its labels
 (`groups.rs` at the core revision the workspace pins; decisions 0092 and 0094).
@@ -600,9 +709,21 @@ member. Each of these is checked after a successful decode.
 has no bytes; it is generated by a Rust test that builds every byte string from
 the rules of this page with a hand-written builder (not with the production
 encoders), and it is replayed by that test against the production encoders and
-decoders and, independently, by a reader written from this page alone
-(`tooling/group_wire_reference.py`, run by `tooling/check-group-wire-vectors.sh`).
-Decision 0149 explains why this differs from decision 0003.
+decoders and, separately, by a differential oracle, `tooling/group_wire_reference.py`,
+run by `tooling/check-group-wire-vectors.sh`. Decision 0149 explains why this
+differs from decision 0003.
+
+**What the second reader is, and is not.** The oracle is a second program that
+agrees with the vectors. It is not an independent implementation of the page. It
+was first written by a separate agent (not a person) from this page and the vector
+file; before it wrote any code that agent printed the name and the expected reason
+of every vector then in the file. The file was edited in a second pass, and its
+bootstrap and intent encoders were revised by the implementer of the encoder change
+(open point 4), not by a fresh reader; the program has not been derived again from
+the page by an author who had not seen the code. The page was written from the
+code, so a choice that the code and the page share is one that the oracle cannot
+show to be wrong. The reports of the first agent are not in this repository, so
+that it did not read the Rust cannot be checked from here.
 
 **File layout.** A JSON object with `format`, `limits`, `domains`, `commitments`
 and `vectors`. Each vector is one line. A `u64` is a decimal string (no sign, no
@@ -637,13 +758,24 @@ satisfy the decoding rules.
 **Encoder refusals are paired with decoder refusals.** An `encode_refuse` vector
 named `format/encode-x` has a `refuse` vector named `format/x` with the same
 `reason`, so that an encoder cannot check less than its decoder (section 3)
-without a vector failing. The one exception is
-`context/encode-precedence-encode-checks-payload-before-sender-size`, the order of
-section 6 that differs from the decoder's. The intent's encoder vectors state one
-fault each: the Rust replay builds the value with `LogicalSend::new`, which judges
-some faults (the revision, an empty recipient list, the payload, a recipient's
-membership and order) before the encoder does, so no vector pins the order of two
-intent faults; the crate's unit tests do.
+without a vector failing. The exceptions are the values whose faults an encoder
+and a decoder meet in a different order (section 3, "Order of an encoder's
+refusals"). Such a pair is named for the two faults: the `encode_refuse` vector
+`format/encode-precedence-encode-checks-A-before-B` refuses `fields` with the
+reason of the fault A, and the `refuse` vector
+`format/precedence-decode-reads-B-before-A` refuses the bytes of the same value
+with the reason of the fault B, a different reason. Sections 5, 6 and 7 give the
+cases for the roster, the context and the source roster of a bootstrap. The
+intent's encoder meets faults in the order of its decoder, so a pair of intent
+faults is an ordinary pair with one reason.
+
+The Rust replay builds an intent with `LogicalSend::new` from a neutral revision
+and payload and then writes the vector's revision and payload to its public
+fields, so that the encoder, and not `new`, judges them. `new` still judges an
+empty list of recipients and the list's membership and order before the encoder is
+reached, and the list is private. So no vector states a fault of the list against
+another fault of the intent (the order of two steps that involve step 5 of section
+11, or the empty list against an earlier step); the crate's unit tests do.
 
 `fields` per format (a member is `{"identity": hex, "device": hex}`; keys are
 compared as a set, not in order):
@@ -675,13 +807,19 @@ strings, the tag values, the refusals named above at the edges of the bounds
 first-versus-later-entry classes for member and recipient lists, the member
 order, and the handling of empty and maximal fields. A vector named
 `precedence-...` pins the order of two checks; those orders are stated in the
-steps above and are not otherwise meaningful. They do not pin: an input with
-several faults beyond those precedence vectors; the `expires_at` and sequence
-meanings; anything in sections 12 and 13 other than the digest computation; the
-order of two faults of an intent encoder (above); the unreachable bounds of the
-encoders (the roster encoding of 4,096 bytes, the context encoding of 2,048, the
-payload encoding of 8,192, and the `lp16` length of a bootstrap target, which no
-target above 256 bytes reaches); and any local record.
+steps above, and the order of the checks decides only which reason is reported. The
+vectors also pin what a decoder reads before it judges (every proper prefix of a
+value with a reserved revision is `malformed`), a length prefix of 2^31 or more,
+and values that only look invalid (an all-zero predecessor digest above revision 0,
+an empty authority identity above revision 0, an all-zero bootstrap digest). They
+do not pin: an input with several faults beyond those precedence vectors; the
+`expires_at` and sequence meanings; anything in sections 12 and 13 other than the
+digest computation; the order of a fault in an intent's list of recipients against
+another fault (above); the reason for a bare bootstrap or intent input above 8,192
+bytes (OP-5); the unreachable bounds of the encoders (the roster encoding of 4,096
+bytes, the context encoding of 2,048, the payload encoding of 8,192, and the `lp16`
+length of a bootstrap target, which no target above 256 bytes reaches); and any
+local record.
 
 ## 15. Worked examples
 

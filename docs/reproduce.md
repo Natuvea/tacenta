@@ -73,9 +73,10 @@ lake exe vectors stream   | diff -u ../contracts/vectors/stream-v1.json   -
 lake exe vectors group    | diff -u ../contracts/vectors/group-v1.json    -
 
 # The group wire formats have no Lean model, so their byte vectors are written by a
-# Rust test (decision 0149) and replayed by a second reader written from
-# spec/group-wire-formats.md. The first command fails if the committed file differs
-# from the test's builder; the second replays every vector through the reader.
+# Rust test (decision 0149) and replayed by a second program, a differential oracle
+# first written from spec/group-wire-formats.md and the vectors (it is not an
+# independent implementation). The first command fails if the committed file differs
+# from the test's builder; the second replays every vector through the second program.
 cargo test --locked -p tacenta-group --test group_wire_vectors
 bash ../tooling/check-group-wire-vectors.sh
 
@@ -148,8 +149,9 @@ The byte layouts of the peer-exchanged group formats are specified in
 `spec/group-wire-formats.md`. Their vectors, `contracts/vectors/group-wire-v1.json`,
 are not generated from the model: `crates/tacenta-group/tests/group_wire_vectors.rs`
 builds them from the page and replays them against the Rust codecs, and
-`tooling/group_wire_reference.py`, written from the page alone, replays them too
-(`bash tooling/check-group-wire-vectors.sh`, which CI runs). After a deliberate
+`tooling/group_wire_reference.py`, a differential oracle that a separate agent first
+wrote from the page and the vector file and that was edited afterwards, replays them
+too (`bash tooling/check-group-wire-vectors.sh`, which CI runs). After a deliberate
 change to a layout, rewrite the file with
 `TACENTA_WRITE_GROUP_WIRE_VECTORS=1 cargo test -p tacenta-group --test group_wire_vectors`
 and review the diff. A single-change mutation run over these codecs is

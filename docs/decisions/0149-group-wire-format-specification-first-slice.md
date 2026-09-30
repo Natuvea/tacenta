@@ -4,7 +4,9 @@
 > they leave out). Amends 0118 (there are five payload variants, not two), and
 > 0092 and 0105 (2026-09-30: the code's two-field form of the authority and the
 > sender is the specified one). Does not amend 0003, which it departs from for one
-> vector file, below.
+> vector file, below. Corrected 2026-09-30: the direction of the work (below) and
+> what the second reader is are stated as they were, and the order in which each
+> encoder refuses a value with several faults is recorded.
 
 ## Decision
 
@@ -42,22 +44,36 @@ intent moves to the later slice and section 11 of the page moves with it.
 item 11), so decision 0003's route (Lean generates, Rust conforms) is not
 available for this file. Instead:
 
-1. The page is the authority. It states each layout, each bound and every
-   refusal, in the order a decoder checks them.
+1. The page states each layout, each bound and every refusal, in the order a
+   decoder checks them. It was written from the code (below), not the other way
+   round.
 2. `crates/tacenta-group/tests/group_wire_vectors.rs` holds a hand-written
    builder that writes every byte string field by field from the page and never
    calls a production encoder. It writes the vector file, and a second test fails
    when the committed file differs from what the builder writes.
 3. The same file replays the committed vectors, not the builder, against the
    production decoders and encoders.
-4. `tooling/group_wire_reference.py` is a reader written from the page and the
-   vector file alone, by an author who had not seen the Rust, and
-   `tooling/check-group-wire-vectors.sh` replays every vector through it. CI runs
-   both.
+4. `tooling/group_wire_reference.py` is a second program that replays the vectors,
+   and `tooling/check-group-wire-vectors.sh` runs it. It is a differential oracle,
+   not an independent implementation of the page. A separate agent (not a person)
+   first wrote it from the page and the vector file, after printing the name and
+   expected reason of every vector then in the file; it was edited in a second
+   pass, and its bootstrap and intent encoders were revised by the implementer of
+   the encoder change, not by a fresh reader. The agent's reports are not in
+   this repository, so that it did not read the Rust cannot be checked from here.
+   CI runs both replays.
 
-The direction of decision 0003 is kept: the specification text leads and the
-code conforms. What changes is that the executable specification is a builder
-and a second reader rather than a proved model.
+**Direction.** Decision 0003 has the specification lead and the code conform.
+That is not how this slice was made. The page was written from the code as it was
+at revision `2062899` and says so; the code changed afterwards only where the
+decision of 2026-09-30 on OP-4 said that an encoder must refuse what its decoder
+refuses, and the page was then changed to state that. So the direction of 0003 is
+not kept for this file, and this record does not claim that it is. What the
+executable specification is here is a builder and a second program rather than a
+proved model. Which of the page and the code prevails when they disagree is not
+decided by this record. A disagreement between the code (or the second program)
+and the vectors fails a check that CI runs; a disagreement between the text of
+the page and the vectors is found only by reading.
 
 **Open points.** Where the code does something no record explains, or
 disagrees with a record, the page follows the code and lists the point (OP-1 to
@@ -93,17 +109,19 @@ this.
 and refuses what the decoder refuses with the reason the decoder gives. In
 `tacenta-group`:
 
-- `InvitationBootstrap::encode` now makes the decoder's checks in the decoder's
-  order: the source roster, then the invitation's own fields (a reserved source
-  revision, a policy version other than 1, a target identity above 256 bytes or
-  device above 64), then how the two fit together (`conflict`). Before, it skipped
-  the target size check, so a 300-byte identity encoded to bytes the same crate
-  refused, and it reported a reserved revision or a wrong policy version as
-  `conflict`.
+- `InvitationBootstrap::encode` now makes the decoder's checks in three groups in
+  the decoder's order: the source roster, then the invitation's own fields (a
+  reserved source revision, a policy version other than 1, a target identity above
+  256 bytes or device above 64), then how the two fit together (`conflict`). Inside
+  the first group the order is V-roster's, the order of `Roster::encode`, and not
+  the order in which `Roster::decode` meets the faults of the same roster (see
+  "The order of an encoder's refusals", below). Before, it skipped the target size
+  check, so a 300-byte identity encoded to bytes the same crate refused, and it
+  reported a reserved revision or a wrong policy version as `conflict`.
 - `LogicalSend::encode_intent` made none of the decoder's checks and relied on
   `LogicalSend::new`, which does not size-check a member or count the recipients,
   and whose `payload` and `id` fields are public. It now makes the decoder's
-  checks in the decoder's order (section 11, Encoding).
+  checks in the order the decoder meets them (section 11, Encoding).
 - Two local state encoders had the same defect and were fixed the same way, though
   this page does not specify them: `InvitationBook::encode_state` (a record whose
   fields `Invitation::new` would refuse, which `InvitationBook::create` lets in
@@ -119,6 +137,44 @@ be read back is a persistence hazard, most of all for the intent, which is writt
 before any send and read again at recovery. Considered: fix the bootstrap only.
 Rejected: the same defect was in three other encoders. The tacenta-client record
 and state encoders were not audited.
+
+## The order of an encoder's refusals (recorded 2026-09-30)
+
+A value with several faults is refused for the first fault in the order of its
+encoder. This record states that order for each encoder, as the code has it; no
+code and no byte changed in stating it. "The decoder's order", as OP-4 first
+worded it, was shorthand, and it is exact for every encoder but three.
+
+- **Roster** (`Roster::encode`): V-roster, section 5 step 12: the reserved
+  revision, the policy version, the genesis rule, the member count, the
+  authority's size, then each member in turn (its size, its place in the order, a
+  repeated identity).
+- **Application context**: V-context, section 6 step 11: the reserved revision,
+  the payload, the sender's size, the recipient's size.
+- **Invitation bootstrap**: the source roster, in V-roster's order; then the
+  invitation's own fields; then how the invitation fits the roster.
+- **Acceptance, revocation**: the reserved revision.
+- **Group payload**: the variant's encoder, then the 8,192 bound.
+- **Logical-send intent**: the sender's size, the payload, the number of
+  recipients, each recipient's size, the order of the list, the revision.
+
+The decoders of the roster, the context and the bootstrap's source roster judge
+the authority's size, the member count and each member's size, or the sender's and
+the recipient's size, as they read, before they run V-roster or V-context. For a
+value with two faults, one of which such a check judges, the encoder and the
+decoder of the same bytes therefore give different reasons: a reserved revision
+and nine members are `reserved_revision` from the encoder and `too_many_members`
+from the decoder. The other encoders meet faults in the order of their decoders.
+Sections 3, 5, 6 and 7 of the page state the cases, and the vector file holds a
+pair of vectors for each (section 14).
+
+Considered: make the roster encoder, and so the bootstrap's, judge the read-time
+checks first, so that the encoder and the decoder always agree on the reason.
+Rejected: it changes which reason a value with several faults gets from
+`Roster::encode` and from the encoders that call it, for no accepted value and no
+byte, and V-roster's order is the order the code and the second program have. The
+difference is pinned by vectors instead, so a change to either order fails a
+check. Reopen this if a second implementation finds the difference a cost.
 
 ## The five questions
 
@@ -155,8 +211,10 @@ and state encoders were not audited.
   would record what the code does and the code would agree with it.
 - **Write the reader and the generator as one Python program.** A generator that
   is also the reader agrees with itself. Keeping the builder in Rust and the
-  reader in Python, written by different passes over the text, gives two
-  independent readings of the page.
+  reader in Python, written in different passes over the text, gives two readings
+  of the page. They are not independent: both follow the same page, which was
+  written from the code, and the reader's first author had seen the names and
+  reasons of the vectors.
 - **Do nothing until the open points are decided.** The bytes are stable enough
   to state, and stating them is how the open points were found.
 
@@ -168,8 +226,10 @@ domain string, fixed fields and explicit bounds, and none depends on
 coordinator state. The decoders already have a structure-aware robustness test
 (`tests/codec_robustness.rs`) and round-trip tests; what was missing was the text
 a second implementation would need and vectors that pin the bytes. Writing the
-page from the code and then having it replayed by a reader that saw only the
-page is the cheapest test that the page is enough.
+page from the code and then having it replayed by a second program that was first
+written from the page and the vectors is a cheap test that the page is enough to
+reproduce the layouts and refusals. It cannot show that the code is right where
+the code and the page share a choice.
 
 ## What would reopen this
 

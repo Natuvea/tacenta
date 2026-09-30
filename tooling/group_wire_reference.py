@@ -2,10 +2,16 @@
 # -*- coding: utf-8 -*-
 """Reference reader for the bounded group-chat wire formats, version 1.
 
-Written from ``spec/group-wire-formats.md`` alone (section numbers below refer
-to that page).  Each rule line carries a bracketed id, for example ``[RD3]``
-(roster decode step 3) or ``[RV6b]`` (V-roster step 6, second clause), and a
-comment naming the sentence of the text it comes from.
+A differential oracle for ``spec/group-wire-formats.md`` (section numbers below
+refer to that page), not an independent implementation of it.  It was first
+written by a separate agent from the page and the vector file, after that agent
+had printed the name and expected reason of every vector then in the file; the
+file was then edited, and the bootstrap and intent encoders were revised by the
+implementer of the encoder change, not by a fresh reader (open point 4).
+Section 14 of the page, "What the second reader is, and is not", says the same.
+Each rule line carries a bracketed id, for example ``[RD3]`` (roster decode step
+3) or ``[RV6b]`` (V-roster step 6, second clause), and a comment naming the
+sentence of the text it comes from.
 
 Public API
     Refusal              exception with a ``.reason`` label (section 3)
@@ -584,10 +590,10 @@ def _decode_bootstrap(data):
 
 
 def _encode_bootstrap(b):
-    """Section 7 "Encoding": the decoder's checks on the value, in the decoder's
-    order, with the decoder's reasons: (1) V-roster on the source roster; (2) the
-    checks of step 10 on the invitation's own fields; (3) the checks of step 11.
-    It then writes the layout.
+    """Section 7 "Encoding": three groups of checks, in this order, with the
+    decoder's reasons: (1) V-roster on the source roster, in V-roster's order (not
+    that of ``decode_roster``); (2) the checks of step 10 on the invitation's own
+    fields; (3) the checks of step 11.  It then writes the layout.
     """
     roster = b["source_roster"]
     _fixed(b["invitation_id"], INVITATION_ID_LEN)  # [BE-IID]
@@ -776,8 +782,9 @@ def _decode_intent(data):
 
 
 def _encode_intent(v):
-    """Section 11 "Encoding": the decoder's checks on the value, in the decoder's
-    order, with the decoder's reasons, then the layout.
+    """Section 11 "Encoding": the decoder's checks on the value, in the order in
+    which the decoder meets them (steps 4, 7, 8, 9, 11, 12), with the decoder's
+    reasons, then the layout.
     """
     _fixed(v["group_id"], GROUP_ID_LEN)  # [IE-GID]
     _fixed(v["roster_digest"], DIGEST_LEN)  # [IE-DIG]

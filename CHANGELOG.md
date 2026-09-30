@@ -53,7 +53,11 @@ commits carry their story.
   `GroupReceiver::encode_state` check a record's fields and the local member.
   Decisions 0092 and 0105 are amended: the roster's authority and the intent's
   sender are one member entry (two length-prefixed fields), as the code always
-  wrote them.
+  wrote them. The page states the order in which each encoder refuses a value with
+  several faults. It is the order of the encoder's validation steps, which for the
+  roster, the application context and the source roster of a bootstrap differs
+  from the order in which their decoders meet the same faults, and the vectors pin
+  both.
 
 ## v1.12.1 (2026-09-11)
 

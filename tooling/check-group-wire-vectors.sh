@@ -6,9 +6,12 @@
 # The vectors (contracts/vectors/group-wire-v1.json) are written by a Rust test
 # from spec/group-wire-formats.md and replayed there against the production
 # codecs (decision 0149). This script replays the same file through
-# tooling/group_wire_reference.py, a reader that was written from the page alone,
-# so that the vectors are checked by something other than the code they test.
-# It needs python3 and nothing else.
+# tooling/group_wire_reference.py, a second program that agrees with the vectors,
+# so that they are checked by something other than the code they test. That
+# program was first written by a separate agent from the page and the vector file
+# and then edited, and it is not an independent implementation of the page (see
+# section 14 of the page, "What the second reader is, and is not"). It needs
+# python3 and nothing else.
 #
 # A green run means: every valid vector decodes to its fields and re-encodes to
 # its bytes, every refusal vector (and every proper prefix of a prefix vector)
