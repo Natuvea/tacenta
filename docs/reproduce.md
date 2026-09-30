@@ -4,7 +4,8 @@ One place that says, from a clean checkout, how to rebuild every proof, run
 every test, and see the axiom baselines — so a reviewer reaches green without
 reverse-engineering CI. The public `.github/workflows/ci.yml` here runs the
 commands below that need no pinned prover toolchain (fmt, clippy, the Rust
-suite, the spec build, and the committed-vector check); the axiom-pinned
+suite, the group demo, the spec build, the committed-vector check and the repo
+gates of section 5); the axiom-pinned
 refinement build and the Postgres integration run in the verification workflow
 and the release pipeline. This page is the single
 ordered recipe for all of it, and the workflows remain the source of truth
@@ -28,7 +29,7 @@ Read alongside [claims.md](claims.md) (proven vs tested vs assumed),
 - **Lean 4 via elan**, toolchain `v4.31.0` (`lake` on PATH). The lake projects
   pin it; elan installs the pinned toolchain on first `lake build`.
 - **Rust stable** (`cargo`, `clippy`, `rustfmt`).
-- **`protoc`** (protobuf compiler) and **`python3`**.
+- **`python3`**.
 - `tacenta-core` at the pinned revision (a public repository) — cargo resolves
   it as a git dependency. Check it out as a sibling directory, or let cargo
   fetch it.
@@ -122,7 +123,10 @@ and passed, and that their names and counts equal the manifest. It does not
 mean that a test still checks what its name says: a test whose body returns
 early, asserts `true`, asserts inside a task nobody awaits, or is empty, but
 keeps a listed name, passes. Review is what looks at bodies, and for the group
-crate the mutation harness below. CI does not run this script.
+crate the mutation harness below. CI runs this script in the `rust` job, after
+the workspace tests, and `tooling/check-gates-wired.sh` fails if a workflow stops
+running it. It reads names and counts, so a change that edits a test and the
+manifest together passes it (see "What these gates cannot defend against").
 
 After a deliberate change to the tests, run
 `tooling/run-group-chat-demo.sh --update-manifest` and review the manifest's
@@ -214,8 +218,9 @@ tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
 
 To check that the group crate's tests notice a removed guard, run its
 single-change mutation harness (134 mutants; a few minutes with four workers,
-longer on a loaded machine). It needs the unmodified tree to pass, prints each
-mutant as killed or survived, and fails on a mutant that does not patch or build:
+longer on a loaded machine). CI does not run it. It needs the unmodified tree to
+pass, prints each mutant as killed or survived, and fails on a mutant that does
+not patch or build:
 
 ```bash
 python3 tooling/group-mutation/mutate.py --workers 4
@@ -248,10 +253,59 @@ change its test fails on in words, and that is what to read.
 ```bash
 cd tacenta
 for s in tooling/check-*.sh; do echo "== $s =="; bash "$s"; done
+python3 tooling/check-vectors.py
+for s in tooling/tests/run-*-cases.sh; do echo "== $s =="; bash "$s"; done
 # check-docs-match.sh resolves citations across both trees, so point it at a
 # checkout of tacenta-core at the pinned revision:
 TACENTA_CORE_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
 ```
+
+Each gate below has a runner in `tooling/tests/` that feeds it the inputs it
+must refuse (a copy of the real files with one change each) and fails if one is
+accepted. CI runs the gates and their runners in the `checks` job.
+
+- **`check-core-pin.sh`** requires the `open-tacenta` pin in `Cargo.toml` to be
+  a full 40-digit SHA of a commit on tacenta-core `main`, and every git source
+  in `Cargo.lock` to be that revision (and every registry to be crates.io). It
+  asks GitHub's compare endpoint whether the revision is an ancestor of `main`
+  (read-only; CI passes `GITHUB_TOKEN`), and fails if GitHub cannot be reached.
+  A commit that exists only as a pull request head or in a fork is refused, so
+  a core change is merged before the product pins it. Its runner refuses the
+  head of tacenta-core pull request 207 and accepts the pin in this tree; pass
+  `CHECK_CORE_PIN_CASES_OFFLINE=1` to run only its offline controls.
+- **`check-vectors.py`** fails on an empty, unparseable or shrunken file under
+  `contracts/vectors/`: each file has a floor for its case list, for the cases
+  that must be non-empty and for the kinds it must cover, and a new vector file
+  needs a floor in the change that adds it. The Rust readers replay the cases
+  and `lake exe vectors` regenerates them in CI; this makes sure they are not
+  looking at an empty file.
+- **`check-gates-wired.sh`** fails when a script in `tooling/` that is a gate
+  (`check-*`, `run-*demo*`, `tests/run-*-cases.sh`) is not named in a workflow
+  step that is in force. Two gates need a sibling checkout or generated
+  bindings and are listed there with the reason.
+- **`check-signoff.sh`** requires every commit a pull request adds to carry a
+  `Signed-off-by:` trailer naming its author (CONTRIBUTING.md), and, on a push to
+  `main`, every commit the push introduced, which is where a squash merge's
+  message is judged.
+- **`install-elan.sh`** installs elan, the Lean toolchain manager, from a pinned
+  release archive after checking its sha256 (the values are in `ci.yml`). Elan then
+  fetches the toolchain named in `spec/lean-toolchain`, and this repository does
+  not pin that download's digest.
+
+### What these gates cannot defend against
+
+They catch a mistake: a mistyped or unmerged pin, a shrunken vector file, a
+dropped test, a forgotten workflow step, a missing sign-off. They do not defend
+against a change that edits a gate and the thing it judges together. A pull
+request that moves the pin and edits `tooling/check-core-pin.sh` or the step that
+runs it, shrinks a vector file and lowers its floor in `tooling/check-vectors.py`,
+deletes a test and its line in `tooling/group-chat-demo-tests.txt`, or removes a
+workflow step and its entry in `tooling/check-gates-wired.sh`, passes every one of
+them, because the gates run from the tree the change produces. A test whose body
+was hollowed out under an unchanged name passes the group demo. The sign-off
+check reads a statement the author makes and cannot tell whether it is true. Only
+a person reading the diff of `tooling/`, `.github/workflows/`,
+`contracts/vectors/`, `Cargo.toml` and `Cargo.lock` catches those.
 
 ## The axiom baselines (what a green proof rests on)
 
