@@ -229,8 +229,11 @@ swap of duplicate and conflict in `controlDisposition`), and deleting the
 catches everything the examples did. Everything in this note that gives a count
 is a count at `2062899`. A later change added fourteen theorems, more examples
 and five traces to the vectors; with them 31 of the 32 mutants are killed and
-`GM28` is equivalent. The items below are still differences or unpinned rules
-between the model and the code, and the survivor ids are those of the first run.
+`GM28` is equivalent. The items below describe the model and the code at
+`2062899`, and the survivor ids are those of the first run. Items 20 to 25 name
+rules that nothing on the model side pinned then; the later change pins them in
+the model (theorems, examples and traces), and it does not change what the code
+does. The differences listed before item 20 are not closed by it.
 
 Nine of the fifteen survivors are covered above: `GM01` is item 19; `GM13` and
 `GM15` are items 4 and 3, where the model was moved to the code and no vector
