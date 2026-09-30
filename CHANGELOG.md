@@ -24,10 +24,10 @@ minor releases.
 The changes on this tree's `main` after the v1.12.1 release of 2026-09-11.
 Which of them a later release carries is not recorded here.
 
-- tacenta-core moves from `fb89b15` to `5a8f90c`, in three steps: `c7499a9`
-  (pinned 2026-09-14), `b8c924d` (2026-09-20) and `5a8f90c` (2026-09-29, a
-  tacenta-core commit of 2026-09-28). `b8c924d` is the session lifecycle
-  carve-out and the Session L4 stack.
+- tacenta-core moves from `fb89b15` to `e06f8f4`, in four steps: `c7499a9`
+  (pinned 2026-09-14), `b8c924d` (2026-09-20), `5a8f90c` (2026-09-29, a
+  tacenta-core commit of 2026-09-28) and `e06f8f4` (2026-09-30, #29).
+  `b8c924d` is the session lifecycle carve-out and the Session L4 stack.
   - Prekey stores are saved in format `0x05`. Formats `0x01` to `0x04` are
     still read, and a store saved in `0x05` cannot be read by 1.12.1 or earlier,
     which refuse its version byte. A store in format `0x02`, `0x03` or `0x04`
@@ -47,7 +47,7 @@ Which of them a later release carries is not recorded here.
     `c7499a9`. GHSA-9hv6-fr6w-9758 was fixed in three changes (`ca3eba85`,
     `b856b40`, `fa7cd1bd`): `b8c924d` has the first and `5a8f90c` has all three.
     The fix for GHSA-r8w8-4rg9-mxhm (`e06f8f41`, merged 2026-09-29) is in none of
-    them, and this tree has not moved to a revision that has it.
+    the first three and is in `e06f8f4`, the revision this tree pins now.
 - `CryptoProvider`, the seam a crypto backend implements, has three new
   required methods, `establish_session_for`, `encrypt_with_outcome` and
   `decrypt_with_outcome`, with the public types `CryptoOperation` and
