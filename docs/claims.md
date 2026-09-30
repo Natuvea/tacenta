@@ -595,8 +595,27 @@ not in our proofs' dependency cone.
   retained, a snapshot of 1,728,009 bytes and 587 to 596 ms for one logical send,
   against 371,724 bytes and 269 to 277 ms for the first. The times are of one run
   at a load average of 15 and move with the load (502 to 510 ms in steady state at
-  a load of about 1, 515 to 517 ms at 4 to 5, in earlier runs); the bytes and the
-  commit counts do not. The bounds above are on record
+  a load of about 1, 515 to 517 ms at 4 to 5, in earlier runs, and 542 to 728 ms
+  in eight runs on 2026-09-30, while the load average fell from 29 to about 10);
+  the bytes and the commit counts do not.
+  **Bytes written.** Every commit encodes the whole snapshot and hands all of it
+  to the atomic writer (`FileOperationStore`), so the bytes one logical send
+  offers to the file system are the sum of the snapshot sizes at its commits. At
+  8 members and seven recipients, counted over the seventeenth send, that is
+  **38,936,327 bytes, about 38.9 MB, in 22 commits of up to 1,814,192 bytes, to
+  deliver 7,000 bytes of payload** (1,000 to each recipient): about 5,600 times
+  the payload. The first send at 8 members offers 7,199,258 bytes. These are
+  encoded snapshot sizes on one host, taken with a counter added to the probe's
+  store wrapper for the purpose (`docs/reproduce.md` says how); they are not a
+  measurement of what reached the disk. Multiplying the two printed figures,
+  22 commits by the 1,728,009-byte steady-state snapshot, gives 38,016,198 bytes
+  without the counter, a little under the count because the largest commit is
+  larger than the snapshot the send ends with. **Memory in steady state is a
+  range, not a constant:** the probe process's maximum resident set was 41 MB in
+  the recorded run, 28.7 MB in a reviewer's run, and 30.2 to 40.5 MB in eight
+  runs on 2026-09-30 (the load average fell from 29 to about 10 over them), with
+  identical byte and commit counts in all of them. Read it as roughly 29 to 41 MB.
+  The bounds above are on record
   counts and on the size of each record; they do not bound the snapshot in bytes
   at a stated figure. The provider state inside the snapshot holds a session for
   every peer that ever sent a decryptable message and has no eviction (one review

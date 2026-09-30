@@ -159,8 +159,10 @@ are development evidence, not production budgets or 32, 128 or 512 member
 results.
 
 **The per-size table is one send from an empty outbox, and a group in use is
-larger and slower.** The recorded run: this branch at `f26b56f` with a clean
-tree, tacenta-core `5a8f90c1`, an Apple M5 Pro with 18 logical CPUs and 64 GiB,
+larger and slower.** The recorded run: a commit of the pull request that became
+`2062899` (`f26b56f`, one of the commits of #23, which `git fetch origin
+refs/pull/23/head` retrieves and a clone of `main` does not contain) with a
+clean tree, tacenta-core `5a8f90c1`, an Apple M5 Pro with 18 logical CPUs and 64 GiB,
 `rustc 1.99.0-nightly` (2026-07-14), native file store, one 1,000-byte logical
 send from the authority to every other member, **on a machine that other work
 kept busy: a load average of 15.4 when the runner started** (31.6 and 40.5 over
@@ -208,6 +210,58 @@ in one process, which runs 448 tests: 86 s elapsed (345 s CPU, 900 MB) cold and
 59 s (279 s CPU, 100 MB) warm, at that load. Nothing was measured at 32, 128 or
 512 members, with the outbox holding its eight live sends, or on another host,
 and the commit latency was measured at the sizes of the first table only.
+
+**Re-run on `2062899`, 2026-09-30.** `tooling/measure-group-chat.sh` was run
+again on the merged commit with a clean tree, on the same machine, with tacenta-core
+as `Cargo.lock` resolves it (`5a8f90c`). The load average was 29 when it started
+and fell to about 10 while it ran. Every byte size, commit count, roster size and
+receiver-state size matches the tables above exactly, in both passes of each size
+and in every steady-state pass (1,728,009 bytes, 22 commits, 16 retained sends,
+352 outbox records). The times differ, as the load did: one logical send took
+40 to 41 ms at 2 members, 71 to 80 ms at 3 and 287 to 324 ms at 8 (the tables
+above: 39 to 43, 71 to 75 and 269 to 277); the last steady-state send took 542
+and 580 ms in the script's two passes and 582 to 728 ms in six more runs at a
+load average of about 9 to 10 (the table: 587 to 596 ms); one more commit at
+those sizes took a median of 8.0 to 9.0 ms. The whole demo took 73 s cold (289 s
+user CPU, 915 MB maximum resident) and 49 s warm (233 s user CPU, 105 MB). **The one figure
+that did not repeat is the steady-state probe's maximum resident set:** 41 MB in
+the recorded run, 28.7 MB in a reviewer's run, 30.2 and 35.5 MB in the script's
+two passes and 34.4 to 40.5 MB in the six further runs (the peak memory
+footprint `/usr/bin/time` reports for the same processes was 21.8 to 32.2 MB).
+It depends on the allocator and on timing and is a range of about 29 to 41 MB, not
+a constant; the per-size probes used 14.5 to 20.4 MB. The script asserts the
+roster and receiver-state sizes and the commit counts. The other figures in this
+section are reported by it or counted as described below, and no script checks
+them against this text.
+
+**Bytes written by a send.** Each commit is `snapshot.encode()` followed by
+`write_atomically` of all of it (`FileOperationStore::write`), and a logical send
+to `n` recipients makes `1 + 3n` commits, so the bytes a send offers to the
+file system are the sum of the encoded snapshot sizes at those commits. The
+probe does not print that sum. To count it, make `CountingFileStore::commit` and
+`commit_after` in `crates/tacenta-client/src/group_client/tests/scale_probe.rs`
+add `snapshot.encode().map_or(0, |bytes| bytes.len())` to a static counter, and
+print the counter after each `send_group` call in
+`group_scale_probe_steady_state`. The counter was used for the figures below and
+is not committed. Eight members, seven recipients, 22 commits per send, one
+1,000-byte message to each recipient (7,000 bytes of payload):
+
+| Send | Bytes offered to the writer | Largest commit |
+|---|---|---|
+| 1 | 7,199,258 | 371,724 |
+| 2 | 9,188,476 | 462,143 |
+| 8 | 21,123,784 | 1,004,657 |
+| 16 | 37,037,528 | 1,728,009 |
+| 17 | 38,936,327 | 1,814,192 |
+
+The total grows by 1,989,218 bytes per send until the sixteenth, when sixteen
+terminal sends are retained, and the seventeenth is 38,936,327 bytes, about
+5,562 times its 7,000 payload bytes. The largest commit of the seventeenth send is
+larger than the snapshot the send ends with (1,814,192 against 1,728,009 bytes);
+which record is dropped before it ends was not traced. Without the counter, 22
+commits by the 1,728,009-byte snapshot the probe prints is 38,016,198 bytes, a
+little under the count. These are bytes handed to the writer on one machine, not
+a measurement of what reached the disk.
 
 ```bash
 tooling/measure-group-chat.sh /tmp/tacenta-group-measurements
