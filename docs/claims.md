@@ -720,8 +720,8 @@ not in our proofs' dependency cone.
     vectors and their theorems (whose axiom sets are pinned in
     `spec/Tacenta/Assurance.lean`) have had no human review. Expiry takes an
     explicit logical time with no clock mapping.
-  - **What the Lean group theorems establish.** The four theorems in
-    `spec/Tacenta/Group.lean` are regression pins of the model's own
+  - **What the Lean group theorems establish.** `spec/Tacenta/Group.lean` has
+    eighteen theorems. Four are regression pins of the model's own
     definitions, not properties of the profile. `genesis_has_only_its_authority`
     is `rfl`. `invitation_does_not_advance_the_revision` is proved without
     looking at the guard of `invite?`, so it holds however that guard is
@@ -730,21 +730,26 @@ not in our proofs' dependency cone.
     (0137, item 14). `admission_follows_its_source` assumes that the invitation's
     source revision is not above the group's revision, and no theorem shows that
     reachable states satisfy it; without the assumption the conclusion is false,
-    and the model defines no reachability. The axiom pins see axioms and not
-    statements (`spec/Tacenta/Assurance.lean` says so). A run of 32
-    single-change mutants of `Group.lean`, chosen by a reviewer and kept in
-    `tooling/group-mutation/model_mutants.py` (run with `mutate_model.py`),
-    gave this result: `lake build`, which checks the theorems, their pins and
-    eight `example` traces, killed nine; the CI vector
-    diff killed eight more; **fifteen survive** the build, the examples, the
-    regenerated vectors and therefore the Rust replay, which reads the committed
-    vectors (one of the fifteen is equivalent). With the four theorems and their
-    pins deleted, one mutant of the 32 changes result: a swap of duplicate and
-    conflict in `controlDisposition`. Among these 32 mutants that is the only
-    one a theorem catches and the examples and vectors do not, so in this sample
-    the theorems constrain `controlDisposition` and nothing else. The
-    survivors, and what the code does for each, are in the amended note of
-    decision 0137.
+    and the model defines no reachability. Fourteen more state the model's
+    guards for every state: who may invite, admit, revoke, remove and close, what
+    a removal or a revocation needs, what a closed group refuses, and how a
+    control is read against the history. They are properties of the model's own
+    definitions. They fail when a guard is removed, and they do not say the Rust
+    types follow the model except through the vectors. The axiom pins see
+    axioms and not statements (`spec/Tacenta/Assurance.lean` says so). A run of
+    32 single-change mutants of `Group.lean`, chosen by a reviewer and kept in
+    `tooling/group-model-mutation/mutants.py` (`GM01` to `GM32`, run with
+    `mutate.py`), found fifteen that survived the build, the examples, the
+    regenerated vectors and therefore the Rust replay, at `2062899`, before those
+    fourteen theorems and the added vector traces. With them 31 of the 32 are
+    killed and one is equivalent. Seventeen more mutants written to test their
+    neighbours leave one equivalent. The set is a sample, not an enumeration of
+    the model's guards. Eight of the 32 are killed by the build alone, not by
+    the vectors: two because the code accepts what the model refuses (0137,
+    items 3 and 4), two because no trace reaches the last usable revision, and
+    four because the vector JSON holds no control history. The differences
+    between the model and the code, and what the code does for each, are in the
+    amended note of decision 0137.
   - **Review status.** The merge commit of this profile calls it "rebased and
     reviewed (#23)". "Reviewed" there meant three rounds of agent-assisted
     review passes; it did not mean review by another person. Pull request #23

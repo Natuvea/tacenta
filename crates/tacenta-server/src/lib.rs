@@ -25,6 +25,10 @@
 //! deleted the file by hand. A plain `fs::write` here would trade "a restart
 //! loses state" for "a crash during a snapshot may prevent the next start".
 //! The atomic write is what makes a data directory safe to turn on.
+//!
+//! The snapshots hold account records and key material, so each is written
+//! owner-only (`0600` on Unix) and a data directory the server creates is
+//! `0700`. A directory that already exists keeps the mode it has.
 
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -35,7 +39,7 @@ use std::sync::{Arc, Mutex};
 use rand::{RngCore as _, TryRngCore as _};
 use tacenta_accounts::{AccountStore, Accounts};
 use tacenta_core::crypto::verify_challenge;
-use tacenta_core::persist::write_atomically;
+use tacenta_core::persist::{create_dir_all_private, write_atomically};
 use tacenta_directory::{DEFAULT_MAX_PER_WINDOW, Directory, Registration};
 use tacenta_relay::{DeviceAddr, Relay};
 use tacenta_transport::{
@@ -335,7 +339,7 @@ impl Server {
     pub async fn bind(config: &Config) -> std::io::Result<Server> {
         let (directory, relay) = match &config.data_dir {
             Some(dir) => {
-                std::fs::create_dir_all(dir)?;
+                create_dir_all_private(dir)?;
                 (
                     load(
                         &dir.join(DIRECTORY_SNAPSHOT),

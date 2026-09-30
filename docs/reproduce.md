@@ -61,7 +61,7 @@ it" via the committed Aeneas translation.
 
 ```bash
 # Spec-level theorems (CI fails on a `sorry`), plus the #print axioms audit in
-# spec/Tacenta/Assurance.lean that pins the exact axiom set of the 47 theorems
+# spec/Tacenta/Assurance.lean that pins the exact axiom set of the 61 theorems
 # it lists (see "The axiom baselines" below for what it does not cover).
 cd tacenta/spec && lake build
 
@@ -289,29 +289,29 @@ recipient). These are arguments from the code, not proofs of equivalence. The
 harness covers the group crate only; the client and transport crates have no
 harness in this repository.
 
-The Lean group model has a harness of its own, because the one above never
-touches it. `python3 tooling/group-mutation/mutate_model.py --workers 6` applies
-each of the 32 single-change mutants in `tooling/group-mutation/model_mutants.py`
-to a copy of `spec/`, runs `lake build` and regenerates the group vectors, and
-takes about half a minute. The mutants were chosen by a reviewer and are a
-sample, not an enumeration of the model's guards. On `2062899` it reports 9
-mutants killed by `lake build` (the theorems, their pins and the eight `example`
-traces), 8 more killed by the vector diff, and 15 survivors: `LM01`, `LM07`,
-`LM13`, `LM15`, `LM16`, `LM17`, `LM18`, `LM20`, `LM21`, `LM22`, `LM24`, `LM25`,
-`LM27`, `LM28` and `LM31`, of which `LM28` is equivalent. `--config no-theorems`
-deletes the four theorems and their pins first and reports 16 survivors (`LM26`,
-a swap of duplicate and conflict in `controlDisposition`, joins them);
-`--config vectors-only` also deletes the eight `example` traces and reports 16
-killed by the vector diff and the same 16 survivors. A survivor is invisible to
-the CI vector diff, and so to the Rust replay, which reads the committed vectors.
-The amended note of decision 0137 says what each survivor is.
+The Lean group model has a harness of its own. It applies each of 49 single
+changes (`GM01` to `GM32` and `GX01` to `GX17` in
+`tooling/group-model-mutation/mutants.py`) to `spec/Tacenta/Group.lean` in a
+private copy and measures two gates separately: whether `lake build` fails (a
+theorem, an example or an axiom pin), and whether the regenerated group vectors
+differ from the committed file when every theorem and example is deleted, which
+is the CI diff on its own. With `--replay` it also runs the Rust replay of
+`group-v1.json` against the regenerated vectors of each mutant that changes
+them, in a worktree of HEAD. It needs the unmodified model to pass, and fails
+on a mutant that survives without a stated reason; `GM28` and `GX16` carry one
+each in `mutants.py`. CI does not run it.
+
+```bash
+python3 tooling/group-model-mutation/mutate.py --workers 4 --replay
+```
 
 Many comments in the group tests name a mutant by an id (`M###`, `R###`, `D##`)
 and a `file:line`. Those ids belong to single-change mutation runs against
 97689a0, 341e2b0 and later revisions whose mutant lists are **not kept in this
 repository**; only the ids of `tooling/group-mutation/mutants.py` (the letters
 `L`, `N`, `P`, `R`, `S`, `V` and `X`, and `D` for its doubles) resolve here, and
-its `R` ids are not those of the comments. The line numbers in the comments are
+its `R` ids are not those of the comments. The `GM` and `GX` ids of
+`tooling/group-model-mutation/mutants.py` name changes to the Lean model. The line numbers in the comments are
 those of the commit the comment names and have drifted. A comment states the one
 change its test fails on in words, and that is what to read.
 
@@ -328,12 +328,12 @@ TACENTA_CORE_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
 ## The axiom baselines (what a green proof rests on)
 
 - **Spec-level theorems.** Today none of them depends on an axiom beyond
-  `propext` and `Quot.sound` (the wire theorems and two of the four bounded-group
+  `propext` and `Quot.sound` (the wire theorems and six of the eighteen bounded-group
   theorems use the second; the others need at most `propext`). What is enforced
   is narrower than that: `spec/Tacenta/Assurance.lean` pins the exact axiom set
-  of the 47 theorems it lists with `#guard_msgs in #print axioms`, of the 90
-  `theorem`s that `spec/Tacenta` declares, and the four group theorems are among
-  the 47. An added axiom, a `sorry` or `Classical.choice` in a listed theorem
+  of the 61 theorems it lists with `#guard_msgs in #print axioms`, of the 104
+  `theorem`s that `spec/Tacenta` declares, and the eighteen group theorems are among
+  the 61. An added axiom, a `sorry` or `Classical.choice` in a listed theorem
   fails the build. **It does not catch** a theorem weakened with the same axioms
   (`True` as its statement), a new theorem that is not listed and is built on an
   added axiom, `native_decide` in an `example`, or a theorem missing from the
