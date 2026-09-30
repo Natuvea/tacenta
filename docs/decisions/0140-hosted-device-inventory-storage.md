@@ -39,11 +39,12 @@ that result is still the account's current one.
 ## The five questions
 
 1. **Does this keep the trusted core small?** Yes. It adds nothing to
-   tacenta-core. The core pin moves from `b8c924de` to `5a8f90c1`, the
-   revision the group branch already pins; the inventory-statement module
-   first appears in core's #158, before it. The product calls that module's
-   encoder, verifier and signer. The key-holding component is in the product,
-   which is where this record wants it.
+   tacenta-core. The core pin moves from `5a8f90c1` to `dea57eaf`, which adds
+   the inventory acceptance API and the identity-key rule (core's #200 and
+   #205); the inventory-statement module first appears in core's #158, before
+   them. The product calls that module's encoder, verifier and signer. The
+   key-holding component is in the product, which is where this record wants
+   it.
 2. **Is the behaviour owned by a written specification?** In part. The
    statement's encoding and signature belong to the core (`groups::inventory`
    and its vectors). The lifecycle rules here (exact predecessor generation,

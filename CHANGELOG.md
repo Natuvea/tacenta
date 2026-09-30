@@ -36,6 +36,11 @@ commits carry their story.
   once one was dropped half way through its frame (`BrokenPipe`).
   Client export order is now a function of the state (`export_state` writes the
   peer sessions in address order).
+- tacenta-core moves to `dea57eaf` (from `5a8f90c1`). It gains the acceptance
+  checks for a hosted inventory statement (core #200) and holds identity keys to
+  one rule at the session boundaries, in stored session state and in signature
+  verification (core #205; `identities-and-devices.md`, "Identity keys"). A key
+  an honest device publishes is never refused.
 - Experimental, not wired to any client, server route or SDK surface: hosted
   device-inventory storage and signing (decision 0140).
   - `tacenta-accounts` stores a per-account device inventory (in memory, and in
@@ -47,7 +52,6 @@ commits carry their story.
     retry. On Windows the key file's permissions are not enforced.
   - The directory handle of an account is now built from its normalized
     username; `handle` used to echo the spelling it was given.
-  - tacenta-core moves to `5a8f90c1`, which carries the inventory statements.
   - CI compile-checks and lints the `postgres` feature. The database tests
     still do not run in CI.
 
