@@ -112,15 +112,13 @@ async fn registrations_survive_a_restart() {
 /// The snapshot goes through a temp file and a rename, not a direct write.
 ///
 /// **How this discriminates, since the obvious version of it does not.**
-/// Asserting that no `.tmp` file is left over passes whether the code renames
-/// or writes in place, so it guards nothing. Instead this plants a `.tmp` file
-/// first: `write_atomically` creates that exact path, truncates it, and renames
-/// it onto the target, so a correct persist *consumes* the planted file. A
-/// regression to `fs::write` would leave it sitting there untouched.
-///
-/// The test is therefore coupled to `write_atomically`'s `<path>.tmp` naming.
-/// That is the price of testing the mechanism rather than a side effect of it,
-/// and it fails loudly rather than silently if the convention changes.
+/// Asserting that no temp file is left over passes whether the code renames or
+/// writes in place, so it guards nothing. Instead this gives the snapshot a
+/// second name (a hard link) after putting junk in it. A rename swaps the
+/// directory entry for a new file and leaves the old one alive under the other
+/// name, still holding the junk; a write in place changes the one file both
+/// names share, so the junk would be gone from both. The test does not depend
+/// on what the temp file is called.
 #[tokio::test]
 async fn a_snapshot_leaves_no_partial_file_behind() {
     let data_dir = scratch_dir();
@@ -141,28 +139,48 @@ async fn a_snapshot_leaves_no_partial_file_behind() {
     };
 
     let server = Server::bind(&config).await.unwrap();
+    server.persist().unwrap();
 
-    // Plant the temp file an atomic write must claim. Junk contents, so that if
-    // it somehow ended up as the snapshot the load below would reject it.
-    let planted = data_dir.join("relay.snapshot.tmp");
-    std::fs::write(&planted, b"not a snapshot").unwrap();
+    // Junk where the snapshot is, and a second name for that same file. If it
+    // ended up as the snapshot the load below would reject it.
+    let snapshot = data_dir.join("relay.snapshot");
+    let held = data_dir.join("relay.snapshot.held");
+    std::fs::write(&snapshot, b"not a snapshot").unwrap();
+    std::fs::hard_link(&snapshot, &held).unwrap();
 
     server.persist().unwrap();
 
-    assert!(
-        !planted.exists(),
-        "the persist did not go through {}, so it was not an atomic write",
-        planted.display()
+    assert_eq!(
+        std::fs::read(&held).unwrap(),
+        b"not a snapshot",
+        "the persist wrote {} in place, so it was not an atomic write",
+        snapshot.display()
     );
-    assert!(
-        data_dir.join("relay.snapshot").exists(),
-        "expected the relay snapshot to exist"
+    assert_ne!(
+        std::fs::read(&snapshot).unwrap(),
+        b"not a snapshot",
+        "the persist did not replace the junk snapshot"
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&data_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "accounts.snapshot",
+            "directory.snapshot",
+            "relay.snapshot",
+            "relay.snapshot.held"
+        ],
+        "a temp file was left behind"
     );
     // And what landed is a real snapshot, not the junk.
     drop(server);
     Server::bind(&config)
         .await
-        .expect("the snapshot written over the planted temp file must load");
+        .expect("the snapshot written over the junk one must load");
 
     std::fs::remove_dir_all(&data_dir).ok();
 }
