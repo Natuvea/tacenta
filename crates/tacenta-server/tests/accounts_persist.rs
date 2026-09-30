@@ -131,3 +131,63 @@ async fn accounts_and_sessions_survive_a_restart() {
 
     std::fs::remove_dir_all(&data_dir).ok();
 }
+
+/// A copy of the accounts snapshot that ends where a section ends is a
+/// truncated copy, not a smaller store: the server refuses to start from it
+/// instead of starting with the missing sections empty. (A snapshot with no
+/// device inventories ends in three empty counts, so cutting 4, 8 or 12 bytes
+/// leaves it ending after the link records, the inventories or the sessions.)
+#[tokio::test]
+async fn a_snapshot_cut_at_a_section_boundary_stops_the_server_starting() {
+    let data_dir = scratch_dir();
+    let config = Config {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        directory_port: 0,
+        relay_port: 0,
+        accounts_port: 0,
+        provisioning_port: 0,
+        database_url: None,
+        data_dir: Some(data_dir.clone()),
+        tls: None,
+        snapshot_interval: None,
+        relay_max_total_bytes: None,
+        registration_max_per_hour: None,
+        registration_policy: None,
+        max_connections: None,
+    };
+
+    // A first run with one tenant, then shut down to write the snapshot.
+    {
+        let server = Server::bind(&config).await.unwrap();
+        let accounts = server.accounts_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(server.serve_until(async move {
+            let _ = stopped.await;
+        }));
+        let mut acc = AccountConnection::connect(accounts).await.unwrap();
+        acc.sign_up_tenant("acme", "admin@acme.example", "correct horse")
+            .await
+            .unwrap();
+        drop(acc);
+        stop.send(()).unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    let path = data_dir.join("accounts.snapshot");
+    let whole = std::fs::read(&path).unwrap();
+    // The whole file starts a server.
+    assert!(
+        Server::bind(&config).await.is_ok(),
+        "the whole snapshot starts a server"
+    );
+
+    for cut in [4usize, 8, 12] {
+        std::fs::write(&path, &whole[..whole.len() - cut]).unwrap();
+        let error = Server::bind(&config)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("a snapshot cut by {cut} bytes started a server"));
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "cut {cut}");
+    }
+    std::fs::remove_dir_all(&data_dir).ok();
+}

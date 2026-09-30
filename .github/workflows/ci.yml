@@ -30,6 +30,10 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # The Postgres store is behind a feature none of the commands here turn
+      # on (decision 0039). This keeps it compiling and lint-clean; its
+      # database tests are not run here.
+      - run: cargo clippy --locked -p tacenta-accounts -p tacenta-server --features tacenta-server/postgres --all-targets -- -D warnings
       - run: cargo test --locked --workspace
       # The bounded group-chat demonstration, step by step: each step must run
       # exactly the tests tooling/group-chat-demo-tests.txt lists for it, by

@@ -2607,6 +2607,7 @@ dependencies = [
  "rand 0.9.5",
  "sha2 0.11.0",
  "sqlx",
+ "tacenta-core 1.11.5",
  "tokio",
  "zeroize",
 ]
@@ -2614,7 +2615,7 @@ dependencies = [
 [[package]]
 name = "tacenta-boundary"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "aes",
  "cbc",
@@ -2633,7 +2634,7 @@ dependencies = [
 [[package]]
 name = "tacenta-braid"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "rand_core 0.6.4",
  "tacenta-erasure",
@@ -2685,7 +2686,7 @@ dependencies = [
 [[package]]
 name = "tacenta-core"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "aes",
  "cbc",
@@ -2783,7 +2784,7 @@ dependencies = [
 [[package]]
 name = "tacenta-erasure"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 
 [[package]]
 name = "tacenta-ffi"
@@ -2833,7 +2834,7 @@ dependencies = [
 [[package]]
 name = "tacenta-kdf"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "hkdf",
  "hmac",
@@ -2843,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "tacenta-kem"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "libcrux-ml-kem",
  "rand_core 0.6.4",
@@ -2853,7 +2854,7 @@ dependencies = [
 [[package]]
 name = "tacenta-lifecycle"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "rand_core 0.6.4",
  "tacenta-boundary",
@@ -2871,7 +2872,7 @@ dependencies = [
 [[package]]
 name = "tacenta-ratchet"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "tacenta-kdf",
  "zeroize",
@@ -2891,6 +2892,7 @@ version = "1.11.5"
 dependencies = [
  "futures-util",
  "rand 0.9.5",
+ "rand_core 0.6.4",
  "rcgen",
  "tacenta-accounts",
  "tacenta-core 1.11.5",
@@ -2900,12 +2902,13 @@ dependencies = [
  "tacenta-transport",
  "tacenta-wire 1.11.5",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
 name = "tacenta-session"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "tacenta-kdf",
  "zeroize",
@@ -2914,7 +2917,7 @@ dependencies = [
 [[package]]
 name = "tacenta-spqr"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "tacenta-kdf",
  "zeroize",
@@ -2949,7 +2952,7 @@ dependencies = [
 [[package]]
 name = "tacenta-triple"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 dependencies = [
  "tacenta-kdf",
  "tacenta-ratchet",
@@ -2985,7 +2988,7 @@ dependencies = [
 [[package]]
 name = "tacenta-wire"
 version = "0.0.0"
-source = "git+https://github.com/Natuvea/tacenta-core?rev=e06f8f41cd26e33bf34436a99d4b8f2669150371#e06f8f41cd26e33bf34436a99d4b8f2669150371"
+source = "git+https://github.com/Natuvea/tacenta-core?rev=dea57eaff4e516b6f56df08f7ced44d0ee87d024#dea57eaff4e516b6f56df08f7ced44d0ee87d024"
 
 [[package]]
 name = "tacenta-wire"
