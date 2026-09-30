@@ -672,19 +672,32 @@ not in our proofs' dependency cone.
     in `contracts/vectors/group-wire-v1.json`. A Rust test builds the vectors
     from the page and replays them against the codecs, and a second reader
     written from the page alone (`tooling/group_wire_reference.py`) replays them
-    too. **Tested, not proven**: a run of 131 single-change mutants of the Rust
-    codecs (`tooling/group-mutation/wire_mutants.py`) was killed by the vector
-    replay in 127 cases, 41 of which no other test in the crate kills; of the
-    other four, three survive and are equivalent (one bound no valid value
-    reaches, and two repeated checks of the member order) and one changes only
-    the order of members with equal identities, which the wire refuses anyway.
-    The mutants were written by the author of the vectors, and 29 of them after
-    the corpus was extended to cover what the second reader's own fault run
-    missed, so they show what the corpus pins, not that nothing else is wrong.
-    The page lists eight open points where the code has no stated reason or
-    disagrees with a decision record, and says what the vectors do not pin (the
-    `lp16` length limit of a bootstrap target and the encoders' unreachable
-    bounds). The layouts of the receiver, view, book, control-outbox and
+    too; the reader's bootstrap and intent encoders were revised by the
+    implementer from the revised page after the encoder change, and no fresh
+    reader has read sections 7 and 11 since. **Tested, not proven**: a run of 155 single-change mutants of the Rust
+    codecs (`tooling/group-mutation/wire_mutants.py`) was killed in 152 cases, 136
+    of them by the vector replay (35 by nothing else in the crate). Of the three
+    that survive, two repeat a check of the member order and one is a bound no
+    valid value reaches; all three are equivalent. Twenty-four of the 155 change
+    the checks that the encoders of the bootstrap, the intent, the invitation
+    book and the receiver state make (an encoder writes only what its decoder
+    accepts, decision 0149, open point 4): ten are killed by the vector replay and
+    fourteen by `tests/encoder_refusals.rs` or a unit test, since a vector cannot
+    state a private field or the order of two intent faults. One more mutant, which
+    changes only the order of members with equal identities, is killed by an
+    existing test and is equivalent on the wire. The mutants were written by the
+    author of the vectors, 29 of them after the corpus was extended to cover what
+    the second reader's own fault run missed and 24 after the encoder change, so
+    they show what the corpus pins, not that nothing else is wrong. The record
+    and state encoders of `tacenta-client` were not audited for the same defect.
+    The page records eight open points where the code had no stated reason or
+    disagreed with a decision record: four were decided on 2026-09-30 (the
+    two-field authority and sender, the framing and field order of the invitation
+    formats, and the encoder fix) and four remain open (the input bounds of four
+    decoders, a sender among its recipients, the unit of `expires_at`,
+    versioning). It says what the vectors do not pin (the order of two faults of
+    an intent encoder and the encoders' unreachable bounds). The layouts of the
+    receiver, view, book, control-outbox and
     held-controls state, the `TCG*` transcript records and the snapshot framing
     have no specification page or byte vector. `group-v1.json` is a
     policy trace, not a byte vector. The Lean model differs from the code in at
