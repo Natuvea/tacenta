@@ -132,6 +132,28 @@ Which of them a later release carries is not recorded here.
   changed, so run `chmod 700` on the server's data directory. The temporary
   file of an atomic write now has a fresh name each time; one left by an
   interrupted write is safe to delete.
+- The byte layouts of the peer-exchanged group formats (the group payload and its
+  five tags, the roster preimage, the application context, the invitation
+  bootstrap, acceptance and revocation, and the logical-send intent) are
+  specified in `spec/group-wire-formats.md`, with byte vectors in
+  `contracts/vectors/group-wire-v1.json` (decision 0149). The page lists eight
+  open points where the code had no stated reason or disagreed with a decision
+  record; four were decided on 2026-09-30 and four remain open. No byte of a
+  value that a decoder accepts changed. The experimental encoders now refuse what
+  their decoders refuse, with the reason the decoder gives, so a value the crate
+  writes is a value it reads back: `InvitationBootstrap::encode` refuses a target
+  identity above 256 bytes or device above 64 and names a reserved source revision
+  or a wrong policy version as such (it wrote the first and reported the second as
+  `Conflict`); `LogicalSend::encode_intent` checks a member's size, the number of
+  recipients and its own payload and revision; `InvitationBook::encode_state` and
+  `GroupReceiver::encode_state` check a record's fields and the local member.
+  Decisions 0092 and 0105 are amended: the roster's authority and the intent's
+  sender are one member entry (two length-prefixed fields), as the code always
+  wrote them. The page states the order in which each encoder refuses a value with
+  several faults. It is the order of the encoder's validation steps, which for the
+  roster, the application context and the source roster of a bootstrap differs
+  from the order in which their decoders meet the same faults, and the vectors pin
+  both.
 
 ## v1.12.1 (2026-09-11)
 

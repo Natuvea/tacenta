@@ -323,6 +323,10 @@ step limits "limits" \
 echo "group profile: model vectors, decision fixes and negative controls"
 step model-vectors "the Lean model's group-v1 traces replayed against the Rust types" \
   cargo test --locked -p tacenta-group --test model_vectors
+step wire-vectors "the group wire formats: byte vectors written from the specification page, replayed against the production codecs" \
+  cargo test --locked -p tacenta-group --test group_wire_vectors
+step encoder-refusals "the encoders refuse what their decoders refuse, with the decoder's reason and order" \
+  cargo test --locked -p tacenta-group --test encoder_refusals
 step group-fixes "roster order, invitation admission, stale sends, sequences, terminal receiver state" \
   cargo test --locked -p tacenta-group --test group_fixes
 step cold-read-killers "cold-read killers" \

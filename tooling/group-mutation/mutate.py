@@ -2,6 +2,10 @@
 """Single-change mutation run over the tacenta-group guards.
 
 usage: tooling/group-mutation/mutate.py [--workers N] [--only ID,ID,...] [--out DIR]
+                                        [--mutants FILE] [--test COMMAND]
+
+`--mutants` names another mutant list in this directory (default mutants.py);
+wire_mutants.py holds the mutants of the group wire codecs (decision 0149).
 
 Each mutant in mutants.py replaces one piece of source text in a private
 worktree of HEAD, the group crate's tests run, and the tree is restored. A
@@ -33,9 +37,9 @@ TEST = "cargo test --locked -p tacenta-group 2>&1"
 FAIL = re.compile(r"^test (\S+) \.\.\. FAILED", re.M)
 
 
-def load_mutants():
+def load_mutants(name="mutants.py"):
     here = os.path.dirname(os.path.abspath(__file__))
-    spec = importlib.util.spec_from_file_location("mutants", os.path.join(here, "mutants.py"))
+    spec = importlib.util.spec_from_file_location("mutants", os.path.join(here, name))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     ids = [m["id"] for m in module.MUTATIONS]
@@ -54,7 +58,7 @@ def sh(cmd, cwd, env=None, timeout=900):
         return 124, "", time.time() - started
 
 
-def run_one(worker, target, mutant, out):
+def run_one(worker, target, mutant, out, test=TEST):
     env = dict(os.environ, CARGO_TARGET_DIR=target)
     path = os.path.join(worker, mutant["file"])
     subprocess.run("git checkout -- .", cwd=worker, shell=True, check=True, capture_output=True)
@@ -73,7 +77,7 @@ def run_one(worker, target, mutant, out):
             record.update(result="PATCH-FAILED", detail="partner text does not occur exactly once")
             return record
         open(partner_path, "w").write(partner_text.replace(partner_old, partner_new))
-    rc, log, secs = sh(TEST, worker, env)
+    rc, log, secs = sh(test, worker, env)
     open(os.path.join(out, mutant["id"] + ".log"), "w").write(log)
     subprocess.run("git checkout -- .", cwd=worker, shell=True, check=True, capture_output=True)
     failed = FAIL.findall(log)
@@ -99,9 +103,19 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--only", default="")
     parser.add_argument("--out", default="")
+    parser.add_argument("--mutants", default="mutants.py")
+    parser.add_argument(
+        "--test",
+        default=TEST,
+        help="the shell command that runs the tests (default: %(default)s). "
+        "`cargo test` stops at the first failing test binary, so a mutant that a "
+        "unit test kills never reaches the integration tests; pass "
+        "`cargo test --locked -p tacenta-group --no-fail-fast 2>&1` to see every "
+        "test that fails",
+    )
     args = parser.parse_args()
 
-    mutants = load_mutants()
+    mutants = load_mutants(args.mutants)
     if args.only:
         wanted = set(args.only.split(","))
         mutants = [m for m in mutants if m["id"] in wanted]
@@ -115,7 +129,7 @@ def main():
         workers.append((tree, os.path.join(scratch, f"target{index}")))
 
     try:
-        rc, log, _ = sh(TEST, workers[0][0], dict(os.environ, CARGO_TARGET_DIR=workers[0][1]))
+        rc, log, _ = sh(args.test, workers[0][0], dict(os.environ, CARGO_TARGET_DIR=workers[0][1]))
         open(os.path.join(out, "baseline.log"), "w").write(log)
         if rc != 0:
             print(
@@ -128,7 +142,7 @@ def main():
             def task(item):
                 position, mutant = item
                 worker, target = workers[position % len(workers)]
-                return run_one(worker, target, mutant, out)
+                return run_one(worker, target, mutant, out, args.test)
 
             # Partition by index so that each worker tree is used by one thread.
             groups = [[] for _ in workers]
