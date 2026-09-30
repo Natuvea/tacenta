@@ -52,10 +52,14 @@ FLOORS = {
         "kinds": {"dm": 1, "group": 1, "receipt": 1},
     },
     "group-v1.json": {
-        "list": "traces", "min": 5,
+        "list": "traces", "min": 10,
         "fields": ("name", "authority", "steps"),
         "each_filled": ("steps",),
-        "items": {"steps": 63},
+        "items": {"steps": 104},
+    },
+    "group-wire-v1.json": {
+        "list": "vectors", "min": 377,
+        "fields": ("name", "format", "result"),
     },
     "session-v1.json": {
         "list": "traces", "min": 4,

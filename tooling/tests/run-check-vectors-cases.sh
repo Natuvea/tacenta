@@ -109,7 +109,7 @@ refuse cut-to-one 'user-v1.json: 1 case(s) in `traces`, the floor is 4'
 
 make_case one-below-the-floor
 edit one-below-the-floor group-v1.json 'data["traces"] = data["traces"][:-1]'
-refuse one-below-the-floor 'group-v1.json: 4 case(s) in `traces`, the floor is 5'
+refuse one-below-the-floor 'group-v1.json: 9 case(s) in `traces`, the floor is 10'
 
 make_case case-not-an-object
 edit case-not-an-object stream-v1.json 'data["streams"][2] = "aa"'
@@ -146,7 +146,19 @@ make_case hollowed-out
 edit hollowed-out group-v1.json '
 for t in data["traces"]:
     t["steps"] = t["steps"][:1]'
-refuse hollowed-out 'group-v1.json: 5 `steps` item(s) in all, the floor is 63'
+refuse hollowed-out 'group-v1.json: 10 `steps` item(s) in all, the floor is 104'
+
+make_case wire-vectors-emptied
+edit wire-vectors-emptied group-wire-v1.json 'data["vectors"] = []'
+refuse wire-vectors-emptied 'group-wire-v1.json: 0 case(s) in `vectors`, the floor is 377'
+
+make_case wire-vector-one-below-the-floor
+edit wire-vector-one-below-the-floor group-wire-v1.json 'data["vectors"] = data["vectors"][:-1]'
+refuse wire-vector-one-below-the-floor 'group-wire-v1.json: 376 case(s) in `vectors`, the floor is 377'
+
+make_case wire-vector-lacks-a-result
+edit wire-vector-lacks-a-result group-wire-v1.json 'del data["vectors"][5]["result"]'
+refuse wire-vector-lacks-a-result 'group-wire-v1.json: vectors[5] lacks result'
 
 make_case unlisted-file
 cp "$root/contracts/vectors/user-v1.json" "$work/unlisted-file/contracts/vectors/new-v1.json"
