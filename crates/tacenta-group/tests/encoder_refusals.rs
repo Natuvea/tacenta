@@ -184,6 +184,21 @@ fn a_bootstrap_that_does_not_fit_its_roster_or_is_not_pending_is_a_conflict() {
     assert_eq!(revoked.encode(), Err(Error::IdentityTooLarge));
 }
 
+/// `InvitationBootstrap::new` does not judge an invitation's own fields, so the
+/// comparison with the roster is the only thing that refuses a policy version the
+/// roster does not carry. The encoder reaches that policy through the invitation's
+/// own check first and never through this comparison (it names the fault
+/// `unsupported_policy`), so the constructor is pinned here.
+#[test]
+fn the_bootstrap_constructor_refuses_a_policy_version_the_roster_does_not_carry() {
+    let mut invitation = bootstrap(bob()).invitation;
+    invitation.policy_version = 2;
+    assert_eq!(
+        InvitationBootstrap::new(invitation, genesis()).err(),
+        Some(Error::Conflict)
+    );
+}
+
 #[test]
 fn a_group_payload_refuses_a_bootstrap_its_encoder_refuses() {
     let wide = bootstrap(member(&[3; MAX_IDENTITY_LEN + 1], b"d"));
