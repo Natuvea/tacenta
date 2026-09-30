@@ -72,20 +72,181 @@ use std::path::{Path, PathBuf};
 /// sync through Rust's standard library, so this helper preserves atomic
 /// replacement there but cannot make that durability claim.
 ///
+/// **The temp file is owner-only and is never reused.** The bytes written here
+/// are state and key material, so on Unix the temp file is created with mode
+/// `0600` in the `open` call itself, whatever the process umask, and the rename
+/// carries that mode to `path`: a file this function writes is `0600` even if
+/// it replaced one that was not. The temp file gets a fresh random name and is
+/// created with `create_new`, which fails rather than truncate a file that is
+/// already there or follow a symbolic link found at that name; on such a
+/// collision the next name is tried, and after a few collisions the call fails
+/// with `AlreadyExists`. A file or link left at a name this function does not
+/// pick is never opened. A crash between creating the temp file and the rename
+/// leaves that file behind (owner-only, and safe to delete); the next write
+/// does not reuse it. On other platforms the file's access control is whatever
+/// the containing directory gives a new file, as before.
+///
 /// The tests below are split the same way: the fault-injection test covers
 /// the first guarantee, and a separate test covers the mechanism of the
 /// second.
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp_path = PathBuf::from(tmp);
-    {
-        let mut f = fs::File::create(&tmp_path)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
+    write_via_temp(path, bytes, temp_path_beside)
+}
+
+/// How many times to try again when a temp name is taken (or a lock file
+/// vanishes) before reporting it. A random 64-bit name is taken only if
+/// something put a file at exactly that name.
+const ATTEMPTS: u32 = 8;
+
+/// The write sequence of [`write_atomically`], with the choice of temp name
+/// passed in so that a test can make the first names collide.
+fn write_via_temp(
+    path: &Path,
+    bytes: &[u8],
+    mut name_temp: impl FnMut(&Path) -> PathBuf,
+) -> io::Result<()> {
+    let (tmp_path, mut f) = create_temp(path, &mut name_temp)?;
+    let staged = f.write_all(bytes).and_then(|()| f.sync_all());
+    // Closed before the rename: Windows will not rename an open file.
+    drop(f);
+    if let Err(e) = staged.and_then(|()| fs::rename(&tmp_path, path)) {
+        // The temp file is ours (created just now, exclusively), so removing
+        // it cannot touch anything else. Best effort: the error to report is
+        // the write's, not the cleanup's.
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
     }
-    fs::rename(&tmp_path, path)?;
     fsync_parent_dir(path)?;
+    Ok(())
+}
+
+/// Create a fresh temp file for `path`, trying a new name after each collision.
+fn create_temp(
+    path: &Path,
+    name_temp: &mut impl FnMut(&Path) -> PathBuf,
+) -> io::Result<(PathBuf, fs::File)> {
+    let mut attempt = 1;
+    loop {
+        let tmp_path = name_temp(path);
+        match create_new_private(&tmp_path) {
+            Ok(f) => return Ok((tmp_path, f)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < ATTEMPTS => {
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// A new name beside `path`: `<path>.<16 hex digits>.tmp`.
+fn temp_path_beside(path: &Path) -> PathBuf {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{:016x}.tmp", rand::random::<u64>()));
+    PathBuf::from(tmp)
+}
+
+/// Create `path` as a new, empty, write-only handle that only its owner can
+/// open (mode `0600` on Unix), failing with `AlreadyExists` if anything -- a
+/// file, a directory, or a symbolic link, dangling or not -- is already there.
+///
+/// The mode is passed to the `open` call, so there is no moment at which the
+/// file exists with the umask's mode. On other platforms this is the platform's
+/// default access for a new file.
+fn create_new_private(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Create `dir`, and any parents that are missing, so that only their owner can
+/// open them (mode `0700` on Unix, whatever the umask).
+///
+/// **A directory that already exists is left as it is**: its mode is its
+/// owner's choice and this does not change it, so a directory made by an
+/// earlier version keeps whatever mode it has. On other platforms this is
+/// `create_dir_all`, and access is whatever the parent gives a new directory.
+pub fn create_dir_all_private(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// Open the advisory-lock file at `path` for writing, creating it owner-only
+/// (mode `0600` on Unix, whatever the umask) if it is not there.
+///
+/// A lock file is opened again by every caller that takes the lock, so unlike a
+/// temp file it has to accept a file that is already there. It accepts only a
+/// regular file: a symbolic link, dangling or not, is refused, and so is
+/// anything that is swapped in while the file is being opened. Nothing is
+/// created through a link, and nothing is written to what a link points at.
+/// A lock file left by an earlier version with a wider mode is made owner-only
+/// here, and it is an error if that cannot be done. On other platforms the
+/// access to a new file is the platform's default.
+pub fn open_lock_file(path: &Path) -> io::Result<fs::File> {
+    // The file may be removed between "it exists" and opening it; a few rounds
+    // ride that out without ever creating through a link.
+    for _ in 0..ATTEMPTS {
+        match create_new_private(path) {
+            Ok(file) => return Ok(file),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        // Without `create`, so a link to a file that is not there is an error
+        // and not a new file at the link's target.
+        let file = match fs::OpenOptions::new().write(true).open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        require_regular_file_at(&file, path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        return Ok(file);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "the lock file kept appearing and disappearing",
+    ))
+}
+
+/// Fail unless `path` is, right now, the regular file `file` is open on: not a
+/// link (which `open` follows), and not something swapped in after the check.
+fn require_regular_file_at(file: &fs::File, path: &Path) -> io::Result<()> {
+    let refuse = || {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not the regular file it was opened as",
+        ))
+    };
+    let on_disk = fs::symlink_metadata(path)?;
+    if !on_disk.file_type().is_file() {
+        return refuse();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let open = file.metadata()?;
+        if (open.dev(), open.ino()) != (on_disk.dev(), on_disk.ino()) {
+            return refuse();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = file;
     Ok(())
 }
 
@@ -129,19 +290,28 @@ fn fsync_parent_dir(path: &Path) -> io::Result<()> {
     }
 }
 
+/// The name older versions used for the temp file. Nothing may treat a file or
+/// link found there as its own.
+#[cfg(test)]
+fn old_temp_name(path: &Path) -> PathBuf {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tempdir() -> PathBuf {
         let mut p = std::env::temp_dir();
+        // Random rather than a timestamp: the clock ticks in microseconds on
+        // some systems, and two tests that start in the same tick would share
+        // a directory and remove each other's files.
         p.push(format!(
-            "tacenta-persist-{}-{:?}",
+            "tacenta-persist-{}-{:016x}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            rand::random::<u64>()
         ));
         fs::create_dir_all(&p).unwrap();
         p
@@ -191,6 +361,448 @@ mod tests {
             fsync_parent_dir(&gone).is_err(),
             "a missing parent must be reported, not ignored"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A file already sitting at the old temp name is not reused: the write
+    /// neither truncates it nor renames it onto the target.
+    #[test]
+    fn a_file_at_the_old_temp_name_is_left_alone() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        let existing = old_temp_name(&path);
+        fs::write(&existing, b"existing").unwrap();
+
+        write_atomically(&path, b"written").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"written");
+        assert_eq!(
+            fs::read(&existing).unwrap(),
+            b"existing",
+            "the file at the old temp name was reused"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two calls do not pick the same temp name, and the name stays beside the
+    /// target so the rename cannot cross a filesystem.
+    #[test]
+    fn temp_names_are_unique_and_beside_the_target() {
+        let path = Path::new("/some/dir/f.bin");
+        let (a, b) = (temp_path_beside(path), temp_path_beside(path));
+        assert_ne!(a, b);
+        for name in [a, b] {
+            assert_eq!(name.parent(), path.parent());
+            let name = name.file_name().unwrap().to_str().unwrap().to_owned();
+            assert!(
+                name.starts_with("f.bin.") && name.ends_with(".tmp"),
+                "{name}"
+            );
+        }
+    }
+
+    /// Creation refuses a file that is already there and leaves it as it was.
+    #[test]
+    fn creating_a_temp_file_refuses_an_existing_file() {
+        let dir = tempdir();
+        let existing = dir.join("existing");
+        fs::write(&existing, b"existing").unwrap();
+
+        let err = create_new_private(&existing).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&existing).unwrap(), b"existing");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The temp name collides with an existing file: that name is skipped, the
+    /// existing file is untouched, and the write completes under the next name.
+    #[test]
+    fn a_collision_moves_on_to_the_next_name() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        let existing = dir.join("existing");
+        fs::write(&existing, b"existing").unwrap();
+
+        let mut names = vec![existing.clone(), dir.join("second")].into_iter();
+        write_via_temp(&path, b"written", |_| names.next().unwrap()).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"written");
+        assert_eq!(fs::read(&existing).unwrap(), b"existing");
+        assert_eq!(
+            entries(&dir),
+            ["existing", "f.bin"],
+            "no temp file left over"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Names that keep colliding end in an error after a bounded number of
+    /// tries, with the existing file and the target both as they were.
+    #[test]
+    fn repeated_collisions_fail_and_change_nothing() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        let existing = dir.join("existing");
+        fs::write(&path, b"committed").unwrap();
+        fs::write(&existing, b"existing").unwrap();
+
+        let mut tries = 0;
+        let err = write_via_temp(&path, b"written", |_| {
+            tries += 1;
+            // A loop that never gives up is a failure, not a hung test run.
+            assert!(tries <= 4 * ATTEMPTS, "kept trying a name that is taken");
+            existing.clone()
+        })
+        .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(tries, ATTEMPTS);
+        assert_eq!(fs::read(&path).unwrap(), b"committed");
+        assert_eq!(fs::read(&existing).unwrap(), b"existing");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A write that cannot complete does not leave its temp file behind. The
+    /// rename is made to fail by putting a non-empty directory at the target.
+    #[test]
+    fn a_failed_write_removes_its_temp_file() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("inside"), b"x").unwrap();
+
+        assert!(write_atomically(&path, b"written").is_err());
+
+        assert_eq!(entries(&dir), ["f.bin"], "a temp file was left behind");
+        fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Running a test body in a child process under a relaxed umask, for the tests
+/// of what the files and directories in this module look like to another user
+/// of the machine.
+///
+/// **Why a child process.** The mode a new file gets is the requested mode with
+/// the process umask's bits cleared, and the umask is process-wide: changing it
+/// in a test would race every other test in the binary that creates a file, and
+/// a test run under `umask 077` would pass with or without the fix. So the
+/// parent test starts this same test binary under `sh -c 'umask 000; ...'`,
+/// where a plain `File::create` yields `0666` and a plain `create_dir` `0777`,
+/// runs one `#[ignore]`d test in it, and reads back what that test made.
+#[cfg(all(test, unix))]
+pub(crate) mod umask_child {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const CHILD_DIR: &str = "TACENTA_TEST_CHILD_DIR";
+
+    /// The directory the parent gave the child. Called by the `#[ignore]`d test.
+    pub(crate) fn dir() -> PathBuf {
+        PathBuf::from(std::env::var_os(CHILD_DIR).expect("run by its parent test"))
+    }
+
+    /// Run the ignored test `name` of the module `module` (`module_path!()` at
+    /// the caller) under `umask 000`, with [`dir`] set to `dir`. Panics with the
+    /// child's output if it fails.
+    pub(crate) fn run(module: &str, name: &str, dir: &Path) {
+        let test = format!("{}::{name}", module.split_once("::").unwrap().1);
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(r#"umask 000; exec "$0" --exact "$1" --ignored"#)
+            .arg(std::env::current_exe().unwrap())
+            .arg(&test)
+            .env(CHILD_DIR, dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "child {test} failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod owner_only {
+    use super::umask_child;
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    fn tempdir() -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "tacenta-persist-mode-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Runs only under [`files_are_owner_only_whatever_the_umask`], which
+    /// starts it under `umask 000`.
+    #[test]
+    #[ignore = "started by files_are_owner_only_whatever_the_umask under umask 000"]
+    fn writer_child() {
+        let dir = umask_child::dir();
+        // What a plain create yields under this umask, so the parent can check
+        // the relaxed umask took effect and its `0600` is not vacuous.
+        fs::File::create(dir.join("probe")).unwrap();
+        write_atomically(&dir.join("fresh.bin"), b"fresh").unwrap();
+        // A file that already exists with a wide mode, then replaced.
+        fs::write(dir.join("replaced.bin"), b"old").unwrap();
+        write_atomically(&dir.join("replaced.bin"), b"new").unwrap();
+    }
+
+    #[test]
+    fn files_are_owner_only_whatever_the_umask() {
+        let dir = tempdir();
+        umask_child::run(module_path!(), "writer_child", &dir);
+
+        assert_eq!(mode(&dir.join("probe")), 0o666, "the umask was not relaxed");
+        assert_eq!(mode(&dir.join("fresh.bin")), 0o600);
+        assert_eq!(mode(&dir.join("replaced.bin")), 0o600);
+        assert_eq!(fs::read(dir.join("fresh.bin")).unwrap(), b"fresh");
+        assert_eq!(fs::read(dir.join("replaced.bin")).unwrap(), b"new");
+        let mut left: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["fresh.bin", "probe", "replaced.bin"]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Runs only under
+    /// [`directories_and_lock_files_are_owner_only_whatever_the_umask`].
+    #[test]
+    #[ignore = "started by directories_and_lock_files_are_owner_only_whatever_the_umask"]
+    fn directories_and_lock_child() {
+        let dir = umask_child::dir();
+        fs::File::create(dir.join("probe")).unwrap();
+        create_dir_all_private(&dir.join("made").join("nested")).unwrap();
+        drop(open_lock_file(&dir.join("fresh.lock")).unwrap());
+        // A lock file an earlier version created with a wide mode.
+        fs::write(dir.join("old.lock"), b"").unwrap();
+        drop(open_lock_file(&dir.join("old.lock")).unwrap());
+    }
+
+    #[test]
+    fn directories_and_lock_files_are_owner_only_whatever_the_umask() {
+        let dir = tempdir();
+        umask_child::run(module_path!(), "directories_and_lock_child", &dir);
+
+        assert_eq!(mode(&dir.join("probe")), 0o666, "the umask was not relaxed");
+        // Every directory the call had to create, not only the last.
+        assert_eq!(mode(&dir.join("made")), 0o700);
+        assert_eq!(mode(&dir.join("made").join("nested")), 0o700);
+        assert_eq!(mode(&dir.join("fresh.lock")), 0o600);
+        assert_eq!(mode(&dir.join("old.lock")), 0o600);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A directory that exists keeps its mode, and one made inside it is
+    /// still owner-only.
+    #[test]
+    fn an_existing_directory_keeps_its_mode() {
+        let dir = tempdir();
+        set_mode(&dir, 0o755);
+
+        create_dir_all_private(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o755, "an existing directory was changed");
+        create_dir_all_private(&dir.join("inside")).unwrap();
+        assert_eq!(mode(&dir), 0o755);
+        assert_eq!(mode(&dir.join("inside")), 0o700);
+
+        // Something that is not a directory is still an error.
+        fs::write(dir.join("file"), b"x").unwrap();
+        assert!(create_dir_all_private(&dir.join("file")).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A link at the old temp name is not followed: the file it points at is
+    /// not written to, and the link itself is not renamed onto the target.
+    #[test]
+    fn a_symlink_at_the_old_temp_name_is_not_followed() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        let victim = dir.join("victim");
+        fs::write(&victim, b"victim").unwrap();
+        let link = old_temp_name(&path);
+        symlink(&victim, &link).unwrap();
+
+        write_atomically(&path, b"written").unwrap();
+
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert_eq!(fs::read(&path).unwrap(), b"written");
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was renamed onto the target"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A dangling link at the old temp name does not make the write create the
+    /// file the link points at.
+    #[test]
+    fn a_dangling_symlink_at_the_old_temp_name_creates_nothing() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        let elsewhere = dir.join("elsewhere");
+        symlink(&elsewhere, old_temp_name(&path)).unwrap();
+
+        write_atomically(&path, b"written").unwrap();
+
+        assert!(!elsewhere.exists(), "the write went through the link");
+        assert_eq!(fs::read(&path).unwrap(), b"written");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A link at the very name the write chose is skipped, not followed: the
+    /// write moves on to the next name, and what the link points at is as it was
+    /// (a file that exists, and one that does not).
+    #[test]
+    fn a_symlink_at_the_chosen_staging_name_is_skipped() {
+        let dir = tempdir();
+        let path = dir.join("f.bin");
+        let victim = dir.join("victim");
+        fs::write(&victim, b"victim").unwrap();
+        let live = dir.join("live.tmp");
+        let dangling = dir.join("dangling.tmp");
+        symlink(&victim, &live).unwrap();
+        symlink(dir.join("nowhere"), &dangling).unwrap();
+
+        let mut names = vec![live.clone(), dangling.clone(), dir.join("third.tmp")].into_iter();
+        write_via_temp(&path, b"written", |_| names.next().unwrap()).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"written");
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert!(
+            !dir.join("nowhere").exists(),
+            "the write went through a link"
+        );
+        assert!(
+            fs::symlink_metadata(&live)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Creation refuses a link, dangling or not, and leaves what it points at
+    /// as it was.
+    #[test]
+    fn creating_a_temp_file_refuses_a_symlink() {
+        let dir = tempdir();
+        let victim = dir.join("victim");
+        fs::write(&victim, b"victim").unwrap();
+        let live = dir.join("live");
+        let dangling = dir.join("dangling");
+        symlink(&victim, &live).unwrap();
+        symlink(dir.join("nowhere"), &dangling).unwrap();
+
+        for link in [&live, &dangling] {
+            let err = create_new_private(link).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::AlreadyExists,
+                "{}",
+                link.display()
+            );
+        }
+
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert!(!dir.join("nowhere").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A lock file is opened again and again: the second open is the same file,
+    /// not a new one, and it is left as it was.
+    #[test]
+    fn a_lock_file_is_reused() {
+        let dir = tempdir();
+        let path = dir.join("f.lock");
+
+        let first = open_lock_file(&path).unwrap();
+        let inode = first.metadata().unwrap().ino();
+        drop(first);
+        fs::write(&path, b"contents").unwrap();
+        let second = open_lock_file(&path).unwrap();
+
+        assert_eq!(second.metadata().unwrap().ino(), inode);
+        assert_eq!(fs::read(&path).unwrap(), b"contents", "it was emptied");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A link at the lock path is refused, whether it points at a file or at
+    /// nothing: no file is created through it and none is written to.
+    #[test]
+    fn a_symlink_at_the_lock_path_is_refused() {
+        let dir = tempdir();
+        let victim = dir.join("victim");
+        fs::write(&victim, b"victim").unwrap();
+        set_mode(&victim, 0o644);
+        let live = dir.join("live.lock");
+        let dangling = dir.join("dangling.lock");
+        symlink(&victim, &live).unwrap();
+        symlink(dir.join("nowhere"), &dangling).unwrap();
+
+        for link in [&live, &dangling] {
+            assert!(open_lock_file(link).is_err(), "{}", link.display());
+        }
+
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert_eq!(mode(&victim), 0o644, "what the link points at was changed");
+        assert!(
+            !dir.join("nowhere").exists(),
+            "a file was created via the link"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Anything else at the lock path that is not a regular file is refused.
+    #[test]
+    fn a_directory_at_the_lock_path_is_refused() {
+        let dir = tempdir();
+        let path = dir.join("f.lock");
+        fs::create_dir(&path).unwrap();
+
+        assert!(open_lock_file(&path).is_err());
         fs::remove_dir_all(&dir).ok();
     }
 }

@@ -36,6 +36,24 @@ commits carry their story.
   once one was dropped half way through its frame (`BrokenPipe`).
   Client export order is now a function of the state (`export_state` writes the
   peer sessions in address order).
+- `tacenta-transport`: a `Connection` queues at most two response frames that
+  no request has taken. The next one ends the connection: the request that is
+  waiting, and every later one, fails with an `InvalidData` error carrying the
+  new `UnmatchedResponses` type, and the caller reconnects as it does after any
+  other I/O error. A relay that answers each request once never has more than
+  one response on its way to a connection, so traffic that worked before is
+  unaffected. The relay server's request loop reads each frame through a reader
+  that keeps a partly read frame when the loop stops to write a push
+  notification, so a push that arrives in the middle of a client's request
+  frame no longer loses the part already read. Nothing on the wire changes.
+- Files the Rust crates write are now created owner-only: the server's snapshot
+  files (`0600`, in a data directory it creates as `0700`), the durable store's
+  files, the group operation store's file and lock file, the echo bot's
+  identity file and the CLI's config file. Files made by earlier versions keep
+  their mode until they are written again, and an existing directory is not
+  changed, so run `chmod 700` on the server's data directory. The temporary
+  file of an atomic write now has a fresh name each time; one left by an
+  interrupted write is safe to delete.
 - The byte layouts of the peer-exchanged group formats (the group payload and its
   five tags, the roster preimage, the application context, the invitation
   bootstrap, acceptance and revocation, and the logical-send intent) are

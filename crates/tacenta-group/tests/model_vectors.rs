@@ -7,7 +7,8 @@
 //! The book has no roster, so the driver below does what the client's
 //! coordinator does around it: build the successor roster, let the roster view
 //! accept it, and only then admit the invitation, all on candidates that are
-//! kept only if every part accepts.
+//! kept only if every part accepts. A closure is a successor with the same
+//! members and the closed flag set.
 
 use serde_json::Value;
 use tacenta_group::*;
@@ -74,13 +75,17 @@ impl World {
     }
 
     fn successor(&self, members: Vec<Member>) -> Result<Roster, Error> {
+        self.successor_with(members, false)
+    }
+
+    fn successor_with(&self, members: Vec<Member>, closed: bool) -> Result<Roster, Error> {
         Roster::new(
             group(),
             self.revision() + 1,
             *self.view.digest(),
             self.authority.clone(),
             POLICY_VERSION_V1,
-            false,
+            closed,
             sorted(members),
         )
     }
@@ -90,6 +95,12 @@ impl World {
         let actor = member(&step["actor"]);
         match step["op"].as_str().expect("op") {
             "invite" => {
+                // The book does not look at the roster; the coordinator refuses
+                // an invitation in a closed group (decision 0141), as the model
+                // does.
+                if self.view.roster().closed {
+                    return false;
+                }
                 let invitation = Invitation::new(
                     InvitationId::new([number(step, "id") as u8; 16]),
                     group(),
@@ -199,6 +210,16 @@ impl World {
                     .accept_successor(&actor, successor, digest_for(revision))
                     == RosterDisposition::Accepted
             }
+            "close" => {
+                let Ok(successor) = self.successor_with(self.view.roster().members.clone(), true)
+                else {
+                    return false;
+                };
+                let revision = successor.revision;
+                self.view
+                    .accept_successor(&actor, successor, digest_for(revision))
+                    == RosterDisposition::Accepted
+            }
             other => panic!("unknown op in vectors: {other}"),
         }
     }
@@ -261,7 +282,7 @@ fn the_rust_group_types_replay_the_lean_model_traces() {
     assert_eq!(doc["format"], "group-v1");
     assert_eq!(number(&doc, "max_members"), 8);
     let traces = doc["traces"].as_array().expect("traces");
-    assert_eq!(traces.len(), 5, "the committed vector set changed shape");
+    assert_eq!(traces.len(), 10, "the committed vector set changed shape");
 
     let mut steps_replayed = 0;
     let mut refusals_replayed = 0;
@@ -278,8 +299,8 @@ fn the_rust_group_types_replay_the_lean_model_traces() {
         }
     }
     // The vectors must exercise both outcomes, or the comparison proves little.
-    assert_eq!(steps_replayed, 63);
-    assert_eq!(refusals_replayed, 18);
+    assert_eq!(steps_replayed, 104);
+    assert_eq!(refusals_replayed, 31);
 }
 
 #[test]
