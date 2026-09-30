@@ -212,7 +212,11 @@ duplicate), so the traces only repeat an ID with a different target, which both
 sides refuse. Revocation carries no logical time in the model, and the model
 refuses the removal of a non-member where the Rust roster view accepts a
 successor with the same members (decision 0137, items 2 and 3), so neither kind
-of step appears. Other steps, including `remove` and `revoke` of members, do.
+of step appears. Other steps, including `remove`, `revoke` and `close`, do.
+The closed flag is not part of the state JSON, so a closed group shows only
+through what it then refuses. A repeated closure, and `accept` or `revoke` in a
+closed group, are refused by the model and accepted by the invitation book or
+the roster view (decision 0137, items 6 and 9), so they do not appear either.
 -/
 
 namespace GroupVectors
@@ -225,6 +229,7 @@ inductive Step where
   | admit (actor : Member) (id now : Nat)
   | revoke (actor : Member) (id : Nat)
   | remove (actor target : Member)
+  | close (actor : Member)
 
 def Step.run (s : State) : Step → Option State
   | .invite a i n e t => invite? a i n e t s
@@ -232,6 +237,7 @@ def Step.run (s : State) : Step → Option State
   | .admit a i n => admit? a i n (100 + s.revision + 1) s
   | .revoke a i => revoke? a i s
   | .remove a t => remove? a t s
+  | .close a => close? a s
 
 def memberJson (m : Member) : String :=
   "{\"identity\": " ++ toString m.identity ++ ", \"device\": " ++ toString m.device ++ "}"
@@ -263,6 +269,7 @@ def stepHead : Step → String
   | .revoke a i => "\"op\": \"revoke\", \"actor\": " ++ memberJson a ++ ", \"id\": " ++ toString i
   | .remove a t => "\"op\": \"remove\", \"actor\": " ++ memberJson a
       ++ ", \"target\": " ++ memberJson t
+  | .close a => "\"op\": \"close\", \"actor\": " ++ memberJson a
 
 def stepJson (step : Step) (accepted : Bool) (after : State) : String :=
   "      {" ++ stepHead step ++ ", \"accepted\": " ++ (if accepted then "true" else "false")
@@ -350,9 +357,74 @@ def removalTrace : List Step :=
     .accept (person 2) 8 4 2,
     .admit authority 8 5 ]
 
+/-- Only the authority admits, removes and closes: the invitee, a member and a
+stranger are each refused. -/
+def authorityOnlyTrace : List Step :=
+  [ .invite authority 7 0 10 (person 2),
+    .accept (person 2) 7 1 0,
+    .admit (person 2) 7 2,
+    .admit (person 9) 7 2,
+    .admit authority 7 3,
+    .invite authority 8 4 20 (person 3),
+    .accept (person 3) 8 5 1,
+    .admit authority 8 6,
+    .remove (person 2) (person 3),
+    .remove (person 9) (person 3),
+    .remove authority (person 3) ]
+
+/-- Two invitations to two devices of one identity are both accepted while the
+identity is off the roster; the second device is refused at admission, and
+admitted after the first is removed. -/
+def secondDeviceTrace : List Step :=
+  [ .invite authority 7 0 10 (person 2),
+    .invite authority 8 0 10 { identity := 2, device := 2 },
+    .accept (person 2) 7 1 0,
+    .accept { identity := 2, device := 2 } 8 1 0,
+    .admit authority 7 2,
+    .admit authority 8 3,
+    .remove authority (person 2),
+    .admit authority 8 4 ]
+
+/-- A repeat acceptance after admission is accepted and changes nothing, before
+and after the invitation's expiry. -/
+def repeatAcceptanceTrace : List Step :=
+  [ .invite authority 7 0 10 (person 2),
+    .accept (person 2) 7 1 0,
+    .admit authority 7 2,
+    .accept (person 2) 7 3 0,
+    .accept (person 2) 7 12 0,
+    .accept (person 2) 7 3 1 ]
+
+/-- Only the authority closes. A closed group admits nobody, removes nobody and
+invites nobody. -/
+def closureTrace : List Step :=
+  [ .invite authority 7 0 10 (person 2),
+    .accept (person 2) 7 1 0,
+    .admit authority 7 2,
+    .invite authority 8 3 20 (person 3),
+    .accept (person 3) 8 4 1,
+    .close (person 2),
+    .close authority,
+    .admit authority 8 5,
+    .remove authority (person 2),
+    .invite authority 9 6 20 (person 4) ]
+
+/-- The boundary of every expiry test: valid exactly while now is less than
+expiresAt, for the invitation, its acceptance and its admission. -/
+def expiryBoundaryTrace : List Step :=
+  [ .invite authority 7 5 5 (person 2),
+    .invite authority 7 4 5 (person 2),
+    .accept (person 2) 7 5 0,
+    .accept (person 2) 7 4 0,
+    .admit authority 7 5,
+    .admit authority 7 4 ]
+
 def traces : List (String × List Step) :=
   [ ("admission-numbering", numberingTrace), ("refusals", refusalTrace),
-    ("expiry", expiryTrace), ("member-cap", capTrace), ("removal", removalTrace) ]
+    ("expiry", expiryTrace), ("member-cap", capTrace), ("removal", removalTrace),
+    ("authority-only", authorityOnlyTrace), ("second-device-admission", secondDeviceTrace),
+    ("repeat-acceptance", repeatAcceptanceTrace), ("closure", closureTrace),
+    ("expiry-boundary", expiryBoundaryTrace) ]
 
 def traceJson (entry : String × List Step) : String :=
   "    {\"name\": \"" ++ entry.1 ++ "\", \"authority\": " ++ memberJson authority
