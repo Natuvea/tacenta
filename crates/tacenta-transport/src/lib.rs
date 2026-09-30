@@ -741,6 +741,11 @@ impl Connection {
 }
 
 #[cfg(test)]
+mod server_read_tests;
+#[cfg(test)]
+mod unmatched_response_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use tacenta_relay::{Request, StoredMessage, decode_response, encode_request};
@@ -801,6 +806,46 @@ mod tests {
         let mut ok = 3u32.to_be_bytes().to_vec();
         ok.extend_from_slice(b"hey");
         assert_eq!(read_frame(&mut &ok[..]).await.unwrap().unwrap(), b"hey");
+    }
+
+    /// How `read_frame` reports a stream that ends inside a frame, and that it
+    /// reads a frame the stream delivers a byte at a time. A stream that ends
+    /// in the length prefix ends cleanly; one that ends in the body is an
+    /// error; neither depends on how the bytes are split across reads.
+    #[tokio::test]
+    async fn read_frame_reports_where_a_stream_ends_and_reads_split_frames() {
+        let prefix = 5u32.to_be_bytes();
+        for cut in 0..4 {
+            assert_eq!(
+                read_frame(&mut &prefix[..cut]).await.unwrap(),
+                None,
+                "{cut}"
+            );
+        }
+        let mut short = prefix.to_vec();
+        short.extend_from_slice(b"abc");
+        assert_eq!(
+            read_frame(&mut &short[..]).await.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+
+        // An empty frame, then a frame, from one buffer.
+        let mut two = 0u32.to_be_bytes().to_vec();
+        two.extend_from_slice(&3u32.to_be_bytes());
+        two.extend_from_slice(b"xyz");
+        let mut input = &two[..];
+        assert_eq!(read_frame(&mut input).await.unwrap().unwrap(), b"");
+        assert_eq!(read_frame(&mut input).await.unwrap().unwrap(), b"xyz");
+        assert_eq!(read_frame(&mut input).await.unwrap(), None);
+
+        // A pipe that holds one byte, so every read returns at most one.
+        let (mut reader, mut writer) = tokio::io::duplex(1);
+        let body: Vec<u8> = (0..300u32).map(|i| i as u8).collect();
+        let sent = body.clone();
+        tokio::spawn(async move {
+            write_frame(&mut writer, &sent).await.unwrap();
+        });
+        assert_eq!(read_frame(&mut reader).await.unwrap().unwrap(), body);
     }
 
     /// A client authenticates over a real TCP socket, then exchanges
