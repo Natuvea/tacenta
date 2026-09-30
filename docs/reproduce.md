@@ -96,8 +96,9 @@ cargo clippy -p tacenta-accounts -p tacenta-server --features "tacenta-server/po
 ## 4. The bounded group experiment
 
 The experiment is limited to eight members, one device per person and one
-membership authority, and no SDK head reaches it; `docs/claims.md` says what it
-does and does not establish. Run the group crate's limit and negative-control
+membership authority, and no SDK head exposes a group API (a head's plain
+`receive` still returns a peer's group message with no group handling);
+`docs/claims.md` says what it does and does not establish. Run the group crate's limit and negative-control
 suites, the group crate changes the coordinator needs, and the live
 bounded-profile traces. The traces cover cap-plus-one refusals, group and
 direct-message session sharing, prepared-handoff cancellation on removal, a

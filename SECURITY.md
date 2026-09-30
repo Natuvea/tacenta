@@ -43,8 +43,10 @@ Out of scope, because they do not exist rather than because we do not care:
   than one device per person, a production membership authority) and **Sesame /
   multi-device session management**. Not implemented. The tree holds a bounded
   experimental group profile (eight members, one device each, one authority;
-  `docs/claims.md`); no SDK head, the CLI or the server reaches it, and it is
-  not a supported feature. Because it is in the tree, what `docs/claims.md`
+  `docs/claims.md`); no SDK head, the CLI or the server exposes a group API
+  (a head's plain `receive` still returns a peer's group message to the
+  application with no group handling, as `docs/claims.md` says), and it is not a
+  supported feature. Because it is in the tree, what `docs/claims.md`
   says about that profile is in scope like any other claim: a defect against it,
   or a claim it overstates, is a finding.
 - **Message-layer interoperability with other implementations** is out of
@@ -63,8 +65,9 @@ rediscovering it. At the time of writing:
   a member behind (there is no catch-up request); the operation snapshot is
   unsealed, has no rollback detection across coordinators (a running coordinator
   refuses to recover from a store behind what it committed) and assumes one
-  writer per store; a registered peer that is not in the group can take the two
-  deferral slots a just-admitted member's first message needs; accepted
+  writer per store; two registered peers that are not in the group, and that know
+  the group ID and the recipient's route, can take the two deferral slots a
+  just-admitted member's first message needs (one such peer takes one); accepted
   group plaintext stays in that snapshot until the caller acknowledges it; a
   direct message received under `GroupClient` has an at-most-once window; and its
   Lean model, vectors and theorems have had no human review.

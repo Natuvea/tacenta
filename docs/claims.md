@@ -517,10 +517,14 @@ not in our proofs' dependency cone.
   person, one membership authority** (the group's creator, whose leave closes
   the group), application payloads of at most 1,024 bytes, one group per client
   and per store, and pairwise fan-out with no shared sender keys. It is Rust
-  values and policy driven by tests: **no SDK head, the CLI or the server reaches
-  it**. `GroupClient` is public in `tacenta-client` and is outside
-  `sdk/surface.json`; the surface test scans only the `Client` and `Tacenta` impl
-  blocks, so it neither sees it nor excuses it.
+  values and policy driven by tests: **no SDK head, the CLI or the server
+  exposes a group API**. `GroupClient` is public in `tacenta-client`, the Rust
+  head, and is outside `sdk/surface.json`; the surface test scans only the
+  `Client` and `Tacenta` impl blocks, so it neither sees it nor excuses it. The
+  group crate is linked into every head, because `tacenta-client` depends on
+  it, and a group message sent by a peer's `GroupClient` is an ordinary
+  end-to-end message to the relay, the server and every head: the plain
+  `receive` limit below says what a head does with it.
   What has tests: canonical roster and context values; invitation, admission,
   revocation and removal policy; the outbox (stale sends refused, monotonic
   sequences, a final attempt recorded when the relay accepts it); bounded replay
@@ -642,17 +646,25 @@ not in our proofs' dependency cone.
     control transcript, and every junk message costs a whole-snapshot rewrite.
     A member that holds a removal it cannot apply yet still sends to the member
     the removal removes until the predecessor arrives (0146).
-  - The acknowledgement waits for the commit only through `GroupClient`. The
-    plain `Client::receive`, `drain` and `inbound`, which the FFI and
-    WebAssembly heads export, still acknowledge the fetched prefix before any
-    disposition exists, so group traffic that arrives through those calls is not
-    durable.
-  - **Delivery is at-least-once for group events and at-most-once for direct
-    messages.** A committed group event is offered again, with the same ID, until
-    the caller has acknowledged it: `receive` acknowledges what the previous
-    completed call handed over when it is called again, and `acknowledge_delivery`
-    does it at once (0144); a process that stops after an event was handed over and
-    before the acknowledgement sees it again. An event that was evicted from the
+  - **A head's plain `receive` still gets group traffic.** The acknowledgement
+    waits for the commit only through `GroupClient`. The plain
+    `Client::receive`, `drain` and `inbound`, which the FFI and WebAssembly heads
+    export and the CLI calls, decrypt a group-class message from a peer as they
+    would any other message, acknowledge the fetched prefix before any
+    disposition exists, and hand the application its bytes as a direct message:
+    the Swift, Kotlin and TypeScript `Message` values carry the sender and the
+    plaintext and not the envelope class (Rust's `Received` carries it as
+    `kind`), and the CLI prints the plaintext. No
+    group state exists on a head to change, the class is not authenticated
+    (0116), and the traffic is not durable. This is the same fact as the
+    statement above that no head exposes a group API: a head cannot send to a
+    group or manage one, and it can still be sent group messages.
+  - **Delivery is at-least-once for group events while they are retained, and
+    at-most-once for direct messages.** A committed group event is offered
+    again, with the same ID, until the caller has acknowledged it: `receive`
+    acknowledges what the previous completed call handed over when it is called
+    again, and `acknowledge_delivery` does it at once (0144); a process that stops
+    after an event was handed over and before the acknowledgement sees it again. An event that was evicted from the
     retained records before it was handed over cannot be offered again (further
     failing calls that keep committing mail are needed): the call that finds the
     loss reports it in `lost_events`, the next call acknowledges it, and a process
