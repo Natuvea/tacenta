@@ -42,7 +42,7 @@
 
 use super::open::{OpenError, OpenParty};
 use super::provider::{Address, CryptoProvider};
-use crate::persist::write_atomically;
+use crate::persist::{create_dir_all_private, write_atomically};
 use rand::{CryptoRng, Rng};
 use std::fs;
 use std::io;
@@ -106,7 +106,7 @@ impl DurableOpenParty {
         device: u8,
         csprng: &mut R,
     ) -> Result<DurableOpenParty, DurableError> {
-        fs::create_dir_all(dir).map_err(DurableError::Io)?;
+        create_dir_all_private(dir).map_err(DurableError::Io)?;
         let inner = OpenParty::generate(user, device, csprng).map_err(DurableError::Provider)?;
         write_atomically(&dir.join(IDENTITY_FILE), &inner.export_identity())
             .map_err(DurableError::Io)?;
@@ -346,9 +346,9 @@ mod tests {
 
     /// The crash this whole module exists to defend against: a temp file
     /// left behind (the process died after the write but before the
-    /// rename) must not disturb the target. The next `atomic_write` cleans
-    /// up by overwriting its own temp file and completing the rename
-    /// normally.
+    /// rename) must not disturb the target. The next `atomic_write` stages
+    /// its bytes in a temp file of its own, leaves the stray one alone, and
+    /// completes the rename normally.
     #[test]
     fn a_stray_temp_file_does_not_disturb_the_target() {
         let dir = tempdir();
@@ -535,6 +535,39 @@ mod tests {
 
         assert!(now(DurableOpenParty::open(&dir, "alice", 1)).is_err());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Runs only under
+    /// [`the_identity_and_state_files_are_owner_only_whatever_the_umask`],
+    /// which starts it under `umask 000`.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "started by the_identity_and_state_files_are_owner_only_whatever_the_umask"]
+    fn party_child() {
+        let dir = crate::persist::umask_child::dir();
+        // What a plain create yields under this umask, so the parent can check
+        // the relaxed umask took effect and its modes are not vacuous.
+        std::fs::File::create(dir.join("probe")).unwrap();
+        DurableOpenParty::create(&dir.join("party"), "alice", 1, &mut rng()).unwrap();
+    }
+
+    /// The identity key and the session state are private files in a private
+    /// directory, whatever the umask.
+    #[cfg(unix)]
+    #[test]
+    fn the_identity_and_state_files_are_owner_only_whatever_the_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        let dir = tempdir();
+        crate::persist::umask_child::run(module_path!(), "party_child", &dir);
+
+        assert_eq!(mode(&dir.join("probe")), 0o666, "the umask was not relaxed");
+        let party = dir.join("party");
+        assert_eq!(mode(&party), 0o700);
+        assert_eq!(mode(&party.join(IDENTITY_FILE)), 0o600);
+        assert_eq!(mode(&party.join(STATE_FILE)), 0o600);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
