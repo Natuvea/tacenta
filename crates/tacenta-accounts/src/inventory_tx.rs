@@ -658,6 +658,58 @@ mod tests {
         );
     }
 
+    /// A stored state that breaks the core's bounds is refused before it is
+    /// changed, whoever wrote it. The revocation floor here is above the
+    /// generation, which the next generation would put right, so only the check
+    /// on what was read refuses it and the check on the result cannot.
+    #[tokio::test]
+    async fn a_stored_state_that_breaks_the_bounds_is_refused_before_it_is_changed() {
+        let db = Db::new(true);
+        let broken = DeviceInventory {
+            generation: 1,
+            revocation_floor_generation: 2,
+            ..Default::default()
+        };
+        let account = ("acme".to_owned(), "alice".to_owned());
+        db.committed
+            .lock()
+            .unwrap()
+            .states
+            .insert(account.clone(), encode_inventory(&broken));
+        assert_eq!(
+            link(&db, "alice", 1, 1, binding(1, 1)).await,
+            Err(MutationError::Refused(InventoryError::Invalid))
+        );
+        assert_eq!(
+            db.state(&account),
+            Some(encode_inventory(&broken)),
+            "the row was not touched"
+        );
+    }
+
+    /// A recorded retry result is checked before it is handed back: a record
+    /// that breaks the bounds is refused, not returned as the answer.
+    #[tokio::test]
+    async fn a_recorded_result_that_breaks_the_bounds_is_refused_not_returned() {
+        let db = Db::new(true);
+        let first = binding(1, 1);
+        let broken = DeviceInventory {
+            generation: 1,
+            revocation_floor_generation: 2,
+            active: vec![first.clone()],
+            ..Default::default()
+        };
+        let account = ("acme".to_owned(), "alice".to_owned());
+        db.committed.lock().unwrap().mutations.insert(
+            (account, [1; 32]),
+            (link_request(0, &first), encode_inventory(&broken)),
+        );
+        assert_eq!(
+            link(&db, "alice", 0, 1, first).await,
+            Err(MutationError::Refused(InventoryError::Invalid))
+        );
+    }
+
     /// The shape this branch had before the fix, kept as an executable record
     /// of the hazard: a single statement that both locks the account and reads
     /// the inventory hands the waiter the state from before the lock wait, and

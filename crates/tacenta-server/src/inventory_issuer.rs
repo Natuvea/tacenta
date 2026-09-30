@@ -205,15 +205,26 @@ fn read_key_file(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
 /// Publish `bytes` at `path` only if nothing is there, owner-only from the
 /// first byte. `Err(AlreadyExists)` means another starter published first.
 fn create_key_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(
+    let mut staging = path.as_os_str().to_owned();
+    staging.push(format!(
         ".{}.{:016x}.tmp",
         std::process::id(),
         rand::rngs::OsRng.unwrap_err().next_u64()
     ));
-    let temporary = PathBuf::from(temporary);
+    publish_key_file(path, &PathBuf::from(staging), bytes)
+}
+
+/// [`create_key_file`] with the staging name given, so a test can plant
+/// something at exactly the name that will be opened. The name is chosen at
+/// random in production and nothing else depends on it.
+///
+/// The secret is first written under `staging`, which must not exist:
+/// `create_new` is `O_EXCL`, so a file or symlink already there is never opened,
+/// written through, or removed. Only a staging file this call created is
+/// removed.
+fn publish_key_file(path: &Path, staging: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // `create_new` is `O_EXCL`: it never opens an existing file and never
-    // follows a symlink at the temporary name.
+    // follows a symlink at the staging name.
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -221,17 +232,17 @@ fn create_key_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
+    let mut file = options.open(staging)?;
+    // From here the staging file is ours, and is dropped whatever happens.
     let published = (|| {
-        let mut file = options.open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
         // `link` fails with `AlreadyExists` rather than replacing, and makes
         // the complete file appear under its final name in one step.
-        std::fs::hard_link(&temporary, path)
+        std::fs::hard_link(staging, path)
     })();
-    // The temporary name is only a staging area; drop it whatever happened.
-    let _ = std::fs::remove_file(&temporary);
+    let _ = std::fs::remove_file(staging);
     published?;
     #[cfg(unix)]
     if let Some(directory) = path.parent() {
@@ -341,28 +352,80 @@ mod tests {
         }
     }
 
-    /// A file already sitting at the old temporary name (a crash leftover from
-    /// an earlier build, or planted by a local user) is neither reused nor
-    /// written through: the key does not land in the victim file and the
-    /// published key file is still owner-only.
+    /// The staging name is random, so `load_or_create` cannot be made to open a
+    /// name a test has planted. [`publish_key_file`] takes the name, and these two
+    /// tests plant at exactly that name. Without `O_EXCL` (`create_new`) the first
+    /// writes the secret through the symlink into the victim file and the second
+    /// overwrites the planted file; each fails then.
     #[cfg(unix)]
     #[test]
-    fn a_planted_temporary_path_is_not_written_through() {
+    fn a_symlink_planted_at_the_staging_name_is_not_written_through() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TestDir::new();
         let path = dir.path().join("issuer.key");
+        let staging = dir.path().join("issuer.key.staging");
         let victim = dir.path().join("victim");
         std::fs::write(&victim, b"not a key").unwrap();
         std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let mut planted = path.as_os_str().to_owned();
-        planted.push(".tmp");
-        std::os::unix::fs::symlink(&victim, std::path::PathBuf::from(planted)).unwrap();
+        std::os::unix::fs::symlink(&victim, &staging).unwrap();
 
-        InventoryIssuer::load_or_create(&path, 7).unwrap();
+        let error = super::publish_key_file(&path, &staging, b"the secret bytes")
+            .expect_err("a staging name that exists is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
 
         assert_eq!(std::fs::read(&victim).unwrap(), b"not a key");
         assert_eq!(mode_of(&victim), 0o644);
+        assert!(!path.exists(), "no key was published");
+        assert!(
+            std::fs::symlink_metadata(&staging)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link is left as it was, not followed and not removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_regular_file_planted_at_the_staging_name_is_not_reused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let path = dir.path().join("issuer.key");
+        let staging = dir.path().join("issuer.key.staging");
+        std::fs::write(&staging, b"planted").unwrap();
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let error = super::publish_key_file(&path, &staging, b"the secret bytes")
+            .expect_err("a staging name that exists is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+
+        assert_eq!(
+            std::fs::read(&staging).unwrap(),
+            b"planted",
+            "the secret was not written into a file someone else made"
+        );
+        assert_eq!(mode_of(&staging), 0o644, "and its mode was not touched");
+        assert!(!path.exists(), "no key was published");
+    }
+
+    /// A publish puts the bytes, owner-only, at the final name and leaves no
+    /// staging file. A second one finds the name taken and changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn publishing_moves_the_bytes_to_the_final_name_owner_only_and_leaves_no_staging_file() {
+        let dir = TestDir::new();
+        let path = dir.path().join("issuer.key");
+        let staging = dir.path().join("issuer.key.staging");
+        super::publish_key_file(&path, &staging, b"the secret bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"the secret bytes");
         assert_eq!(mode_of(&path), 0o600);
+        assert!(!staging.exists());
+        // A second publish finds the name taken and changes nothing.
+        let error =
+            super::publish_key_file(&path, &staging, b"another secret").expect_err("name is taken");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"the secret bytes");
+        assert!(!staging.exists(), "the staging file this call made is gone");
     }
 
     /// A key file another user could read is refused rather than trusted or
