@@ -57,6 +57,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash tooling/tests/run-check-core-pin-cases.sh
+      # The conformance vector files are not empty and not smaller than their
+      # floors.
+      - run: python3 tooling/check-vectors.py
+      - run: bash tooling/tests/run-check-vectors-cases.sh
       # check-advisories skips itself when cargo-audit is absent, and the
       # GitHub-hosted image does not ship it; install so the scan runs.
       - run: cargo install cargo-audit --locked
