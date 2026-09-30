@@ -22,6 +22,7 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -98,6 +99,61 @@ pub use tls::trust_for;
 
 const TAG_RESPONSE: u8 = 0;
 const TAG_PUSH: u8 = 1;
+
+/// The most response frames a [`Connection`]'s reader holds for a caller that
+/// has not taken them. A response that would be the next one ends the
+/// connection instead of being queued: the next call to
+/// [`request`](Connection::request), and any that is waiting, fails with
+/// [`UnmatchedResponses`], and the caller reconnects as it does after any other
+/// I/O error.
+///
+/// **Why 2.** A response is paired with its request only by order. A
+/// `Connection` has one request in flight at a time (`request` takes
+/// `&mut self`), and the response to a request that was abandoned after its
+/// frame was written is taken and discarded before the next frame is written
+/// (0148). A relay that answers each request it reads once therefore never has
+/// more than one response on its way to this connection, and the queue never
+/// holds more than one. The bound is one past that, so that this argument is not
+/// all that stands between a conforming relay and a closed connection; the
+/// tests run abandoned requests against a conforming relay and do not reach it.
+/// A change that lets a caller keep several requests in flight raises the bound
+/// to the number in flight plus one.
+///
+/// **Why no more.** A queued frame can be as long as [`MAX_FRAME_LEN`], so the
+/// bound is also what the queue can hold: two queued frames and the one the
+/// reader is reading make 48 MiB at the frame ceiling.
+pub(crate) const MAX_QUEUED_RESPONSES: usize = 2;
+
+/// The peer sent more response frames than requests can account for, so the
+/// connection ended rather than queue another. It is the payload of an
+/// [`std::io::Error`] of kind [`InvalidData`](std::io::ErrorKind::InvalidData)
+/// (find it with `get_ref` and `downcast_ref`); see [`Connection::request`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnmatchedResponses {
+    /// The most such frames the connection queues.
+    pub limit: usize,
+}
+
+impl std::fmt::Display for UnmatchedResponses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the peer sent more than {} response frames that no request was waiting for",
+            self.limit
+        )
+    }
+}
+
+impl std::error::Error for UnmatchedResponses {}
+
+fn unmatched_responses() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        UnmatchedResponses {
+            limit: MAX_QUEUED_RESPONSES,
+        },
+    )
+}
 
 /// Verifies a client's identity during the connection handshake. The
 /// transport owns the handshake *protocol* but delegates the *crypto* —
@@ -267,26 +323,99 @@ where
 }
 
 /// Read one length-prefixed frame. `Ok(None)` at a clean end of stream.
+///
+/// **Not cancel-safe.** A future dropped after it has taken some of a frame's
+/// bytes has lost them. Use it where nothing else races the read; where the
+/// read is one branch of a `select!`, keep a [`FrameReader`] and call
+/// [`FrameReader::next`] instead.
 pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
     stream: &mut R,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let mut len_bytes = [0u8; 4];
-    match stream.read_exact(&mut len_bytes).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
+    FrameReader::new().next(stream).await
+}
+
+/// Reads length-prefixed frames and keeps its place when the read is dropped.
+///
+/// A [`read_frame`] future that is dropped after it has taken part of a frame
+/// has lost those bytes: the next read starts in the middle of the frame and
+/// takes some of its body for a length prefix. That is what happens to a read
+/// that loses a `select!` to another branch. A `FrameReader` holds the bytes
+/// read so far and awaits nothing but [`AsyncReadExt::read`], which has taken
+/// nothing from the stream when it is dropped before it completes; so
+/// [`next`](FrameReader::next) may be dropped at any await, and the next call
+/// carries on with the same frame.
+///
+/// The reader belongs to one stream: calling `next` with a different stream
+/// after a dropped call would splice two frames.
+pub(crate) struct FrameReader {
+    /// The length prefix, of which `header_len` bytes are read.
+    header: [u8; 4],
+    header_len: usize,
+    /// The body, allocated once the prefix is complete and length-checked, of
+    /// which `body_len` bytes are read.
+    body: Vec<u8>,
+    body_len: usize,
+    in_body: bool,
+}
+
+impl FrameReader {
+    pub(crate) fn new() -> Self {
+        FrameReader {
+            header: [0; 4],
+            header_len: 0,
+            body: Vec::new(),
+            body_len: 0,
+            in_body: false,
+        }
     }
-    let len = u32::from_be_bytes(len_bytes) as usize;
-    // Reject before allocating: the length is attacker-controlled.
-    if len > MAX_FRAME_LEN {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "frame length exceeds the maximum",
-        ));
+
+    /// The next frame. `Ok(None)` at a clean end of stream, which includes one
+    /// that ends inside the length prefix; a stream that ends inside a body is
+    /// `UnexpectedEof`. Cancel-safe: see the type's documentation.
+    pub(crate) async fn next<R: AsyncRead + Unpin>(
+        &mut self,
+        stream: &mut R,
+    ) -> std::io::Result<Option<Vec<u8>>> {
+        while self.header_len < self.header.len() {
+            let read = match stream.read(&mut self.header[self.header_len..]).await {
+                Ok(read) => read,
+                // A stream that reports its end as an error (a TLS peer that
+                // closed without saying so) ends here, as a clean end.
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                Err(e) => return Err(e),
+            };
+            if read == 0 {
+                return Ok(None);
+            }
+            self.header_len += read;
+        }
+        if !self.in_body {
+            let len = u32::from_be_bytes(self.header) as usize;
+            // Reject before allocating: the length comes from the wire.
+            if len > MAX_FRAME_LEN {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "frame length exceeds the maximum",
+                ));
+            }
+            self.body = vec![0u8; len];
+            self.body_len = 0;
+            self.in_body = true;
+        }
+        while self.body_len < self.body.len() {
+            let read = stream.read(&mut self.body[self.body_len..]).await?;
+            if read == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "early eof",
+                ));
+            }
+            self.body_len += read;
+        }
+        self.header_len = 0;
+        self.in_body = false;
+        Ok(Some(std::mem::take(&mut self.body)))
     }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
-    Ok(Some(buf))
 }
 
 /// Write one length-prefixed frame.
@@ -379,6 +508,12 @@ where
 /// The post-handshake loop: interleave request handling and push
 /// delivery on one connection. A single task owns the socket, so
 /// responses and pushes never race for the writer.
+///
+/// The read of the next request frame is one branch of a `select!` against the
+/// push channel, so it is dropped whenever a push is ready first, including
+/// when the frame is half read. It goes through a [`FrameReader`] for that
+/// reason: the reader keeps the bytes it has, and the next pass through the
+/// loop carries on with the same frame.
 async fn serve_authenticated<S, A>(
     stream: &mut S,
     server: &Arc<Server<A>>,
@@ -389,9 +524,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
     A: Authenticator,
 {
+    let mut frames = FrameReader::new();
     loop {
         tokio::select! {
-            frame = read_frame(stream) => {
+            frame = frames.next(stream) => {
                 let Some(frame) = frame? else { return Ok(()) };
                 let Some(request) = decode_request(&frame) else { return Ok(()) };
                 // The recipient of a Send is who we may need to wake.
@@ -511,10 +647,15 @@ pub async fn serve_tls_with_limits<A: Authenticator>(
 /// A background task reads the socket and demultiplexes server frames
 /// into responses (paired with requests) and push notifications. The write
 /// half is boxed so the connection is agnostic to the underlying stream
-/// (plain TCP, TLS over TCP, or the WebSocket carriage).
+/// (plain TCP, TLS over TCP, or the WebSocket carriage). The task queues at
+/// most two responses that have not been taken; one more ends the connection
+/// (see [`UnmatchedResponses`]).
 pub struct Connection {
     write: Box<dyn AsyncWrite + Unpin + Send + Sync>,
-    responses: mpsc::UnboundedReceiver<Vec<u8>>,
+    responses: mpsc::Receiver<Vec<u8>>,
+    /// Set by the reader, before it stops, when a response arrived with the
+    /// queue full. Once set, nothing is sent and nothing queued is served.
+    overflowed: Arc<AtomicBool>,
     pushes: mpsc::UnboundedReceiver<()>,
     /// Pinged on every push and when the reader ends, for a waiter that
     /// holds no reference to the connection (see [`Connection::establish_with_signal`]).
@@ -644,10 +785,12 @@ impl Connection {
 
         // Split the stream; a reader task routes tagged frames.
         let (mut read, write) = tokio::io::split(stream);
-        let (resp_tx, responses) = mpsc::unbounded_channel();
+        let (resp_tx, responses) = mpsc::channel(MAX_QUEUED_RESPONSES);
         let (push_tx, pushes) = mpsc::unbounded_channel();
         let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
         let reader_signal = signal.clone();
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let reader_overflowed = overflowed.clone();
         crate::spawn(async move {
             loop {
                 let frame = tokio::select! {
@@ -658,11 +801,18 @@ impl Connection {
                     },
                 };
                 match frame.split_first() {
-                    Some((&TAG_RESPONSE, body)) => {
-                        if resp_tx.send(body.to_vec()).is_err() {
+                    Some((&TAG_RESPONSE, body)) => match resp_tx.try_send(body.to_vec()) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            // Nothing more is read from this peer. The flag
+                            // is set before the queue is dropped with the
+                            // task, so a caller that finds the queue closed
+                            // finds the flag set.
+                            reader_overflowed.store(true, Ordering::Release);
                             break;
                         }
-                    }
+                        Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    },
                     Some((&TAG_PUSH, _)) => {
                         reader_signal.notify_one();
                         if push_tx.send(()).is_err() {
@@ -682,6 +832,7 @@ impl Connection {
         Ok(Connection {
             write: Box::new(write),
             responses,
+            overflowed,
             _stop: stop_tx,
             pushes,
             signal,
@@ -700,12 +851,20 @@ impl Connection {
     /// call's own. A request dropped while its frame was being written may have
     /// left half a frame on the wire: the connection then refuses every request
     /// with `BrokenPipe` and the caller reconnects (0148).
+    ///
+    /// A peer that sends more response frames than requests can account for
+    /// ends the connection: this call, and every later one, fails with
+    /// `InvalidData` carrying [`UnmatchedResponses`], and the caller
+    /// reconnects.
     pub async fn request(&mut self, request: &[u8]) -> std::io::Result<Vec<u8>> {
         if self.torn {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "a request was dropped while its frame was being written",
             ));
+        }
+        if self.overflowed.load(Ordering::Acquire) {
+            return Err(unmatched_responses());
         }
         while self.outstanding > 0 {
             self.take_response().await?;
@@ -721,9 +880,15 @@ impl Connection {
     }
 
     async fn take_response(&mut self) -> std::io::Result<Vec<u8>> {
-        self.responses
-            .recv()
-            .await
+        let response = self.responses.recv().await;
+        // Checked after the wait, whatever it returned: a frame that was
+        // queued before the overflow is not served once the connection has
+        // failed, and an end of the queue caused by the overflow is reported
+        // as that, not as a missing response.
+        if self.overflowed.load(Ordering::Acquire) {
+            return Err(unmatched_responses());
+        }
+        response
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no response"))
     }
 

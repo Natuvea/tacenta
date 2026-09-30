@@ -8,14 +8,30 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// The most unrequested response frames the connection is expected to queue.
-const BOUND: usize = 2;
+/// The most unrequested response frames the connection queues.
+const BOUND: usize = MAX_QUEUED_RESPONSES;
 
 /// Bytes in each frame of the long run of frames. The pipe below holds a quarter of
 /// one, so a frame is written completely only as the connection's reader takes
 /// it: the count of finished writes is the count of frames read.
 const LARGE_FRAME: usize = 256 * 1024;
 const PIPE: usize = 64 * 1024;
+
+/// The error is the typed one: kind `InvalidData`, carrying `UnmatchedResponses`
+/// with the connection's limit.
+fn assert_unmatched(err: std::io::Error) {
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    let typed = err
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<UnmatchedResponses>());
+    assert_eq!(
+        typed,
+        Some(&UnmatchedResponses {
+            limit: MAX_QUEUED_RESPONSES
+        }),
+        "{err}"
+    );
+}
 
 async fn within<F: std::future::Future>(future: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(30), future)
@@ -83,7 +99,7 @@ async fn many_unrequested_responses_are_not_read_without_bound() {
         .request(b"anything")
         .await
         .expect_err("a connection that overflowed refuses requests");
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    assert_unmatched(err);
 }
 
 /// The frame after the bound is the one that ends the connection: `BOUND`
@@ -109,10 +125,51 @@ async fn one_frame_past_the_bound_ends_the_connection() {
     let err = within(conn.request(b"ask"))
         .await
         .expect_err("the queue is not served after it overflowed");
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    assert_unmatched(err);
     // And it stays failed: the queued frames are not served on a second try.
-    let again = within(conn.request(b"ask")).await.unwrap_err();
-    assert_eq!(again.kind(), std::io::ErrorKind::InvalidData, "{again}");
+    assert_unmatched(within(conn.request(b"ask")).await.unwrap_err());
+}
+
+/// A request that is already waiting when the queue overflows fails with the
+/// same error, not with a frame from the queue and not with a missing
+/// response. The peer answers nothing until the request has been written,
+/// then sends more frames than the queue holds.
+#[tokio::test]
+async fn a_request_waiting_when_the_queue_overflows_fails_with_the_typed_error() {
+    let (client_end, server_end) = tokio::io::duplex(PIPE);
+    tokio::spawn(async move {
+        let (mut read, mut write) = tokio::io::split(server_end);
+        write_frame(&mut write, b"challenge").await.unwrap();
+        read_frame(&mut read).await.unwrap();
+        write_frame(&mut write, &[1]).await.unwrap();
+        // Wait for the request, then answer it with a run of frames.
+        read_frame(&mut read).await.unwrap();
+        for _ in 0..=BOUND + 1 {
+            if write_frame(&mut write, &[TAG_RESPONSE, 9]).await.is_err() {
+                return;
+            }
+        }
+        std::future::pending::<()>().await;
+    });
+    let bob = DeviceAddr::new("+bob", 1);
+    let mut conn = Connection::establish(client_end, &bob, |_| b"+bob".to_vec())
+        .await
+        .unwrap();
+    // The request may be answered by the first frame of the run or find the
+    // connection already failed; what it may not do is stay in step: the
+    // next request meets the failure.
+    let _ = within(conn.request(b"ask")).await;
+    assert!(reader_stopped(&conn).await);
+    assert_unmatched(within(conn.request(b"ask")).await.unwrap_err());
+}
+
+#[test]
+fn the_error_names_its_limit() {
+    let err = UnmatchedResponses { limit: 2 };
+    assert_eq!(
+        err.to_string(),
+        "the peer sent more than 2 response frames that no request was waiting for"
+    );
 }
 
 struct Rng(u64);

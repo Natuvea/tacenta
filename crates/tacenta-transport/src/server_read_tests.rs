@@ -181,3 +181,29 @@ async fn frames_are_served_in_order_across_a_push_in_the_middle_of_one() {
         .collect();
     assert_eq!(payloads, vec![vec![1u8; 30_000], vec![2u8; 3]]);
 }
+
+/// A `FrameReader` dropped part-way through a frame, at every chunk of it,
+/// gives the frame whole on a later call, and the next frame after it.
+#[tokio::test]
+async fn a_frame_reader_dropped_mid_frame_carries_on_with_the_same_frame() {
+    let (mut server_end, mut client) = tokio::io::duplex(1 << 16);
+    let mut reader = FrameReader::new();
+    for body in [
+        (0..1_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>(),
+        Vec::new(),
+        b"after".to_vec(),
+    ] {
+        let mut got = None;
+        for chunk in wire(&body).chunks(7) {
+            client.write_all(chunk).await.unwrap();
+            // One poll of the read, then it is dropped unless it finished.
+            if let Ok(result) =
+                tokio::time::timeout(Duration::ZERO, reader.next(&mut server_end)).await
+            {
+                got = Some(result.unwrap().unwrap());
+                break;
+            }
+        }
+        assert_eq!(got.expect("the frame was completed"), body);
+    }
+}
