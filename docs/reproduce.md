@@ -61,7 +61,7 @@ it" via the committed Aeneas translation.
 
 ```bash
 # Spec-level theorems (CI fails on a `sorry`), plus the #print axioms audit in
-# spec/Tacenta/Assurance.lean that pins the exact axiom set of the 47 theorems
+# spec/Tacenta/Assurance.lean that pins the exact axiom set of the 61 theorems
 # it lists (see "The axiom baselines" below for what it does not cover).
 cd tacenta/spec && lake build
 
@@ -256,12 +256,12 @@ TACENTA_CORE_DIR=/path/to/tacenta-core bash tooling/check-docs-match.sh
 ## The axiom baselines (what a green proof rests on)
 
 - **Spec-level theorems.** Today none of them depends on an axiom beyond
-  `propext` and `Quot.sound` (the wire theorems and two of the four bounded-group
+  `propext` and `Quot.sound` (the wire theorems and six of the eighteen bounded-group
   theorems use the second; the others need at most `propext`). What is enforced
   is narrower than that: `spec/Tacenta/Assurance.lean` pins the exact axiom set
-  of the 47 theorems it lists with `#guard_msgs in #print axioms`, of the 90
-  `theorem`s that `spec/Tacenta` declares, and the four group theorems are among
-  the 47. An added axiom, a `sorry` or `Classical.choice` in a listed theorem
+  of the 61 theorems it lists with `#guard_msgs in #print axioms`, of the 104
+  `theorem`s that `spec/Tacenta` declares, and the eighteen group theorems are among
+  the 61. An added axiom, a `sorry` or `Classical.choice` in a listed theorem
   fails the build. **It does not catch** a theorem weakened with the same axioms
   (`True` as its statement), a new theorem that is not listed and is built on an
   added axiom, `native_decide` in an `example`, or a theorem missing from the
