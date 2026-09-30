@@ -61,6 +61,10 @@ jobs:
       - run: bash tooling/check-versions.sh
       - run: bash tooling/check-conformance-lines.sh
       - run: bash tooling/check-surface.sh
+      # The group wire vectors are written by a Rust test (the rust job diffs the
+      # committed file) and replayed here by a second program that agrees with them
+      # (decision 0149; it is not an independent implementation of the page).
+      - run: bash tooling/check-group-wire-vectors.sh
       - run: bash tooling/check-tree-clean.sh
       # The core pin is a commit on tacenta-core main, not a pull request head
       # or a fork commit. It asks GitHub, read-only; if GitHub cannot be

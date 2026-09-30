@@ -218,7 +218,9 @@ impl GroupReceiver {
             put_lp(out, member.device())
         }
 
+        // The decoder's order: the roster, then the local member.
         let roster = self.roster.encode()?;
+        self.local.validate()?;
         let mut out = RECEIVER_STATE_DOMAIN.to_vec();
         put_lp(&mut out, &roster)?;
         out.extend_from_slice(&self.roster_digest);

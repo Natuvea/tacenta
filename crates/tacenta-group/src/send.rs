@@ -489,8 +489,36 @@ impl LogicalSend {
         })
     }
 
+    /// The checks `decode_intent` makes on what it has read, in the order it
+    /// meets them (decision 0149): the sender's size, the payload, the number of
+    /// recipients, each recipient's size, their order, and last the revision.
+    /// `new` judges some of this, but `payload` and `id` are public and a roster
+    /// with public fields can list any member, so the encoder does not rely on it.
+    fn validate_intent(&self) -> Result<(), Error> {
+        self.id.sender.validate()?;
+        if self.payload.len() > MAX_PAYLOAD_LEN {
+            return Err(Error::PayloadTooLarge);
+        }
+        if self.recipients.is_empty() {
+            return Err(Error::EmptyRecipients);
+        }
+        if self.recipients.len() > MAX_MEMBERS {
+            return Err(Error::TooManyMembers);
+        }
+        for progress in &self.recipients {
+            progress.recipient.validate()?;
+        }
+        validate_recovery_recipients(self.recipients.iter().map(|progress| &progress.recipient))?;
+        if self.id.revision == RESERVED_REVISION {
+            return Err(Error::ReservedRevision);
+        }
+        Ok(())
+    }
+
     /// The canonical immutable intent that commits one logical ID before any
-    /// recipient-specific pairwise operation begins.
+    /// recipient-specific pairwise operation begins. It writes only what
+    /// [`Self::decode_intent`] accepts and refuses what it refuses, with the
+    /// reason it gives (decision 0149).
     pub fn encode_intent(&self) -> Result<Vec<u8>, Error> {
         fn put_lp(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
             let len = u32::try_from(bytes.len()).map_err(|_| Error::Malformed)?;
@@ -503,6 +531,7 @@ impl LogicalSend {
             put_lp(out, member.device())
         }
 
+        self.validate_intent()?;
         let recipient_count = u32::try_from(self.recipients.len()).map_err(|_| Error::Malformed)?;
         let mut out = Vec::new();
         out.extend_from_slice(LOGICAL_SEND_DOMAIN);
@@ -795,7 +824,9 @@ fn validate_recipients(roster: &Roster, recipients: &[Member]) -> Result<(), Err
     Ok(())
 }
 
-fn validate_recovery_recipients(recipients: &[Member]) -> Result<(), Error> {
+fn validate_recovery_recipients<'a>(
+    recipients: impl IntoIterator<Item = &'a Member>,
+) -> Result<(), Error> {
     let mut previous: Option<&Member> = None;
     let mut identities = BTreeSet::new();
     for recipient in recipients {
@@ -901,16 +932,101 @@ mod tests {
 
     #[test]
     fn intent_recovery_refuses_noncanonical_or_trailing_recipient_data() {
-        let mut reordered = send();
-        reordered.recipients.swap(0, 1);
+        // The encoder does not write a reordered list (the test below), so the
+        // stored bytes that a decoder must refuse are made by swapping the last
+        // two recipient entries by hand.
+        let canonical = send().encode_intent().unwrap();
+        let entry = |member: &Member| 8 + member.identity().len() + member.device().len();
+        let second = canonical.len() - entry(&carol());
+        let first = second - entry(&bob());
+        let mut reordered = canonical[..first].to_vec();
+        reordered.extend_from_slice(&canonical[second..]);
+        reordered.extend_from_slice(&canonical[first..second]);
         assert_eq!(
-            LogicalSend::decode_intent(&reordered.encode_intent().unwrap()),
+            LogicalSend::decode_intent(&reordered),
             Err(Error::NonCanonical)
         );
 
-        let mut trailing = send().encode_intent().unwrap();
+        let mut trailing = canonical;
         trailing.push(0);
         assert_eq!(LogicalSend::decode_intent(&trailing), Err(Error::Malformed));
+    }
+
+    /// The encoder makes the checks `decode_intent` makes, in its order (open
+    /// point 4 of the wire-format page). The recipients are private, so the
+    /// faults that only they can hold are made here; `tests/encoder_refusals.rs`
+    /// has the ones the public API can reach.
+    #[test]
+    fn the_intent_encoder_refuses_what_the_decoder_refuses_in_the_decoders_order() {
+        let wide = || Member::new(vec![b'z'; crate::MAX_IDENTITY_LEN + 1], vec![1]);
+
+        let mut reordered = send();
+        reordered.recipients.swap(0, 1);
+        assert_eq!(reordered.encode_intent(), Err(Error::NonCanonical));
+
+        let mut second_device = send();
+        second_device.recipients[1].recipient = Member::new(b"bob-key".to_vec(), vec![2]);
+        assert_eq!(second_device.encode_intent(), Err(Error::NonCanonical));
+
+        let mut none = send();
+        none.recipients.clear();
+        assert_eq!(none.encode_intent(), Err(Error::EmptyRecipients));
+
+        // No recipients before a reserved revision, which is judged last.
+        none.id.revision = RESERVED_REVISION;
+        assert_eq!(none.encode_intent(), Err(Error::EmptyRecipients));
+
+        // A recipient's size before the order of the list.
+        let mut wide_and_unsorted = send();
+        wide_and_unsorted.recipients.swap(0, 1);
+        wide_and_unsorted.recipients[0].recipient = wide();
+        assert_eq!(
+            wide_and_unsorted.encode_intent(),
+            Err(Error::IdentityTooLarge)
+        );
+
+        // The order of the list before a reserved revision.
+        let mut unsorted_and_reserved = send();
+        unsorted_and_reserved.recipients.swap(0, 1);
+        unsorted_and_reserved.id.revision = RESERVED_REVISION;
+        assert_eq!(
+            unsorted_and_reserved.encode_intent(),
+            Err(Error::NonCanonical)
+        );
+
+        // The list is walked twice: every recipient's size is judged before the
+        // order of the list, so an unordered pair does not hide the size of a
+        // recipient after it (section 11, Encoding, steps 4 and 5).
+        let mut unsorted_then_wide = send();
+        unsorted_then_wide.recipients.swap(0, 1);
+        let mut last = unsorted_then_wide.recipients[0].clone();
+        last.recipient = wide();
+        unsorted_then_wide.recipients.push(last);
+        assert_eq!(
+            unsorted_then_wide.encode_intent(),
+            Err(Error::IdentityTooLarge)
+        );
+
+        // No recipients after the sender's size and the payload (steps 1 to 3).
+        let mut none_and_wide_sender = send();
+        none_and_wide_sender.recipients.clear();
+        none_and_wide_sender.id.sender = wide();
+        assert_eq!(
+            none_and_wide_sender.encode_intent(),
+            Err(Error::IdentityTooLarge)
+        );
+        let mut none_and_fat = send();
+        none_and_fat.recipients.clear();
+        none_and_fat.payload = vec![0; MAX_PAYLOAD_LEN + 1];
+        assert_eq!(none_and_fat.encode_intent(), Err(Error::PayloadTooLarge));
+
+        // Nothing is refused for a list of one, or for a value the decoder takes.
+        let mut one = send();
+        one.recipients.truncate(1);
+        assert_eq!(
+            LogicalSend::decode_intent(&one.encode_intent().unwrap()),
+            Ok(one)
+        );
     }
 
     fn test_payload_commitment(bytes: &[u8]) -> [u8; DIGEST_LEN] {

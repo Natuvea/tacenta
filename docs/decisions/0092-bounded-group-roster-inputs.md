@@ -1,6 +1,12 @@
 # 0092 — bounded group roster inputs
 
-> Amended by 0136.
+> Amended by 0136. Bytes specified by 0149 (`spec/group-wire-formats.md`).
+>
+> Amended 2026-09-30 (by 0149, open point 1): the authority is written as one
+> member entry, `lp(identity_bytes) || lp(device_bytes)`, two length-prefixed
+> fields with no length around the pair, as the code has always written it. The
+> layout below said `lp(authority_binding)`, a single field; it is corrected, and
+> the code's form is the specified one.
 
 ## Decision
 
@@ -14,14 +20,15 @@ The preimage is:
 
 ```text
 "Tacenta Group Roster v1" || lp(group_id) || u64be(revision)
-|| lp(predecessor_digest) || lp(authority_binding) || u32be(policy_version)
+|| lp(predecessor_digest) || authority_entry || u32be(policy_version)
 || closed || u32be(member_count) || members
 ```
 
 `lp(x)` is a four-byte big-endian length followed by exactly `x`.
 `closed` is one byte, zero or one. Genesis uses a 32-byte all-zero
 predecessor digest; successors use the exact prior accepted digest. A member
-entry is `lp(identity_bytes) || lp(device_bytes)`. Entries sort
+entry is `lp(identity_bytes) || lp(device_bytes)`; the authority is written as
+one such entry, with no further length prefix. Entries sort
 lexicographically by the full `identity_bytes || device_bytes` tuple.
 A duplicate full tuple, a second device for one identity, a noncanonical
 identity/device encoding, an unknown policy version, a malformed field, or an

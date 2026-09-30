@@ -1,6 +1,7 @@
 # 0125 — bounded invitation bootstrap control
 
-Amended by 0141 (an invitation in a closed group is refused).
+Amended by 0141 (an invitation in a closed group is refused). Bytes specified by
+0149 (`spec/group-wire-formats.md`).
 
 ## Decision
 

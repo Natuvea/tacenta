@@ -47,10 +47,12 @@ the pinned Aeneas release, whose tag and archive digest tacenta-core's
 kept honest across four documents:
 
 - [docs/claims.md](docs/claims.md) — proven versus tested versus assumed,
-  claim by claim, enforced by CI.
+  claim by claim. Its opening says which parts the public CI enforces on every
+  push and which are run by hand.
 - [docs/threat-model.md](docs/threat-model.md) — what the system defends,
-  against whom, and its stated non-goals (metadata, signup throttling, the
-  authorization logic not yet proven; sign-in is rate-limited).
+  against whom, and its stated non-goals (metadata, signup throttling, authorization
+  logic that is proven of the specification and tested, not refined, on the Rust;
+  sign-in is rate-limited on the in-memory store path only).
 - [docs/verification-tcb.md](docs/verification-tcb.md) — the trusted
   computing base of the proofs: what a green proof assumes (Lean kernel,
   Charon/Aeneas, the spec being the intended one) and what it does not cover.
@@ -93,6 +95,8 @@ crates/      Rust workspace
                     reads to find the four services (decision 0090)
   tacenta-client/ High-level client SDK: the tenant handle, connect / send /
                   receive
+  tacenta-group/  Bounded experimental group profile (eight members, one device
+                  each, one authority); no head exposes it, see docs/claims.md
   tacenta-ffi/    Swift + Kotlin bindings for the client, via UniFFI
   tacenta-server/ The server binary: directory + relay over one store
   tacenta-gateway/ HTTP control plane: tenant signup, API keys, the service
@@ -141,7 +145,10 @@ under its handle). Configuration comes from the environment, all optional:
 - `TACENTA_ACCOUNTS_PORT` — account service port (default `4722`)
 - `TACENTA_PROVISIONING_PORT` — provisioning service port (default `4723`)
 - `TACENTA_DATA_DIR` — persist state here across restarts; loaded on start,
-  saved on Ctrl-C (default: none, state is in memory only)
+  saved on Ctrl-C (default: none, state is in memory only). The server
+  creates a missing directory `0700` and writes its files `0600`; keep an
+  existing directory owner-only too (`chmod 700`), because the server does
+  not change one.
 - `TACENTA_SNAPSHOT_SECS` — also snapshot on this interval, not only on
   shutdown, bounding crash loss to one interval (needs `TACENTA_DATA_DIR`)
 - `TACENTA_TLS_CERT` / `TACENTA_TLS_KEY` — PEM certificate and PKCS#8 key;
@@ -167,9 +174,10 @@ TACENTA_ECHO_IDENTITY=echo.key cargo run -p tacenta-echo
 Connects to a running server as an ordinary client and echoes every message
 back to its sender — a live end-to-end check anyone with a client can run,
 and the reference agent identity. With `TACENTA_ECHO_IDENTITY` set it saves
-its identity to that file on first run and reuses it after, so it keeps the
-same address and bound key across restarts (a peer who verified it stays
-verified). Configuration comes from the environment, all optional:
+its identity to that file (created owner-only) on first run and reuses it
+after, so it keeps the same address and bound key across restarts (a peer who
+verified it stays verified). Configuration comes from the environment, all
+optional:
 
 - `TACENTA_DIRECTORY` / `TACENTA_RELAY` — server addresses (defaults
   `127.0.0.1:4720` / `127.0.0.1:4721`)

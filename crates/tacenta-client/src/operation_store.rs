@@ -368,8 +368,10 @@ impl OperationStore for DurableStore {
 /// Every write, and the check of [`commit_after`](OperationStore::commit_after),
 /// runs under an exclusive advisory lock on `<path>.lock` (0143), which stays in
 /// place. The lock binds cooperating processes on one local filesystem only.
-/// The store is unsealed, has no rollback detection, and reports every write
-/// error as `failed`, never `unknown`.
+/// The snapshot, its lock file and the temporary file of a write are created
+/// owner-only (`0600` on Unix); a link at the lock's name is refused rather
+/// than followed, and the commit fails. The store is unsealed, has no rollback
+/// detection, and reports every write error as `failed`, never `unknown`.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct FileOperationStore {
     path: PathBuf,
@@ -416,18 +418,14 @@ impl FileOperationStore {
     }
 
     /// Runs `action` while holding an exclusive advisory lock on
-    /// `<path>.lock`. The atomic writer stages every write in one fixed
-    /// temporary file, so two unlocked writers would also corrupt each other's
-    /// staging. The lock binds cooperating processes only (0143).
+    /// `<path>.lock`, so the generation check and the write that follows it
+    /// are one step. The atomic writer stages each write in a temporary file
+    /// of its own, so the lock is not what keeps two writers' staging apart.
+    /// The lock binds cooperating processes only (0143).
     fn locked(&self, action: impl FnOnce(&Self) -> CommitOutcome) -> CommitOutcome {
         let mut lock_path = self.path.clone().into_os_string();
         lock_path.push(".lock");
-        let Ok(lock) = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(lock_path)
-        else {
+        let Ok(lock) = tacenta_core::persist::open_lock_file(Path::new(&lock_path)) else {
             return CommitOutcome::Failed;
         };
         if lock.lock().is_err() {
@@ -819,3 +817,7 @@ mod fence_guard_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "operation_store_rollback_tests.rs"]
 mod rollback_tests;
+
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+#[path = "operation_store_owner_only_tests.rs"]
+mod owner_only_tests;

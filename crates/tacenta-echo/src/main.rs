@@ -32,16 +32,28 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
-/// Write the identity secret, restricting it to the owner where the platform
-/// supports it. The bytes carry a private key.
+/// Write the identity secret to a new file that only its owner can open.
+///
+/// The bytes carry a private key, so the file is created with mode `0600` in
+/// the `open` call itself (on Unix, whatever the umask): there is no moment at
+/// which it exists with wider access. It must not already exist; a file or a
+/// symbolic link found at `path` is an error rather than something to write
+/// through. On other platforms the file gets the platform's default access.
 fn write_secret(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)?;
+    use std::io::Write;
+    create_secret_file(path)?.write_all(bytes)
+}
+
+/// Create `path` as a new, empty file that only its owner can open.
+fn create_secret_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    Ok(())
+    options.open(path)
 }
 
 #[tokio::main]
@@ -160,4 +172,98 @@ fn resolve(host_port: &str) -> Result<SocketAddr, Box<dyn std::error::Error>> {
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| format!("cannot resolve {host_port}").into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    const CHILD_DIR: &str = "TACENTA_ECHO_TEST_DIR";
+
+    fn tempdir() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "tacenta-echo-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// Runs only under [`the_secret_file_is_owner_only_whatever_the_umask`],
+    /// which starts it under `umask 000`.
+    #[test]
+    #[ignore = "started by the_secret_file_is_owner_only_whatever_the_umask under umask 000"]
+    fn secret_child() {
+        let dir = PathBuf::from(std::env::var_os(CHILD_DIR).expect("run by the parent test"));
+        // What a plain create yields under this umask, so the parent can check
+        // the relaxed umask took effect and its `0600` is not vacuous.
+        std::fs::File::create(dir.join("probe")).unwrap();
+        // Created and left empty: this is the file as it is the instant it
+        // exists, before anything is written to it or its mode is changed.
+        drop(create_secret_file(&dir.join("empty")).unwrap());
+        write_secret(&dir.join("written"), b"the secret").unwrap();
+    }
+
+    /// The identity secret is `0600` from the moment the file exists, not after
+    /// a later `chmod`, whatever the umask.
+    #[test]
+    fn the_secret_file_is_owner_only_whatever_the_umask() {
+        let dir = tempdir();
+        let child = format!(
+            "{}::secret_child",
+            module_path!().split_once("::").unwrap().1
+        );
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(r#"umask 000; exec "$0" --exact "$1" --ignored"#)
+            .arg(std::env::current_exe().unwrap())
+            .arg(&child)
+            .env(CHILD_DIR, &dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        assert_eq!(mode(&dir.join("probe")), 0o666, "the umask was not relaxed");
+        assert_eq!(mode(&dir.join("empty")), 0o600);
+        assert_eq!(mode(&dir.join("written")), 0o600);
+        assert_eq!(std::fs::read(dir.join("written")).unwrap(), b"the secret");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file already at the path is not overwritten, and a link is not
+    /// followed: the identity is written once, to a file this call made.
+    #[test]
+    fn an_existing_file_or_link_is_refused_and_left_as_it_was() {
+        let dir = tempdir();
+        let existing = dir.join("existing");
+        std::fs::write(&existing, b"already here").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&existing, &link).unwrap();
+        let dangling = dir.join("dangling");
+        std::os::unix::fs::symlink(dir.join("nowhere"), &dangling).unwrap();
+
+        for path in [&existing, &link, &dangling] {
+            let err = write_secret(path, b"the secret").unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        }
+
+        assert_eq!(std::fs::read(&existing).unwrap(), b"already here");
+        assert!(!dir.join("nowhere").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

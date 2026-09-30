@@ -1,5 +1,7 @@
 # 0126 — bounded invitation revocation control
 
+> Bytes specified by 0149 (`spec/group-wire-formats.md`).
+
 ## Decision
 
 The first-profile group envelope gains an authority-to-target invitation

@@ -1,5 +1,7 @@
 # 0094 — bounded group application context
 
+> Bytes specified by 0149 (`spec/group-wire-formats.md`).
+
 ## Decision
 
 The bounded group experiment carries its application context inside the
