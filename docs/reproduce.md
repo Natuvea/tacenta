@@ -221,7 +221,7 @@ That is 4.6 times the snapshot and about 2.2 times the time of the first send,
 and 1.47 MB of the snapshot is the outbox and the other collections, not the
 provider state (259,472 bytes) or the receiver state (589 bytes). The probe
 process's maximum resident set was 41 MB and its user CPU 5.6 s. The whole demo
-in one process, which ran 448 tests when this was measured (it runs 452 now: the four wire-vector tests came later): 86 s elapsed (345 s CPU, 900 MB) cold and
+in one process, which ran 448 tests when this was measured (it runs 465 now: the wire-vector and encoder-refusal tests came later): 86 s elapsed (345 s CPU, 900 MB) cold and
 59 s (279 s CPU, 100 MB) warm, at that load. Nothing was measured at 32, 128 or
 512 members, with the outbox holding its eight live sends, or on another host,
 and the commit latency was measured at the sizes of the first table only.
