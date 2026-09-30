@@ -241,16 +241,15 @@ mutant as killed or survived, and fails on a mutant that does not patch or build
 python3 tooling/group-mutation/mutate.py --workers 4
 ```
 
-At the revision that added mutants R22 to R24 it killed 127 and left seven
-standing, the same seven as before, each argued: `L05` (the 4,096-byte roster bound is above the largest
+At the head of the group wire formats change it killed 128 of the 134 and left six
+standing (127 and seven before the wire vectors, which kill `P01`), each argued:
+`L05` (the 4,096-byte roster bound is above the largest
 valid roster, 3,048 bytes, so nothing reaches it), `L10` and `S11` (a second
 check returns the same error; the pair with both removed, `D10` and `D11`, is
 killed), `N13` (the duplicate lookup runs before the sequence-order check),
 `N36` (`Roster::validate` already enforces the genesis shape, so every roster
-that reaches `accept_source` at revision zero passes the genesis checks),
-`P01` (the 8 KiB payload-input bound is an early exit that gives the error the
-length check gives) and `X15` (a third reserved attempt already exhausts the
-recipient). These are arguments from the code, not proofs of equivalence. The
+that reaches `accept_source` at revision zero passes the genesis checks) and
+`X15` (a third reserved attempt already exhausts the recipient). These are arguments from the code, not proofs of equivalence. The
 harness covers the group crate only; the client and transport crates have no
 harness in this repository.
 
