@@ -149,11 +149,19 @@ Each record is a four-byte tag followed by its body. The `outbox`, `inbox` and
 5. **Where the layout is in an ADR, the ADR is the only description.** Decision
    0092 describes the roster's authority as `lp(authority_binding)`, and the
    code writes two length-prefixed fields for it. Decision 0105 does the same
-   for the sender. The specification of the first slice lists both as open
-   points.
+   for the sender. This was open point 1 of the specification; on 2026-09-30 the
+   code's form was decided to be the specified one, and both decisions were
+   amended.
 6. **The Lean model has no bytes.** `spec/Tacenta/Group.lean` treats members as
    two numbers and commitments as numbers (decision 0137, item 11), so none of
    these layouts can be generated from it.
+7. **Some encoders checked less than their decoders at this revision.** The
+   invitation bootstrap (no target size check, a reserved revision or wrong policy
+   reported as `conflict`), the logical-send intent (no size, count or payload
+   check of its own), the invitation-book state (no check of a record's fields)
+   and the receiver state (no check of the local member) wrote bytes that the
+   same crate then refused. They make their decoders' checks since 2026-09-30
+   (decision 0149, open point 4).
 
 ## What the first slice covers
 

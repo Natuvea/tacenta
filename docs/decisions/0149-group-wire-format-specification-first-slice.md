@@ -1,8 +1,10 @@
 # 0149 — group wire formats: the first slice of their specification
 
 > Clarifies 0092, 0094, 0105, 0118, 0121, 0125 and 0126 (it gives the bytes
-> they leave out). Amends 0118 (there are five payload variants, not two). Does
-> not amend 0003, which it departs from for one vector file, below.
+> they leave out). Amends 0118 (there are five payload variants, not two), and
+> 0092 and 0105 (2026-09-30: the code's two-field form of the authority and the
+> sender is the specified one). Does not amend 0003, which it departs from for one
+> vector file, below.
 
 ## Decision
 
@@ -59,8 +61,64 @@ and a second reader rather than a proved model.
 
 **Open points.** Where the code does something no record explains, or
 disagrees with a record, the page follows the code and lists the point (OP-1 to
-OP-8 in section 12) rather than choosing. The page states no compatibility
-promise: nothing in the group profile has been released.
+OP-8 in section 12) rather than choosing. Four were decided on 2026-09-30, below;
+OP-5 to OP-8 remain open. The page states no compatibility promise: nothing in
+the group profile has been released.
+
+## Decisions on the open points (2026-09-30)
+
+**OP-1: the code's form is wire version 1.** The roster's authority (0092) and the
+intent's sender (0105) are each written as a member entry: `lp(identity)` then
+`lp(device)`, with no length around the pair. Decisions 0092 and 0105 said
+`lp(authority_binding)` and `lp(sender_binding)`; they carry a dated amendment note
+and the corrected layout text, and the earlier wording stays readable in the note.
+Considered: change the code to one length-prefixed field. Rejected: it changes the
+bytes of the roster preimage (and so every roster commitment and every vector that
+chains through one) and of the intent, for no gain. No byte changes.
+
+**OP-2 and OP-3: kept as accepted properties of version 1.** The framing
+conventions differ between the formats (the roster, context and intent use `lp32`
+around fixed-size fields; the bootstrap uses `lp16` for its target and raw bytes
+for the IDs and digests; acceptance and revocation use raw bytes only), and the
+bootstrap writes the invitation ID before the group ID where acceptance and
+revocation write them the other way round. Considered: make them uniform.
+Rejected: it changes the bytes of three invitation formats for no gain. The
+trade-off is that an implementer must not assume one convention or one field order
+across the formats, and must take each layout from its own section; two
+implementations that do assume one will disagree. The page says so at each place.
+A second implementation reporting an interoperability failure here would reopen
+this.
+
+**OP-4: fixed in the code.** An encoder writes only what its own decoder accepts,
+and refuses what the decoder refuses with the reason the decoder gives. In
+`tacenta-group`:
+
+- `InvitationBootstrap::encode` now makes the decoder's checks in the decoder's
+  order: the source roster, then the invitation's own fields (a reserved source
+  revision, a policy version other than 1, a target identity above 256 bytes or
+  device above 64), then how the two fit together (`conflict`). Before, it skipped
+  the target size check, so a 300-byte identity encoded to bytes the same crate
+  refused, and it reported a reserved revision or a wrong policy version as
+  `conflict`.
+- `LogicalSend::encode_intent` made none of the decoder's checks and relied on
+  `LogicalSend::new`, which does not size-check a member or count the recipients,
+  and whose `payload` and `id` fields are public. It now makes the decoder's
+  checks in the decoder's order (section 11, Encoding).
+- Two local state encoders had the same defect and were fixed the same way, though
+  this page does not specify them: `InvitationBook::encode_state` (a record whose
+  fields `Invitation::new` would refuse, which `InvitationBook::create` lets in
+  because the fields are public) and `GroupReceiver::encode_state` (a local member
+  over the size limits).
+
+No value the decoder accepts changes its bytes, and no value is refused that was
+accepted and read back. The rule is held by tests: the vector file pairs each
+`encode_refuse` vector with the decoder's refusal of the same fault, and
+`crates/tacenta-group/tests/encoder_refusals.rs` states the rest. Considered: keep
+the encoder as it was and document the gap. Rejected: a value written that cannot
+be read back is a persistence hazard, most of all for the intent, which is written
+before any send and read again at recovery. Considered: fix the bootstrap only.
+Rejected: the same defect was in three other encoders. The tacenta-client record
+and state encoders were not audited.
 
 ## The five questions
 
@@ -115,10 +173,10 @@ page is the cheapest test that the page is enough.
 
 ## What would reopen this
 
-- A second implementation, which turns open points OP-1 to OP-3 from questions
-  into interoperability failures.
-- A decision on any open point that changes a layout (new domain strings, new
-  vectors, a new record).
+- A second implementation, which turns the accepted framing and field-order
+  differences (OP-2, OP-3) from a cost into interoperability failures.
+- A decision on any open point (OP-5 to OP-8) that changes a layout (new domain
+  strings, new vectors, a new record).
 - The Lean model gaining bytes and a human review: then the vectors should be
   generated from it under decision 0003 and the Rust builder retired.
 - A store other than the client's own reading the local records, or those
