@@ -154,6 +154,43 @@ Which of them a later release carries is not recorded here.
   roster, the application context and the source roster of a bootstrap differs
   from the order in which their decoders meet the same faults, and the vectors pin
   both.
+- tacenta-core moves to `dea57eaf`, the current core main. It has the acceptance
+  checks for a hosted inventory statement (core #200) and holds identity keys to
+  one rule at the session boundaries, in stored session state and in signature
+  verification (core #205; `identities-and-devices.md`, "Identity keys"). A key
+  an honest device publishes is never refused. Against `e06f8f4`, the pin `main`
+  now carries, only the core's attestation manifests differ.
+- Experimental, not wired to any client, server route or SDK surface: hosted
+  device-inventory storage and signing (decision 0140).
+  - `tacenta-accounts` stores a per-account device inventory (in memory, and in
+    Postgres behind the `postgres` feature with migrations 0005 and 0006),
+    with exact-predecessor generations and idempotent retries.
+  - `tacenta-server` gains an inventory issuer, whose signing key file is
+    created owner-only and once and is refused if others can read it, and a
+    service that signs the committed current state and refuses a superseded
+    retry. On Windows the key file's permissions are not enforced.
+  - Before it commits, the store applies the core's identity-key rule (check 6
+    of "Accepting a signed statement") to every binding a link, a replacement or
+    a revocation names, and refuses one that fails it
+    (`InventoryError::IdentityKey`); nothing is stored or signed. A plain link
+    may not carry a replacement predecessor
+    (`InventoryError::UnexpectedReplacementPredecessor`); a replacement must
+    carry the commitment of the exact binding it retires.
+  - The in-memory accounts snapshot starts with an eight-byte header and holds
+    seven sections, all required (the four servers wrote before, then device
+    inventories and two kinds of retry record). A snapshot cut at any point,
+    including exactly between two sections, is refused rather than restored
+    with the later sections empty (`Accounts::try_restore`,
+    `RestoreError::Truncated`), and so is one with a user, API key or session
+    that names a tenant or user it does not hold (`RestoreError::Orphan`).
+    Snapshots that earlier servers wrote still restore; a snapshot written by
+    this version is not readable by an earlier release. An inventory call for a
+    user whose tenant is missing returns `InventoryError::UnknownUser` instead
+    of panicking under the store's lock.
+  - The directory handle of an account is now built from its normalized
+    username; `handle` used to echo the spelling it was given.
+  - CI compile-checks and lints the `postgres` feature. The database tests
+    still do not run in CI.
 
 ## v1.12.1 (2026-09-11)
 
