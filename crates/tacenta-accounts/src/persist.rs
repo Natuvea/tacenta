@@ -436,6 +436,7 @@ impl Accounts {
 #[cfg(test)]
 mod tests {
     use crate::Accounts;
+    use crate::inventory_rules_tests::honest_key;
     use tacenta_core::crypto::groups::inventory::{
         DeviceBinding, GROUP_EPOCH_V1, binding_commitment,
     };
@@ -490,7 +491,7 @@ mod tests {
         a.sign_up_user(&tenant.id, "alice", "hunter2!!").unwrap();
         let binding = DeviceBinding {
             device_id: 1,
-            identity_public_key: [7; 32],
+            identity_public_key: honest_key(7),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         };
@@ -540,7 +541,7 @@ mod tests {
             .unwrap();
         let retired = DeviceBinding {
             device_id: 1,
-            identity_public_key: [1; 32],
+            identity_public_key: honest_key(1),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         };
@@ -549,7 +550,7 @@ mod tests {
             .unwrap();
         let replacement = DeviceBinding {
             device_id: 2,
-            identity_public_key: [2; 32],
+            identity_public_key: honest_key(2),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: Some(binding_commitment(&retired).unwrap()),
         };

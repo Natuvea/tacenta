@@ -50,6 +50,13 @@ commits carry their story.
     created owner-only and once and is refused if others can read it, and a
     service that signs the committed current state and refuses a superseded
     retry. On Windows the key file's permissions are not enforced.
+  - Before it commits, the store applies the core's identity-key rule (check 6
+    of "Accepting a signed statement") to every binding a link, a replacement or
+    a revocation names, and refuses one that fails it
+    (`InventoryError::IdentityKey`); nothing is stored or signed. A plain link
+    may not carry a replacement predecessor
+    (`InventoryError::UnexpectedReplacementPredecessor`); a replacement must
+    carry the commitment of the exact binding it retires.
   - The directory handle of an account is now built from its normalized
     username; `handle` used to echo the spelling it was given.
   - CI compile-checks and lints the `postgres` feature. The database tests

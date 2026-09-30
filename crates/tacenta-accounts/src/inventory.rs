@@ -16,7 +16,8 @@ use crate::protocol::{take_u32, take_u64};
 #[cfg(any(test, feature = "postgres"))]
 use tacenta_core::crypto::groups::inventory::MAX_ACTIVE_BINDINGS;
 use tacenta_core::crypto::groups::inventory::{
-    DeviceBinding, InventoryStatement, MAX_RECENT_REVOCATIONS, Revocation, binding_commitment,
+    DeviceBinding, Error as CoreError, InventoryStatement, MAX_RECENT_REVOCATIONS, Revocation,
+    binding_commitment, validate_identity_key,
 };
 
 /// The lifecycle state from which the hosted issuer creates one canonical
@@ -59,6 +60,16 @@ pub enum InventoryError {
     BindingNotActive,
     /// A replacement did not commit to the exact binding it retires.
     ReplacementPredecessorMismatch,
+    /// A plain link named a `replacement_predecessor`. Only a replacement
+    /// carries one, and only for the binding it retires in the same step; a
+    /// marker on a new binding would be a claim of lineage that this account
+    /// never made.
+    UnexpectedReplacementPredecessor,
+    /// A binding's identity key is not one the specification admits (check 6
+    /// of "Accepting a signed statement"). The core's own classification is
+    /// carried unchanged. Every verifier refuses a statement that lists such a
+    /// key, so it is refused here, before anything is stored or signed.
+    IdentityKey(CoreError),
     /// An idempotency key was reused for a different mutation request.
     IdempotencyConflict,
     /// The proposed record violates the canonical inventory bounds.
@@ -111,6 +122,17 @@ pub(crate) fn validate_inventory(
     .encode_unsigned()
     .map(|_| ())
     .map_err(|_| InventoryError::Invalid)
+}
+
+/// Check 6 for one binding the caller supplied, using the core's own rule.
+///
+/// The rule admits exactly one spelling of a key, so the byte comparisons in
+/// [`binding_is_new`] are sound only for keys that passed it. It therefore
+/// runs first, before any comparison against the account's state, and before a
+/// binding can reach a stored record or a signature. The function is the
+/// core's public `validate_identity_key`, not a copy of it.
+fn check_supplied_binding(binding: &DeviceBinding) -> Result<(), InventoryError> {
+    validate_identity_key(&binding.identity_public_key).map_err(InventoryError::IdentityKey)
 }
 
 pub(crate) fn encode_inventory(inventory: &DeviceInventory) -> Vec<u8> {
@@ -174,6 +196,14 @@ pub(crate) fn link_inventory(
     predecessor_generation: u64,
     binding: DeviceBinding,
 ) -> Result<DeviceInventory, InventoryError> {
+    check_supplied_binding(&binding)?;
+    // A new device has no predecessor. The core does not require a marker to
+    // name a listed binding (its custody check needs a verifier's own history),
+    // so the only place that can keep a made-up lineage out of a signed
+    // statement is the issuer, and a plain link is not a replacement.
+    if binding.replacement_predecessor.is_some() {
+        return Err(InventoryError::UnexpectedReplacementPredecessor);
+    }
     if current.generation != predecessor_generation {
         return Err(InventoryError::PredecessorMismatch);
     }
@@ -202,6 +232,7 @@ pub(crate) fn revoke_inventory(
     predecessor_generation: u64,
     retired: DeviceBinding,
 ) -> Result<DeviceInventory, InventoryError> {
+    check_supplied_binding(&retired)?;
     if current.generation != predecessor_generation {
         return Err(InventoryError::PredecessorMismatch);
     }
@@ -234,6 +265,11 @@ pub(crate) fn replace_inventory(
     retired: DeviceBinding,
     replacement: DeviceBinding,
 ) -> Result<DeviceInventory, InventoryError> {
+    check_supplied_binding(&retired)?;
+    check_supplied_binding(&replacement)?;
+    // The marker must be the commitment of the exact binding this call retires:
+    // not another device of this account, not a device of another account, not
+    // a binding that never existed.
     if replacement.replacement_predecessor
         != Some(binding_commitment(&retired).map_err(|_| InventoryError::Invalid)?)
     {
@@ -248,6 +284,14 @@ pub(crate) fn replace_inventory(
     Ok(next)
 }
 
+/// The account-level rules for a binding that is not yet in the inventory.
+///
+/// Identity keys are compared as bytes. That is sound because every key stored
+/// through this module, and the one being added, passed
+/// `check_supplied_binding`, which admits exactly one spelling of a key; the
+/// core's `InventoryPolicy` says the same of a policy that compares keys in a
+/// statement it has accepted. A row or snapshot written by anything else is not
+/// covered (decision 0140, "The database is trusted for what is signed").
 fn binding_is_new(
     current: &DeviceInventory,
     binding: &DeviceBinding,

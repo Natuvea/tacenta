@@ -396,7 +396,7 @@ mod tests {
     fn binding(device_id: u32, key: u8) -> DeviceBinding {
         DeviceBinding {
             device_id,
-            identity_public_key: [key; 32],
+            identity_public_key: crate::inventory_rules_tests::honest_key(key),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         }

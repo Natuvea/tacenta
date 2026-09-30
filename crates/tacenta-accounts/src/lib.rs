@@ -1152,7 +1152,7 @@ mod tests {
     fn group_binding(device_id: u32, key: u8) -> DeviceBinding {
         DeviceBinding {
             device_id,
-            identity_public_key: [key; 32],
+            identity_public_key: crate::inventory_rules_tests::honest_key(key),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         }
@@ -1294,7 +1294,7 @@ mod tests {
         for next_id in 2..=10 {
             let replacement = DeviceBinding {
                 device_id: next_id,
-                identity_public_key: [next_id as u8; 32],
+                identity_public_key: crate::inventory_rules_tests::honest_key(next_id as u8),
                 capabilities: GROUP_EPOCH_V1,
                 replacement_predecessor: Some(binding_commitment(&current).unwrap()),
             };

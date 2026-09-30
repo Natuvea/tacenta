@@ -27,6 +27,13 @@ pub mod inventory {
         Revocation,
     };
 
+    /// The core's rule for what may be admitted as an identity key (check 6 of
+    /// "Accepting a signed statement" in identities-and-devices.md). An issuer
+    /// applies it to a device's key when it links the device, before there is a
+    /// statement to sign. This is the core's function, re-exported, not a copy
+    /// of it.
+    pub use open_tacenta::groups::inventory::validate_identity_key;
+
     /// Commit the exact canonical binding a replacement retires.
     pub fn binding_commitment(binding: &DeviceBinding) -> Result<[u8; 32], Error> {
         open_tacenta::groups::inventory::binding_commitment(binding)

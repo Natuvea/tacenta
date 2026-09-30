@@ -141,8 +141,15 @@ mod tests {
     use crate::inventory_issuer::InventoryIssuer;
     use tacenta_accounts::{AccountStore, Accounts};
     use tacenta_core::crypto::groups::inventory::{
-        DeviceBinding, GROUP_EPOCH_V1, InventoryStatement,
+        DeviceBinding, GROUP_EPOCH_V1, InventoryStatement, issuer_public_key,
     };
+
+    /// An honest device identity key: the public key of a secret that repeats
+    /// one byte. It passes the core's identity-key rule; a byte repeated 32 times
+    /// does not in general.
+    fn honest_key(seed: u8) -> [u8; 32] {
+        issuer_public_key(&[seed; 32])
+    }
 
     #[tokio::test]
     async fn committed_link_is_what_the_issuer_signs() {
@@ -159,7 +166,7 @@ mod tests {
         );
         let binding = DeviceBinding {
             device_id: 1,
-            identity_public_key: [3; 32],
+            identity_public_key: honest_key(3),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         };
@@ -183,13 +190,17 @@ mod retry_and_scope_tests {
     use crate::inventory_issuer::InventoryIssuer;
     use tacenta_accounts::{AccountStore, Accounts, InventoryError, StoreError, TenantId};
     use tacenta_core::crypto::groups::inventory::{
-        DeviceBinding, GROUP_EPOCH_V1, InventoryStatement,
+        DeviceBinding, GROUP_EPOCH_V1, InventoryStatement, issuer_public_key,
     };
+
+    fn honest_key(seed: u8) -> [u8; 32] {
+        issuer_public_key(&[seed; 32])
+    }
 
     fn b(device_id: u32, key: u8) -> DeviceBinding {
         DeviceBinding {
             device_id,
-            identity_public_key: [key; 32],
+            identity_public_key: honest_key(key),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         }
@@ -335,5 +346,135 @@ mod retry_and_scope_tests {
             store.handle(&t, "alice").await.unwrap().as_deref(),
             Some("acme/alice")
         );
+    }
+
+    /// Keys the core's identity-key rule refuses. The last is a respelling of
+    /// `honest_key(7)`: a different 32 bytes that X25519 treats as the same key.
+    fn refused_keys() -> Vec<(&'static str, [u8; 32])> {
+        let hex = |text: &str| -> [u8; 32] {
+            let bytes: Vec<u8> = (0..64)
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+                .collect();
+            bytes.try_into().unwrap()
+        };
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        let mut p_minus_1 = [0xffu8; 32];
+        p_minus_1[0] = 0xec;
+        p_minus_1[31] = 0x7f;
+        let mut p = [0xffu8; 32];
+        p[0] = 0xed;
+        p[31] = 0x7f;
+        vec![
+            ("u = 0", [0u8; 32]),
+            ("u = 1", one),
+            ("u = p - 1", p_minus_1),
+            ("u = p, non-canonical", p),
+            (
+                "listed value e0eb7a7c",
+                hex("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800"),
+            ),
+            (
+                "another spelling of an honest key",
+                hex("5af8922e95b31b0d50d02e6811e0c4d8c7d76866dfd916d3ce7c151d9f36ad4d"),
+            ),
+        ]
+    }
+
+    /// A statement listing any of these keys, or a respelling next to the key it
+    /// respells, is one every conforming verifier refuses. The store commits
+    /// before the signer signs, so a key accepted here would stay in the account
+    /// and every later statement for it would be unsignable. The store refuses
+    /// the binding, so nothing is stored and nothing is signed.
+    #[tokio::test]
+    async fn a_link_naming_a_refused_identity_key_is_neither_stored_nor_signed() {
+        let (store, service, t) = fixture();
+        for (name, key) in refused_keys() {
+            let binding = DeviceBinding {
+                identity_public_key: key,
+                ..b(1, 1)
+            };
+            let result = service
+                .link_device_binding(&t, "alice", 0, [1; 32], binding)
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(InventoryServiceError::Store(StoreError::Inventory(
+                        InventoryError::IdentityKey(_)
+                    )))
+                ),
+                "{name}: {result:?}"
+            );
+        }
+        let now = store.device_inventory(&t, "alice").await.unwrap().unwrap();
+        assert_eq!(now, tacenta_accounts::DeviceInventory::default());
+
+        // Nothing was used up: the same retry key signs a valid link.
+        let statement = service
+            .link_device_binding(&t, "alice", 0, [1; 32], b(1, 1))
+            .await
+            .unwrap();
+        let decoded = decode(&service, &statement);
+        assert_eq!(decoded.inventory_generation, 1);
+        assert_eq!(decoded.active, vec![b(1, 1)]);
+    }
+
+    #[tokio::test]
+    async fn a_respelling_of_an_active_key_is_not_signed_beside_it() {
+        let (_, service, t) = fixture();
+        let honest = b(1, 7);
+        service
+            .link_device_binding(&t, "alice", 0, [1; 32], honest.clone())
+            .await
+            .unwrap();
+        let respelling = DeviceBinding {
+            identity_public_key: refused_keys().pop().unwrap().1,
+            ..b(2, 7)
+        };
+        let result = service
+            .link_device_binding(&t, "alice", 1, [2; 32], respelling)
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(InventoryServiceError::Store(StoreError::Inventory(
+                    InventoryError::IdentityKey(_)
+                )))
+            ),
+            "{result:?}"
+        );
+    }
+
+    /// A plain link is not a replacement, so a statement never gets a device
+    /// that claims to replace one this account did not retire: not one that was
+    /// never linked, and not another account's.
+    #[tokio::test]
+    async fn a_link_that_claims_to_replace_a_device_is_not_signed() {
+        use tacenta_core::crypto::groups::inventory::binding_commitment;
+        let (_, service, t) = fixture();
+        service
+            .link_device_binding(&t, "bob", 0, [1; 32], b(5, 5))
+            .await
+            .unwrap();
+        for (n, named) in [b(77, 77), b(5, 5)].into_iter().enumerate() {
+            let forged = DeviceBinding {
+                replacement_predecessor: Some(binding_commitment(&named).unwrap()),
+                ..b(1, 1)
+            };
+            let result = service
+                .link_device_binding(&t, "alice", 0, [n as u8 + 1; 32], forged)
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(InventoryServiceError::Store(StoreError::Inventory(
+                        InventoryError::UnexpectedReplacementPredecessor
+                    )))
+                ),
+                "{result:?}"
+            );
+        }
     }
 }

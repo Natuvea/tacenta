@@ -827,7 +827,7 @@ mod interleaving {
     ) -> Result<DeviceInventory, InventoryError> {
         let binding = DeviceBinding {
             device_id: u32::from(id),
-            identity_public_key: [id; 32],
+            identity_public_key: crate::inventory_rules_tests::honest_key(id),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         };
@@ -880,7 +880,7 @@ mod interleaving {
         // Generation 1 exists, so both mutations below are guarded updates.
         let first = DeviceBinding {
             device_id: 100,
-            identity_public_key: [100; 32],
+            identity_public_key: crate::inventory_rules_tests::honest_key(100),
             capabilities: GROUP_EPOCH_V1,
             replacement_predecessor: None,
         };
