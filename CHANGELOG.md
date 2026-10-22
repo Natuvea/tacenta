@@ -113,6 +113,11 @@ Which of them a later release carries is not recorded here.
   guarantee after it returns holds only where a directory can be synchronised
   (decision 0077). CI now runs the workspace tests on Windows.
 - `rustls` 0.23.45 and `rustls-webpki` 0.103.15, for RUSTSEC-2026-0285.
+- `rustls` 0.23.46, `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.10, for
+  RUSTSEC-2026-0346 to 0349, 0381 and 0382. `quinn-proto` 0.11.19, for
+  RUSTSEC-2026-0338 to 0342: it is a `Cargo.lock` entry that no workspace
+  crate's dependency tree reaches, so it fails the advisory check without
+  being compiled. Each is a patch-level update, and only `Cargo.lock` changes.
 - The CLI prints the site's canonical URLs, with the trailing slash.
 - `tacenta-transport`: a `Connection` queues at most two response frames that
   no request has taken. The next one ends the connection: the request that is
