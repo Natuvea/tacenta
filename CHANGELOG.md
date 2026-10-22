@@ -165,6 +165,26 @@ Which of them a later release carries is not recorded here.
   verification (core #205; `identities-and-devices.md`, "Identity keys"). A key
   an honest device publishes is never refused. Against `e06f8f4`, the pin `main`
   now carries, only the core's attestation manifests differ.
+- tacenta-core moves from `dea57eaf` to `f7a329b`, a core `main` commit whose
+  CI had succeeded when it was chosen (core #229 to #263). Two shipped crates
+  change behaviour and no dependency changes: the core's `Cargo.toml` and
+  `Cargo.lock` are the same at both revisions, and this tree's `Cargo.lock`
+  changes only the revision of the core's git source.
+  - The sparse post-quantum ratchet counts the store a skip leaves, not the
+    store it found (core #229). A stored state near the 2,000-key cap that
+    holds keys in the range a skip replaces now accepts a message it refused;
+    the classical ratchet already worked this way. A device still on
+    `dea57eaf` refuses that message, so two devices on different pins can
+    disagree in that narrow case.
+  - A restored Braid encapsulation state outside the bound libcrux states for
+    it is refused and the Braid goes to `Failed` (core #250). Before, it could
+    panic on libcrux's portable backend. An honest state never carries such
+    values; reaching the case takes write access to the stored blob.
+  - Stored formats are unchanged. The core's persistence page gains a sentence
+    and its sparse-ratchet state vectors gain two cases. The core's lifecycle
+    crate changes in comments and tests only.
+  - The fixes for the four published advisories were already in `dea57eaf`;
+    none is new in this range.
 - Experimental, not wired to any client, server route or SDK surface: hosted
   device-inventory storage and signing (decision 0140).
   - `tacenta-accounts` stores a per-account device inventory (in memory, and in
